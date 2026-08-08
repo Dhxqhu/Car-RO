@@ -258,6 +258,26 @@ def put_ro(ro_id: str, body: dict, _: None = Depends(require_auth)):
     return body
 
 
+@app.delete("/ros/{ro_id}")
+def delete_ro(ro_id: str, _: None = Depends(require_auth)):
+    """Remove RO metadata and photo directories on all volumes."""
+    import shutil
+
+    with _db() as conn:
+        cur = conn.execute("DELETE FROM repair_orders WHERE id = ?", (ro_id,))
+        removed = cur.rowcount > 0
+    photo_dirs = 0
+    for name in VOLUMES.list_volumes():
+        # Do not call VOLUMES.photos_dir() — it mkdir's and would create empty folders
+        pdir = VOLUMES.path_for(name) / "photos" / ro_id
+        if pdir.is_dir():
+            shutil.rmtree(pdir, ignore_errors=True)
+            photo_dirs += 1
+    if not removed and photo_dirs == 0:
+        raise HTTPException(404, "RO not found")
+    return {"ok": True, "id": ro_id, "removed": removed, "photo_dirs": photo_dirs}
+
+
 @app.post("/ros/{ro_id}/photos")
 async def upload_photo(
     ro_id: str,

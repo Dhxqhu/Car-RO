@@ -50,7 +50,13 @@ Local-only works fine. The server is for people who want history that outlives a
 
 ### Screenshots
 
-![Car-RO interactive menu](docs/screenshots/menu.png)
+![Car-RO menu with technician login](docs/screenshots/menu.png)
+
+*Main menu after technician PIN login (name on the banner). Demo tech name only.*
+
+![Car-RO technician menu](docs/screenshots/technician.png)
+
+*Menu **`t`**: switch tech, change PIN, manage roster (admin), logout.*
 
 ![Car-RO search form](docs/screenshots/search.png)
 
@@ -66,7 +72,7 @@ Local-only works fine. The server is for people who want history that outlives a
 
 ## Quick install (workstation)
 
-You need: **Linux** (or similar) and **Python 3.10+**. One install script does the rest.
+You need: **Linux** (or **Windows** — see [docs/WINDOWS.md](docs/WINDOWS.md)) and **Python 3.10+**. One install script does the rest.
 
 ### Easiest: download a Release (recommended)
 
@@ -266,33 +272,24 @@ The empty repo `share/` folder is unused. Branding/logo stay local (`branding/`,
 
 ## Optional home-lab server
 
-Run this on a box with disk you trust. Laptop keeps a hot cache; server keeps the archive.
+**Full monkey-proof guide (multi-PC):** [docs/SERVER_SETUP.md](docs/SERVER_SETUP.md)  
+**Windows bay PCs:** [docs/WINDOWS.md](docs/WINDOWS.md)
+
+Short version — on a Linux box with disk you trust:
 
 ```bash
-# on the server host, from a clone or copied server/ tree
 ./scripts/install-server.sh
-# or follow the printed env vars / systemd unit
+# copy the printed URL + token (“GIVE THIS TO EVERY BAY PC”)
 ```
 
-Typical env:
+On each bay PC:
 
 ```bash
-export CARRO_DATA_DIR=/path/to/your/drive/carro
-# Optional extra volumes later:
-# export CARRO_VOLUMES="primary=/path/to/a/carro,extra=/path/to/b/carro"
-export CARRO_TOKEN="generate-a-long-random-token"
-```
-
-Then point the laptop at it (Tailscale MagicDNS recommended):
-
-```bash
-carro config    # set Server URL + token, or:
-carro config set server_url http://YOUR_SERVER:8787
-carro config set token YOUR_TOKEN
+./scripts/join-server.sh    # paste URL + token
 carro sync
 ```
 
-Systemd user unit template: `server/carro-server.service`.
+Systemd user unit: `server/carro-server.service`. Advanced env: `CARRO_DATA_DIR`, `CARRO_TOKEN`, `CARRO_VOLUMES`.
 
 ### Technician login (same shop, multiple PCs)
 
@@ -321,12 +318,16 @@ curl -H "Authorization: Bearer YOUR_TOKEN" -H 'Content-Type: application/json' \
 ## Layout
 
 ```
-cli/carro/          # CLI package (forms, PDF, OBD hook, photo providers)
-server/carro_server # FastAPI archive + phone upload sessions
-scripts/carro       # launcher used by ~/.local/bin/carro
-scripts/install.sh  # workstation install
+cli/carro/              # CLI package (forms, PDF, OBD hook, photo providers)
+server/carro_server     # FastAPI archive + phone upload sessions
+scripts/carro           # launcher used by ~/.local/bin/carro
+scripts/install.sh      # Linux workstation install
+scripts/install.ps1     # Windows workstation install
 scripts/install-server.sh
-config.example.toml # copy to ~/.config/carro/config.toml
+scripts/join-server.sh  # point a bay PC at the shop server
+docs/SERVER_SETUP.md    # multi-PC server guide
+docs/WINDOWS.md         # Windows bay PC guide
+config.example.toml     # copy to ~/.config/carro/config.toml
 ```
 
 ---

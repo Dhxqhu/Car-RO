@@ -62,6 +62,12 @@ class RemoteClient:
             r.raise_for_status()
             return r.json()
 
+    def delete_ro(self, ro_id: str) -> dict[str, Any]:
+        with httpx.Client(timeout=30.0) as client:
+            r = client.delete(f"{self.base}/ros/{ro_id}", headers=self._headers())
+            r.raise_for_status()
+            return r.json()
+
     def create_upload_session(
         self,
         ro_id: str,

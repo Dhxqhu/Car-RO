@@ -64,6 +64,7 @@ def main(argv: list[str] | None = None) -> None:
         "edit": lambda: cmd_edit(store, args.id),
         "pull-obd": lambda: cmd_pull_obd(store, args.id),
         "pdf": lambda: cmd_pdf(store, args.id),
+        "delete": lambda: cmd_delete(store, args.id),
         "sync": lambda: cmd_sync(store),
         "logo": lambda: run_logo_setup(),
         "config": lambda: cmd_config(args),
@@ -115,6 +116,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("id", nargs="?")
     s = sub.add_parser("pdf", help="Export customer PDF")
     s.add_argument("id", nargs="?")
+    s = sub.add_parser("delete", help="Delete a repair order (local + server)")
+    s.add_argument("id", nargs="?", help="RO id to delete")
     sub.add_parser("sync", help="Push local ROs to server + prune cache")
     sub.add_parser("logo", help="Set shop logo for PDFs (easy wizard)")
     s = sub.add_parser("tech", help="Technician login / logout / whoami / add")
@@ -198,6 +201,7 @@ def interactive_menu(store: LocalStore) -> None:
         table.add_row("[bold cyan]7[/]", "Pull OBD / Saved Codes into current")
         table.add_row("[bold cyan]8[/]", "Add photos (file / inbox / iPhone / Shortcut)")
         table.add_row("[bold cyan]9[/]", "Export customer PDF")
+        table.add_row("[bold cyan]d[/]", "Delete repair order (mistakes)")
         table.add_row("[bold cyan]s[/]", "Sync to server + prune local cache")
         table.add_row("[bold cyan]t[/]", "Technician (switch / add techs / logout)")
         table.add_row("[bold cyan]c[/]", "Config (edit settings)")
@@ -241,6 +245,10 @@ def interactive_menu(store: LocalStore) -> None:
             elif choice == "9":
                 current = _need(current)
                 cmd_pdf(store, current)
+            elif choice == "d":
+                deleted = cmd_delete(store, current)
+                if deleted and current == deleted:
+                    current = None
             elif choice == "s":
                 cmd_sync(store)
             elif choice == "t":
@@ -803,6 +811,60 @@ def cmd_pdf(store: LocalStore, ro_id: str | None) -> None:
     CONSOLE.print(f"[green]PDF[/] → {path}")
     if sys.stdin.isatty() and Confirm.ask("Open in PDF viewer?", default=True):
         _open_pdf(path)
+
+
+def cmd_delete(store: LocalStore, ro_id: str | None) -> str | None:
+    """Delete an RO locally (and on server when configured). Returns deleted id."""
+    import shutil
+
+    from carro.config import photos_dir
+
+    if not ro_id:
+        ro_id = Prompt.ask("RO id to delete").strip()
+    if not ro_id:
+        raise ValueError("No RO id")
+    order = store.get(ro_id)
+    if not order:
+        # Still allow deleting a server-only / mistyped confirmation against local miss
+        raise ValueError(f"RO not found locally: {ro_id}")
+
+    CONSOLE.print(
+        Panel(
+            f"[bold]{order.id}[/]\n"
+            f"{order.customer_label()} · {order.vehicle_label()}\n\n"
+            "[yellow]This permanently deletes the repair order[/] "
+            "(local cache, photos folder, and server copy if configured).",
+            title="Delete repair order",
+            border_style="red",
+        )
+    )
+    confirm = Prompt.ask(
+        f"Type the RO id [cyan]{order.id}[/] to confirm (or cancel)",
+        default="",
+    ).strip()
+    if confirm != order.id:
+        CONSOLE.print("[dim]Delete cancelled.[/]")
+        return None
+
+    photo_dir = photos_dir() / order.id
+    if not store.delete(order.id):
+        raise ValueError(f"Could not delete local RO: {order.id}")
+    if photo_dir.is_dir():
+        shutil.rmtree(photo_dir, ignore_errors=True)
+        CONSOLE.print(f"[dim]Removed photos[/] {photo_dir}")
+
+    remote = RemoteClient()
+    if remote.enabled:
+        try:
+            remote.delete_ro(order.id)
+            CONSOLE.print("[dim]Removed from server[/]")
+        except Exception as exc:
+            CONSOLE.print(
+                f"[yellow]Local delete OK, but server delete failed:[/] {exc}\n"
+                "[dim]Fix the server (restart after update) or the RO may come back on sync.[/]"
+            )
+    CONSOLE.print(f"[green]Deleted[/] {order.id}")
+    return order.id
 
 
 def _open_pdf(path: Path) -> None:

@@ -102,14 +102,53 @@ else
   echo "  PYTHONPATH=. .venv/bin/uvicorn carro_server.main:app --host 0.0.0.0 --port $PORT"
 fi
 
-echo
-echo "Laptop config (use Tailscale hostname if you have it):"
-echo "  carro config set server_url http://YOUR_HOST:$PORT"
-if [[ -n "${TOKEN:-}" ]]; then
-  echo "  carro config set token $TOKEN"
-else
-  echo "  carro config set token  # from $ENV_FILE"
+# Best-effort hostname for the handoff block
+HOST_HINT="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo YOUR_HOST)"
+if command -v tailscale >/dev/null 2>&1; then
+  TS_DNS="$(tailscale status --json 2>/dev/null | .venv/bin/python -c '
+import json,sys
+try:
+  d=json.load(sys.stdin)
+  print((d.get("Self") or {}).get("DNSName") or "")
+except Exception:
+  pass
+' 2>/dev/null || true)"
+  TS_DNS="${TS_DNS%.}"
+  if [[ -n "$TS_DNS" ]]; then
+    HOST_HINT="$TS_DNS"
+  fi
 fi
-echo "  carro sync"
+SERVER_URL="http://${HOST_HINT}:${PORT}"
+
 echo
-echo "Health check: curl -s http://127.0.0.1:$PORT/health"
+echo "############################################################"
+echo "#  GIVE THIS TO EVERY BAY PC (same shop)                   #"
+echo "############################################################"
+echo "#"
+echo "#  Server URL:"
+echo "#    $SERVER_URL"
+echo "#"
+if [[ -n "${TOKEN:-}" ]]; then
+  echo "#  Token:"
+  echo "#    $TOKEN"
+else
+  echo "#  Token: (open $ENV_FILE and copy CARRO_TOKEN=...)"
+fi
+echo "#"
+echo "#  On each bay PC after installing Car-RO:"
+echo "#    ./scripts/join-server.sh"
+echo "#  Or:"
+echo "#    carro config set server_url $SERVER_URL"
+if [[ -n "${TOKEN:-}" ]]; then
+  echo "#    carro config set token $TOKEN"
+else
+  echo "#    carro config set token YOUR_TOKEN"
+fi
+echo "#    carro sync"
+echo "#"
+echo "#  Full guide: docs/SERVER_SETUP.md"
+echo "############################################################"
+echo
+echo "Local health check: curl -s http://127.0.0.1:$PORT/health"
+echo "Data dir: $DATA_DIR"
+echo "Env file: $ENV_FILE"
