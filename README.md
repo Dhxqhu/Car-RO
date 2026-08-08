@@ -6,16 +6,18 @@ Car-RO is a terminal app for documenting diagnostic and repair work — the stuf
 
 Built for mechanics and techs who:
 
-- Keep a home-lab server (or a spare NAS / mini PC) and are comfortable with Linux, Tailscale, systemd, and open source tools
+- Have a **Linux laptop** (or similar) and are willing to open a terminal — you do **not** need to be a GitHub expert
 - Want **searchable history** of past jobs (“what fixed that intermittent wiper on the last Ford?”)
 - Want a **typed PDF** for the advisor instead of chicken-scratch on a carbon form
 - Want **phone photos** attached to the write-up without fighting AirDrop into a random Downloads folder every time
+
+**Start here:** use a **[Release](https://github.com/Dhxqhu/Car-RO/releases/latest)** (download the zip). That is the supported path for first-time installs. Optional home-lab server / Tailscale comes later — local-only works fine on day one.
 
 ### Companion tools & hardware
 
 | | Link |
 | --- | --- |
-| **obdscan** (CLI OBD companion) | [github.com/Dhxqhu/obdscan](https://github.com/Dhxqhu/obdscan) |
+| **obdscan** (CLI OBD companion) | [Releases](https://github.com/Dhxqhu/obdscan/releases/latest) · [repo](https://github.com/Dhxqhu/obdscan) |
 | **GODIAG GT327** (ELM327 Bluetooth + DoIP/ENET adapter) | [Amazon](https://www.amazon.com/dp/B0DKXPRLPP) · [Godiag product page](https://www.godiagshop.eu/wholesale/godiag-gt327.html) |
 
 Car-RO can pull VIN / vehicle / DTC context from **obdscan** (and its Saved Codes exports) into a repair order. **obdscan** is written around cheap ELM327-class dongles such as the **GT327**, including the adapter’s DoIP ethernet mode for enhanced OEM packs.
@@ -64,7 +66,42 @@ Local-only works fine. The server is for people who want history that outlives a
 
 ## Quick install (workstation)
 
-Requirements: Linux (or similar), Python **3.10+**. After install, `carro` lives in `~/.local/bin` — see [Terminal commands](#terminal-commands-carro-and-obdscan) if that directory is not already on your `PATH`.
+You need: **Linux** (or similar) and **Python 3.10+**. One install script does the rest.
+
+### Easiest: download a Release (recommended)
+
+1. Open **[the latest Release](https://github.com/Dhxqhu/Car-RO/releases/latest)**  
+2. Under **Assets**, download **Source code (zip)**  
+3. Unzip it somewhere you keep tools (e.g. `~/Documents/Car-RO`)  
+4. In a terminal:
+
+```bash
+cd ~/Documents/Car-RO   # or wherever you unzipped (folder name may include a version)
+./scripts/install.sh
+carro
+```
+
+That script will:
+
+1. Create a local Python environment (`.venv`) and install dependencies  
+2. Add a `carro` command under `~/.local/bin`  
+3. Create `~/.config/carro/config.toml` if missing  
+4. Create photo / inbox folders under `~/Documents/Car-RO/`  
+
+If the terminal says `carro: command not found`, add `~/.local/bin` to your PATH — see [Terminal commands](#terminal-commands-carro-and-obdscan) below (copy/paste, one time).
+
+Then:
+
+```bash
+carro                  # interactive menu
+carro config           # shop name, logo, optional server, …
+```
+
+Set your shop name (and optional logo) in the config menu. **Do not** put real tokens, hostnames, or shop secrets into git — they stay in `~/.config/carro/`.
+
+### Optional: install with git
+
+If you already use git:
 
 ```bash
 git clone https://github.com/Dhxqhu/Car-RO.git
@@ -72,21 +109,7 @@ cd Car-RO
 ./scripts/install.sh
 ```
 
-That will:
-
-1. Create `.venv` and install Python deps  
-2. Symlink `carro` into `~/.local/bin`  
-3. Copy `config.example.toml` → `~/.config/carro/config.toml` if missing  
-4. Create photo / inbox dirs under `~/Documents/Car-RO/`  
-
-Then:
-
-```bash
-carro                  # interactive menu
-carro config           # edit shop name, server URL, local keep limits, …
-```
-
-Set your shop name and optional logo path in the config menu (or edit the toml). **Do not commit** real tokens, hostnames, or shop secrets into git — they stay in `~/.config/carro/`.
+**Upgrade later:** download the newer Release zip and run `./scripts/install.sh` again (or `git pull` then `./scripts/install.sh` if you cloned).
 
 ### Manual install (same steps as the script)
 
@@ -149,7 +172,7 @@ carro --help          # or just: carro
 obdscan --help
 ```
 
-If `which` finds nothing, `PATH` is still wrong. If the command runs but Python imports fail, finish the project’s venv install first (`./scripts/install.sh` for Car-RO; see obdscan’s README for its venv).
+If `which` finds nothing, `PATH` is still wrong. If the command runs but Python imports fail, run `./scripts/install.sh` (Car-RO) or `./install.sh` (obdscan) from that project’s folder first.
 
 ---
 
