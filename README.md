@@ -15,7 +15,16 @@ carro config init
 
 Command name: **`carro`**. Ensure `~/.local/bin` is on your `PATH` (most setups already have this).
 
-## Quick use
+## Repair order form
+
+Opening or editing an RO launches a full-screen form (Textual):
+
+- **Tab / Shift+Tab** — move between fields  
+- **Ctrl+S** — save  
+- **Ctrl+Q** / **Esc** — quit without saving  
+- **F2** — pull OBD / Saved Codes into the form  
+
+Complaint and tech notes are multi-line text areas.
 
 ```bash
 carro                  # interactive menu

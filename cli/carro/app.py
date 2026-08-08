@@ -24,6 +24,7 @@ from rich.table import Table
 
 from carro.config import CONFIG_FILE, ensure_dirs, load_config, save_config
 from carro.core.db import LocalStore
+from carro.core.form import run_ro_form
 from carro.core.models import RepairOrder
 from carro.core.pdf import export_pdf
 from carro.obd.provider import pull_vehicle_fields
@@ -98,9 +99,9 @@ def interactive_menu(store: LocalStore) -> None:
     while True:
         CONSOLE.print()
         table = Table(title="Car-RO", show_header=False, box=None, padding=(0, 2))
-        table.add_row("[bold cyan]1[/]", "New repair order")
-        table.add_row("[bold cyan]2[/]", "List / open")
-        table.add_row("[bold cyan]3[/]", "Edit current")
+        table.add_row("[bold cyan]1[/]", "New repair order (form)")
+        table.add_row("[bold cyan]2[/]", "List / open in form")
+        table.add_row("[bold cyan]3[/]", "Edit current (form)")
         table.add_row("[bold cyan]4[/]", "Pull OBD / Saved Codes into current")
         table.add_row("[bold cyan]5[/]", "Add photos (local / inbox)")
         table.add_row("[bold cyan]6[/]", "Export customer PDF")
@@ -155,28 +156,50 @@ def _need(current: str | None) -> str:
     return rid
 
 
+def _apply_obd_to_order(order: RepairOrder, *, ask: bool = False) -> RepairOrder:
+    raw = pull_vehicle_fields()
+    if not raw:
+        raise RuntimeError("Nothing found from obdscan / Saved Codes")
+    mapped = _map_obd(raw)
+    for key, val in mapped.items():
+        if not val:
+            continue
+        cur = getattr(order, key, "")
+        if ask and cur and cur != val:
+            # Non-interactive inside TUI — prefer incoming OBD values
+            pass
+        setattr(order, key, val)
+    return order
+
+
+def _open_ro_form(store: LocalStore, order: RepairOrder) -> RepairOrder | None:
+    """Full-screen navigable form; save persists + syncs."""
+
+    def on_pull(o: RepairOrder) -> RepairOrder:
+        return _apply_obd_to_order(o)
+
+    result = run_ro_form(order, on_pull_obd=on_pull)
+    if result is None:
+        CONSOLE.print("[dim]Form closed without saving.[/]")
+        return None
+    store.save(result)
+    CONSOLE.print(f"[green]Saved[/] {result.id}")
+    _maybe_push(result)
+    return result
+
+
 def cmd_new(store: LocalStore, from_obd: bool = False) -> RepairOrder:
     fields: dict = {}
     if from_obd:
-        fields.update(_map_obd(pull_vehicle_fields()))
-    CONSOLE.print("[cyan]New repair order[/] (Enter skips)")
-    fields["first_name"] = Prompt.ask("First name", default=fields.get("first_name", ""))
-    fields["last_name"] = Prompt.ask("Last name", default=fields.get("last_name", ""))
-    fields["phone"] = Prompt.ask("Phone", default=fields.get("phone", ""))
-    fields["year"] = Prompt.ask("Year", default=fields.get("year", ""))
-    fields["make"] = Prompt.ask("Make", default=fields.get("make", ""))
-    fields["model"] = Prompt.ask("Model", default=fields.get("model", ""))
-    fields["vin"] = Prompt.ask("VIN", default=fields.get("vin", ""))
-    fields["mileage"] = Prompt.ask("Mileage", default="")
-    fields["plate"] = Prompt.ask("Plate", default="")
-    fields["complaint"] = Prompt.ask("Customer complaint / request", default="")
-    fields["tech_notes"] = Prompt.ask("Technician notes", default="")
-    if "obd_snapshot" not in fields and from_obd:
-        pass
-    order = store.create(**{k: v for k, v in fields.items() if v is not None})
-    CONSOLE.print(f"[green]Created[/] {order.id}")
-    _maybe_push(order)
-    return order
+        try:
+            fields.update(_map_obd(pull_vehicle_fields()))
+            CONSOLE.print("[dim]Prefilled from OBD / Saved Codes — edit in the form.[/]")
+        except Exception:
+            CONSOLE.print("[yellow]OBD autofill unavailable — blank form.[/]")
+    order = store.create(**{k: v for k, v in fields.items() if v})
+    CONSOLE.print(f"[cyan]Opening form[/] {order.id}")
+    saved = _open_ro_form(store, order)
+    return saved or order
 
 
 def _map_obd(raw: dict) -> dict:
@@ -215,19 +238,7 @@ def cmd_open(store: LocalStore, ro_id: str) -> None:
     order = store.get(ro_id)
     if not order:
         raise ValueError(f"RO not found: {ro_id}")
-    CONSOLE.print(
-        Panel(
-            f"[bold]{order.id}[/]  ({order.status})\n"
-            f"Customer: {order.customer_label()}  phone={order.phone or '—'}\n"
-            f"Vehicle: {order.vehicle_label()}\n"
-            f"VIN: {order.vin or '—'}  mi={order.mileage or '—'}  plate={order.plate or '—'}\n\n"
-            f"[bold]Complaint[/]\n{order.complaint or '—'}\n\n"
-            f"[bold]Tech notes[/]\n{order.tech_notes or '—'}\n\n"
-            f"Photos: {len(order.photos)}",
-            title="Repair order",
-            border_style="green",
-        )
-    )
+    _open_ro_form(store, order)
 
 
 def cmd_edit(store: LocalStore, ro_id: str | None) -> None:
@@ -236,22 +247,7 @@ def cmd_edit(store: LocalStore, ro_id: str | None) -> None:
     order = store.get(ro_id)
     if not order:
         raise ValueError(f"RO not found: {ro_id}")
-    CONSOLE.print("[dim]Enter keeps current value[/]")
-    order.first_name = Prompt.ask("First name", default=order.first_name)
-    order.last_name = Prompt.ask("Last name", default=order.last_name)
-    order.phone = Prompt.ask("Phone", default=order.phone)
-    order.year = Prompt.ask("Year", default=order.year)
-    order.make = Prompt.ask("Make", default=order.make)
-    order.model = Prompt.ask("Model", default=order.model)
-    order.vin = Prompt.ask("VIN", default=order.vin)
-    order.mileage = Prompt.ask("Mileage", default=order.mileage)
-    order.plate = Prompt.ask("Plate", default=order.plate)
-    order.complaint = Prompt.ask("Complaint", default=order.complaint)
-    order.tech_notes = Prompt.ask("Tech notes", default=order.tech_notes)
-    order.status = Prompt.ask("Status", default=order.status, choices=["open", "in_progress", "done"])
-    store.save(order)
-    CONSOLE.print(f"[green]Saved[/] {order.id}")
-    _maybe_push(order)
+    _open_ro_form(store, order)
 
 
 def cmd_pull_obd(store: LocalStore, ro_id: str | None) -> None:
@@ -261,22 +257,16 @@ def cmd_pull_obd(store: LocalStore, ro_id: str | None) -> None:
     if not order:
         raise ValueError(f"RO not found: {ro_id}")
     CONSOLE.print("[cyan]Pulling vehicle info…[/]")
-    raw = pull_vehicle_fields()
-    if not raw:
-        CONSOLE.print("[yellow]Nothing found from obdscan / Saved Codes.[/]")
+    try:
+        order = _apply_obd_to_order(order, ask=True)
+    except RuntimeError as exc:
+        CONSOLE.print(f"[yellow]{exc}[/]")
         return
-    mapped = _map_obd(raw)
-    for key, val in mapped.items():
-        if not val:
-            continue
-        cur = getattr(order, key, "")
-        if cur and cur != val:
-            if not Confirm.ask(f"Replace {key} '{cur}' with '{val[:60]}'?", default=True):
-                continue
-        setattr(order, key, val)
     store.save(order)
     CONSOLE.print(f"[green]Updated[/] {order.id} from OBD sources")
     _maybe_push(order)
+    if Confirm.ask("Open form to review?", default=True):
+        _open_ro_form(store, order)
 
 
 def cmd_pdf(store: LocalStore, ro_id: str | None) -> None:
