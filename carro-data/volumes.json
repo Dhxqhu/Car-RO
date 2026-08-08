@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "default": "primary",
+  "volumes": {
+    "primary": {
+      "path": "/home/max/Documents/Car-RO/carro-data",
+      "role": "primary"
+    }
+  }
+}

@@ -63,13 +63,21 @@ class RemoteClient:
             return r.json()
 
     def create_upload_session(
-        self, ro_id: str, *, tag: str = "intake", ttl_sec: int = 3600
+        self,
+        ro_id: str,
+        *,
+        tag: str = "intake",
+        ttl_sec: int | None = None,
+        kind: str = "web",
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"ro_id": ro_id, "tag": tag, "kind": kind}
+        if ttl_sec is not None:
+            payload["ttl_sec"] = ttl_sec
         with httpx.Client(timeout=30.0) as client:
             r = client.post(
                 f"{self.base}/upload-sessions",
                 headers=self._headers(),
-                json={"ro_id": ro_id, "tag": tag, "ttl_sec": ttl_sec},
+                json=payload,
             )
             r.raise_for_status()
             return r.json()

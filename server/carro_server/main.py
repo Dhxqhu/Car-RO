@@ -8,15 +8,15 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 
-from carro_server.upload_tokens import UPLOAD_PAGE, UploadTokenStore
+from carro_server.upload_tokens import SHORTCUT_PAGE, UPLOAD_PAGE, UploadTokenStore
 from carro_server.volumes import VolumeManager
 
 TOKEN = os.environ.get("CARRO_TOKEN", "").strip()
 VOLUMES = VolumeManager()
-UPLOADS = UploadTokenStore()
+UPLOADS = UploadTokenStore(VOLUMES.root / "upload_sessions.json")
 
 
 def _db() -> sqlite3.Connection:
@@ -294,29 +294,67 @@ def create_upload_session(body: dict, _: None = Depends(require_auth)):
     if not ro_id:
         raise HTTPException(400, "ro_id required")
     tag = str(body.get("tag") or "intake").strip() or "intake"
-    ttl = int(body.get("ttl_sec") or 3600)
-    sess = UPLOADS.create(ro_id, tag=tag, ttl_sec=ttl)
+    kind = str(body.get("kind") or "web").strip() or "web"
+    default_ttl = 7 * 24 * 3600 if kind == "shortcut" else 3600
+    ttl = int(body.get("ttl_sec") or default_ttl)
+    sess = UPLOADS.create(ro_id, tag=tag, ttl_sec=ttl, kind=kind)
     return {
         "token": sess.token,
         "ro_id": sess.ro_id,
         "tag": sess.tag,
+        "kind": sess.kind,
         "expires": sess.expires,
         "path": f"/u/{sess.token}",
+        "shortcut_path": f"/u/{sess.token}/shortcut",
     }
 
 
 @app.get("/u/{token}", response_class=HTMLResponse)
 def upload_page(token: str):
+    import time as _time
+
     sess = UPLOADS.get(token)
     if not sess:
         raise HTTPException(410, "Upload link expired or invalid")
-    ttl_min = max(1, int((sess.expires - __import__("time").time()) / 60))
+    ttl_min = max(1, int((sess.expires - _time.time()) / 60))
     html = (
         UPLOAD_PAGE.replace("__RO_ID__", sess.ro_id)
         .replace("__TAG__", sess.tag)
         .replace("__TTL__", str(ttl_min))
+        .replace("__TOKEN__", token)
     )
     return HTMLResponse(html)
+
+
+@app.get("/u/{token}/shortcut", response_class=HTMLResponse)
+def shortcut_help(token: str, request: Request):
+    import time as _time
+
+    sess = UPLOADS.get(token)
+    if not sess:
+        raise HTTPException(410, "Upload link expired or invalid")
+    upload_url = str(request.base_url).rstrip("/") + f"/u/{token}"
+    ttl_label = _ttl_label(sess.expires - _time.time())
+    html = (
+        SHORTCUT_PAGE.replace("__RO_ID__", sess.ro_id)
+        .replace("__TAG__", sess.tag)
+        .replace("__TTL__", ttl_label)
+        .replace("__TOKEN__", token)
+        .replace("__UPLOAD_URL__", upload_url)
+    )
+    return HTMLResponse(html)
+
+
+def _ttl_label(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins = rem // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {mins}m"
+    return f"{max(1, mins)} min"
 
 
 @app.post("/u/{token}")

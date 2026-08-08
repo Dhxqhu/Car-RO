@@ -105,7 +105,8 @@ carro search ford
 carro search --make ford --year 2023 --remote
 carro pull-obd RO-…
 carro photo add ./pic.jpg --id RO-… --tag intake --note "LH wiper motor"
-carro photo phone --id RO-… --tag intake   # Tailscale QR → iPhone
+carro photo shortcut --id RO-… --tag intake  # iOS Share Sheet (setup page + ~7d URL)
+carro photo phone --id RO-… --tag intake     # Tailscale QR → Safari
 carro pdf RO-…
 carro sync             # push to your server + prune local cache
 ```
@@ -133,15 +134,21 @@ Photo intake is a **provider** interface so different shops / devices can plug i
 | Path | Good for |
 | --- | --- |
 | **Local file / inbox** | Android, camera SD card, anything you can copy to the PC |
-| **Tailscale QR upload** | iPhone (or any phone) on your mesh → short-lived `/u/<token>` page, optional notes per upload |
-| **Future providers** | See roadmap — AirDrop-adjacent, shared folder, cloud drop, etc. |
+| **Tailscale QR upload** | Any phone on your mesh → Safari `/u/<token>` page |
+| **iOS Shortcuts** | Share Sheet → POST to the same upload URL (`carro photo shortcut`) |
 
-**Working iPhone flow today**
+**Working iPhone flows**
 
-1. RO open → menu **6 → phone** (or `carro photo phone --id …`)  
+1. RO open → menu **6** → **shortcut** or **phone**  
 2. Tailscale on the phone  
-3. Scan QR → Safari → optional **Notes** → take/choose photos → Upload  
+3. **Shortcut (recommended for your iPhone):** open the setup page (QR), build *Car-RO Upload* once in Shortcuts, then Photos → Share → that Shortcut  
+   **Phone page:** Safari → library or camera → optional notes → Upload  
 4. Enter on the PC to refresh; files land in `~/Documents/Car-RO/photos/<RO-id>/` (and on the server if configured)
+
+```bash
+carro photo shortcut --id RO-… --tag diag   # ~7-day Share Sheet link + setup page
+carro photo phone --id RO-… --tag intake    # short Safari / QR session
+```
 
 The empty repo `share/` folder is unused. Branding/logo stay local (`branding/`, `~/.config/carro/logo.png`) and are gitignored where appropriate.
 
@@ -208,12 +215,9 @@ This project is aimed at **your** lab and **your** bay notes. Keep real hostname
 
 ## Roadmap / brainstorm (photos & iPhone)
 
-The Tailscale QR path works and stays as the reliable “any phone on the mesh” option. For a **more refined personal iPhone** workflow we still want to explore (not committed yet):
-
-- **Shared folder / inbox watch** — Files app → Tailscale or SMB drop into `inbox_dir`, then `carro photo ingest`
+The Tailscale QR path stays as the reliable “any phone on the mesh” option. **iOS Shortcuts → upload API** is supported via `carro photo shortcut` (setup page at `/u/<token>/shortcut`). Further ideas:
 - **Cloud drop (Dropbox / iCloud Drive / Syncthing)** — phone saves into a watched folder; Car-RO attaches on save
-- **Shortcuts / share sheet** — iOS Shortcut posts multipart to the existing upload token URL (same API, less Safari tapping)
-- **AirDrop** — limited on Linux; usually ends as “AirDrop to Mac/nearby then copy,” so probably not first-class unless a sidecar exists
+- **AirDrop** — limited on Linux; usually ends as “AirDrop to Mac/nearby then copy,” so not first-class
 - **API token UX** — clearer rotation, per-device upload tokens, expiry visible in the config menu
 
 Photo providers stay modular so those experiments don’t break the local / QR paths other techs need.

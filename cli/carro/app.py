@@ -109,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("photo", help="Attach photos")
     s.add_argument(
         "action",
-        choices=["add", "ingest", "list", "phone"],
+        choices=["add", "ingest", "list", "phone", "shortcut"],
         nargs="?",
         default="list",
     )
@@ -599,7 +599,10 @@ def cmd_photo(store: LocalStore, args: argparse.Namespace) -> None:
         return
 
     if args.action == "phone":
-        _phone_upload_flow(store, order, tag=args.tag)
+        _phone_upload_flow(store, order, tag=args.tag, mode="phone")
+        return
+    if args.action == "shortcut":
+        _phone_upload_flow(store, order, tag=args.tag, mode="shortcut")
         return
 
     cfg = load_config()
@@ -665,8 +668,14 @@ def _collect_photo_notes(
     return out
 
 
-def _phone_upload_flow(store: LocalStore, order: RepairOrder, *, tag: str) -> None:
-    from carro.photos.phone_upload import start_phone_upload
+def _phone_upload_flow(
+    store: LocalStore,
+    order: RepairOrder,
+    *,
+    tag: str,
+    mode: str = "phone",
+) -> None:
+    from carro.photos.phone_upload import start_phone_upload, start_shortcut_upload
 
     remote = RemoteClient()
     if not remote.enabled:
@@ -702,15 +711,18 @@ def _phone_upload_flow(store: LocalStore, order: RepairOrder, *, tag: str) -> No
         except Exception as exc:
             CONSOLE.print(f"[yellow]Could not refresh RO:[/] {exc}")
 
-    start_phone_upload(order.id, tag=tag, on_done=refresh)
+    if mode == "shortcut":
+        start_shortcut_upload(order.id, tag=tag, on_done=refresh)
+    else:
+        start_phone_upload(order.id, tag=tag, on_done=refresh)
 
 
 def _menu_photos(store: LocalStore, ro_id: str) -> None:
     tag = Prompt.ask("Tag", choices=["intake", "diag", "other"], default="intake")
     mode = Prompt.ask(
         "Source",
-        choices=["phone", "add", "ingest"],
-        default="phone",
+        choices=["shortcut", "phone", "add", "ingest"],
+        default="shortcut",
     )
     args = argparse.Namespace(action=mode, paths=[], ro_id=ro_id, tag=tag, note=None)
     if mode == "add":
