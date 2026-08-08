@@ -485,6 +485,31 @@ def cmd_pdf(store: LocalStore, ro_id: str | None) -> None:
         raise ValueError(f"RO not found: {ro_id}")
     path = export_pdf(order)
     CONSOLE.print(f"[green]PDF[/] → {path}")
+    if sys.stdin.isatty() and Confirm.ask("Open in PDF viewer?", default=True):
+        _open_pdf(path)
+
+
+def _open_pdf(path: Path) -> None:
+    import shutil
+    import subprocess
+
+    viewers = ("zathura", "papers", "xdg-open")
+    for name in viewers:
+        exe = shutil.which(name)
+        if not exe:
+            continue
+        try:
+            subprocess.Popen(
+                [exe, str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            CONSOLE.print(f"[dim]Opened with {name}[/]")
+            return
+        except OSError:
+            continue
+    CONSOLE.print("[yellow]No PDF viewer found (install zathura).[/]")
 
 
 def cmd_sync(store: LocalStore) -> None:
