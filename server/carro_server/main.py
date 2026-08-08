@@ -74,12 +74,89 @@ def add_volume(body: dict, _: None = Depends(require_auth)):
 
 
 @app.get("/ros")
-def list_ros(_: None = Depends(require_auth)):
+def list_ros(
+    q: str = "",
+    make: str = "",
+    model: str = "",
+    year: str = "",
+    name: str = "",
+    vin: str = "",
+    status: str = "",
+    plate: str = "",
+    _: None = Depends(require_auth),
+):
     with _db() as conn:
         rows = conn.execute(
             "SELECT data FROM repair_orders ORDER BY updated DESC"
         ).fetchall()
-    return [json.loads(r["data"]) for r in rows]
+    orders = [json.loads(r["data"]) for r in rows]
+    return _filter_ros(
+        orders,
+        q=q,
+        make=make,
+        model=model,
+        year=year,
+        name=name,
+        vin=vin,
+        status=status,
+        plate=plate,
+    )
+
+
+def _filter_ros(
+    orders: list[dict],
+    *,
+    q: str = "",
+    make: str = "",
+    model: str = "",
+    year: str = "",
+    name: str = "",
+    vin: str = "",
+    status: str = "",
+    plate: str = "",
+) -> list[dict]:
+    q = q.strip().lower()
+    make, model, year = make.lower(), model.lower(), year.lower()
+    name, vin, status, plate = name.lower(), vin.lower(), status.lower(), plate.lower()
+    hits = []
+    for o in orders:
+        blob = " ".join(
+            str(o.get(k) or "")
+            for k in (
+                "id",
+                "first_name",
+                "last_name",
+                "year",
+                "make",
+                "model",
+                "vin",
+                "plate",
+                "phone",
+                "status",
+                "complaint",
+                "tech_notes",
+            )
+        ).lower()
+        if q and q not in blob:
+            continue
+        if make and make not in str(o.get("make") or "").lower():
+            continue
+        if model and model not in str(o.get("model") or "").lower():
+            continue
+        if year and year not in str(o.get("year") or "").lower():
+            continue
+        if vin and vin not in str(o.get("vin") or "").lower():
+            continue
+        if plate and plate not in str(o.get("plate") or "").lower():
+            continue
+        if status and status != str(o.get("status") or "").lower():
+            continue
+        if name:
+            cust = f"{o.get('first_name', '')} {o.get('last_name', '')}".lower()
+            if name not in cust:
+                continue
+        hits.append(o)
+    return hits
 
 
 @app.get("/ros/{ro_id}")

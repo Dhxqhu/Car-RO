@@ -48,6 +48,13 @@ class RemoteClient:
             r.raise_for_status()
             return r.json()
 
+    def search_ros(self, query: str = "", **filters: str) -> list[dict[str, Any]]:
+        params = {k: v for k, v in {"q": query, **filters}.items() if v}
+        with httpx.Client(timeout=30.0) as client:
+            r = client.get(f"{self.base}/ros", headers=self._headers(), params=params)
+            r.raise_for_status()
+            return r.json()
+
     def get_ro(self, ro_id: str) -> dict[str, Any]:
         with httpx.Client(timeout=30.0) as client:
             r = client.get(f"{self.base}/ros/{ro_id}", headers=self._headers())

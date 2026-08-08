@@ -88,6 +88,69 @@ class LocalStore:
             cur = conn.execute("DELETE FROM repair_orders WHERE id = ?", (ro_id,))
             return cur.rowcount > 0
 
+    def search(
+        self,
+        query: str = "",
+        *,
+        make: str = "",
+        model: str = "",
+        year: str = "",
+        name: str = "",
+        vin: str = "",
+        status: str = "",
+        plate: str = "",
+    ) -> list[RepairOrder]:
+        """Case-insensitive filter. Free-text `query` matches any of the common fields."""
+        q = query.strip().lower()
+        filters = {
+            "make": make.strip().lower(),
+            "model": model.strip().lower(),
+            "year": year.strip().lower(),
+            "name": name.strip().lower(),
+            "vin": vin.strip().lower(),
+            "status": status.strip().lower(),
+            "plate": plate.strip().lower(),
+        }
+        hits: list[RepairOrder] = []
+        for order in self.list_orders():
+            blob = " ".join(
+                [
+                    order.id,
+                    order.first_name,
+                    order.last_name,
+                    order.customer_label(),
+                    order.year,
+                    order.make,
+                    order.model,
+                    order.vin,
+                    order.plate,
+                    order.phone,
+                    order.status,
+                    order.complaint,
+                    order.tech_notes,
+                ]
+            ).lower()
+            if q and q not in blob:
+                continue
+            if filters["make"] and filters["make"] not in order.make.lower():
+                continue
+            if filters["model"] and filters["model"] not in order.model.lower():
+                continue
+            if filters["year"] and filters["year"] not in order.year.lower():
+                continue
+            if filters["vin"] and filters["vin"] not in order.vin.lower():
+                continue
+            if filters["plate"] and filters["plate"] not in order.plate.lower():
+                continue
+            if filters["status"] and filters["status"] != order.status.lower():
+                continue
+            if filters["name"]:
+                cust = f"{order.first_name} {order.last_name} {order.customer_label()}".lower()
+                if filters["name"] not in cust:
+                    continue
+            hits.append(order)
+        return hits
+
     def prune(self, keep: int | None = None) -> list[str]:
         """Drop oldest ROs beyond keep count. Returns removed ids."""
         cfg = load_config()

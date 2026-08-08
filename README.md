@@ -30,6 +30,9 @@ Complaint and tech notes are multi-line text areas.
 carro                  # interactive menu
 carro new --from-obd   # new RO, try autofill from obdscan / Saved Codes
 carro list
+carro search ford
+carro search --make ford --year 2023
+carro search --name smith --remote
 carro pull-obd RO-…
 carro photo add ./pic.jpg --id RO-… --tag intake
 carro photo ingest --id RO-… --tag diag   # from inbox_dir

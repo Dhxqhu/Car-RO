@@ -54,6 +54,19 @@ def main(argv: list[str] | None = None) -> None:
         "sync": lambda: cmd_sync(store),
         "config": lambda: cmd_config(args),
         "photo": lambda: cmd_photo(store, args),
+        "search": lambda: cmd_search(
+            store,
+            query=" ".join(args.query) if getattr(args, "query", None) else "",
+            make=getattr(args, "make", "") or "",
+            model=getattr(args, "model", "") or "",
+            year=getattr(args, "year", "") or "",
+            name=getattr(args, "name", "") or "",
+            vin=getattr(args, "vin", "") or "",
+            status=getattr(args, "status", "") or "",
+            plate=getattr(args, "plate", "") or "",
+            remote=getattr(args, "remote", False),
+            open_hit=getattr(args, "open", False),
+        ),
     }
     fn = handlers.get(args.cmd)
     if not fn:
@@ -91,6 +104,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("paths", nargs="*")
     s.add_argument("--id", dest="ro_id")
     s.add_argument("--tag", default="intake", choices=["intake", "diag", "other"])
+    s = sub.add_parser("search", help="Search ROs by make/model/year/name/VIN/…")
+    s.add_argument("query", nargs="*", help="Free-text query")
+    s.add_argument("--make", default="")
+    s.add_argument("--model", default="")
+    s.add_argument("--year", default="")
+    s.add_argument("--name", default="", help="Customer first/last name")
+    s.add_argument("--vin", default="")
+    s.add_argument("--plate", default="")
+    s.add_argument("--status", default="", choices=["", "open", "in_progress", "done"])
+    s.add_argument("--remote", action="store_true", help="Also search server store")
+    s.add_argument("--open", action="store_true", help="Open first hit in form")
     return p
 
 
@@ -101,12 +125,13 @@ def interactive_menu(store: LocalStore) -> None:
         table = Table(title="Car-RO", show_header=False, box=None, padding=(0, 2))
         table.add_row("[bold cyan]1[/]", "New repair order (form)")
         table.add_row("[bold cyan]2[/]", "List / open in form")
-        table.add_row("[bold cyan]3[/]", "Edit current (form)")
-        table.add_row("[bold cyan]4[/]", "Pull OBD / Saved Codes into current")
-        table.add_row("[bold cyan]5[/]", "Add photos (local / inbox)")
-        table.add_row("[bold cyan]6[/]", "Export customer PDF")
-        table.add_row("[bold cyan]7[/]", "Sync to server + prune local cache")
-        table.add_row("[bold cyan]8[/]", "Config")
+        table.add_row("[bold cyan]3[/]", "Search ROs (make/model/year/name/…)")
+        table.add_row("[bold cyan]4[/]", "Edit current (form)")
+        table.add_row("[bold cyan]5[/]", "Pull OBD / Saved Codes into current")
+        table.add_row("[bold cyan]6[/]", "Add photos (local / inbox)")
+        table.add_row("[bold cyan]7[/]", "Export customer PDF")
+        table.add_row("[bold cyan]8[/]", "Sync to server + prune local cache")
+        table.add_row("[bold cyan]9[/]", "Config")
         table.add_row("[bold cyan]q[/]", "Quit")
         CONSOLE.print(Panel(table, border_style="cyan"))
         if current:
@@ -126,20 +151,22 @@ def interactive_menu(store: LocalStore) -> None:
             elif choice == "2":
                 current = cmd_list(store, pick=True) or current
             elif choice == "3":
-                current = _need(current)
-                cmd_edit(store, current)
+                current = cmd_search_interactive(store) or current
             elif choice == "4":
                 current = _need(current)
-                cmd_pull_obd(store, current)
+                cmd_edit(store, current)
             elif choice == "5":
                 current = _need(current)
-                _menu_photos(store, current)
+                cmd_pull_obd(store, current)
             elif choice == "6":
                 current = _need(current)
-                cmd_pdf(store, current)
+                _menu_photos(store, current)
             elif choice == "7":
-                cmd_sync(store)
+                current = _need(current)
+                cmd_pdf(store, current)
             elif choice == "8":
+                cmd_sync(store)
+            elif choice == "9":
                 cmd_config(argparse.Namespace(action="show", key=None, value=None))
             else:
                 CONSOLE.print("[yellow]Unknown option[/]")
@@ -209,6 +236,130 @@ def _map_obd(raw: dict) -> dict:
         "make": raw.get("make", ""),
         "obd_snapshot": raw.get("obd_snapshot", ""),
     }
+
+
+def _print_ro_table(orders: list[RepairOrder], title: str = "Search results") -> None:
+    if not orders:
+        CONSOLE.print("[dim]No matches.[/]")
+        return
+    table = Table(title=title)
+    table.add_column("Id", style="cyan")
+    table.add_column("Customer")
+    table.add_column("Vehicle")
+    table.add_column("VIN")
+    table.add_column("Status")
+    table.add_column("Updated")
+    for o in orders:
+        table.add_row(
+            o.id,
+            o.customer_label(),
+            o.vehicle_label(),
+            o.vin or "—",
+            o.status,
+            o.updated,
+        )
+    CONSOLE.print(table)
+
+
+def cmd_search(
+    store: LocalStore,
+    *,
+    query: str = "",
+    make: str = "",
+    model: str = "",
+    year: str = "",
+    name: str = "",
+    vin: str = "",
+    status: str = "",
+    plate: str = "",
+    remote: bool = False,
+    open_hit: bool = False,
+) -> str | None:
+    local_hits = store.search(
+        query,
+        make=make,
+        model=model,
+        year=year,
+        name=name,
+        vin=vin,
+        status=status,
+        plate=plate,
+    )
+    _print_ro_table(local_hits, title=f"Local matches ({len(local_hits)})")
+
+    if remote:
+        client = RemoteClient()
+        if not client.enabled:
+            CONSOLE.print("[yellow]No server_url — skip remote search.[/]")
+        else:
+            try:
+                raw = client.search_ros(
+                    query,
+                    make=make,
+                    model=model,
+                    year=year,
+                    name=name,
+                    vin=vin,
+                    status=status,
+                    plate=plate,
+                )
+                remote_orders = [RepairOrder.from_dict(r) for r in raw]
+                # Dedupe against local ids for display
+                local_ids = {o.id for o in local_hits}
+                only_remote = [o for o in remote_orders if o.id not in local_ids]
+                _print_ro_table(
+                    only_remote,
+                    title=f"Server-only matches ({len(only_remote)})",
+                )
+                # Merge remote into local cache if opening
+                for o in remote_orders:
+                    if o.id not in local_ids:
+                        store.save(o)
+                local_hits = store.search(
+                    query,
+                    make=make,
+                    model=model,
+                    year=year,
+                    name=name,
+                    vin=vin,
+                    status=status,
+                    plate=plate,
+                )
+            except Exception as exc:
+                CONSOLE.print(f"[yellow]Remote search failed:[/] {exc}")
+
+    if not local_hits:
+        return None
+    if open_hit:
+        cmd_open(store, local_hits[0].id)
+        return local_hits[0].id
+    if sys.stdin.isatty() and Confirm.ask("Open one in the form?", default=True):
+        rid = Prompt.ask("RO id", default=local_hits[0].id).strip()
+        if rid:
+            cmd_open(store, rid)
+            return rid
+    return None
+
+
+def cmd_search_interactive(store: LocalStore) -> str | None:
+    CONSOLE.print("[cyan]Search[/] — free text and/or filters (Enter skips a filter)")
+    query = Prompt.ask("Free text (name, make, VIN, complaint…)", default="").strip()
+    make = Prompt.ask("Make", default="").strip()
+    model = Prompt.ask("Model", default="").strip()
+    year = Prompt.ask("Year", default="").strip()
+    name = Prompt.ask("Customer name", default="").strip()
+    vin = Prompt.ask("VIN", default="").strip()
+    remote = Confirm.ask("Include server store?", default=bool(RemoteClient().enabled))
+    return cmd_search(
+        store,
+        query=query,
+        make=make,
+        model=model,
+        year=year,
+        name=name,
+        vin=vin,
+        remote=remote,
+    )
 
 
 def cmd_list(store: LocalStore, pick: bool = False) -> str | None:
