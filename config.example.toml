@@ -1,7 +1,7 @@
 # Copy to ~/.config/carro/config.toml and edit.
-# Do not commit your real server URL, token, or hostnames.
+# Do not commit your real server URL, token, shop name, or hostnames.
 
-shop_name = "My Shop"
+shop_name = "(shop name here)"
 
 # Leave server_url empty for local-only mode.
 server_url = "http://YOUR_SERVER:8787"

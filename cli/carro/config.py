@@ -15,7 +15,7 @@ CONFIG_DIR = Path.home() / ".config" / "carro"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 DATA_DIR = Path.home() / ".local" / "share" / "carro"
 DEFAULTS: dict = {
-    "shop_name": "My Shop",
+    "shop_name": "(shop name here)",
     "server_url": "",
     "token": "",
     "local_keep": 20,
@@ -56,7 +56,7 @@ def save_config(cfg: dict) -> Path:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     # Minimal TOML writer without tomli_w dependency
     lines = [
-        f'shop_name = {_toml_str(cfg.get("shop_name", "My Shop"))}',
+        f'shop_name = {_toml_str(cfg.get("shop_name", "(shop name here)"))}',
         f'server_url = {_toml_str(cfg.get("server_url", ""))}',
         f'token = {_toml_str(cfg.get("token", ""))}',
         f'local_keep = {int(cfg.get("local_keep", 20))}',

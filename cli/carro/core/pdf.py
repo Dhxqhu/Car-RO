@@ -22,7 +22,7 @@ from carro.core.models import RepairOrder
 
 def export_pdf(order: RepairOrder, dest: Path | None = None) -> Path:
     cfg = load_config()
-    shop = cfg.get("shop_name") or "Shop"
+    shop = cfg.get("shop_name") or "(shop name here)"
     out_dir = DATA_DIR / "pdf"
     out_dir.mkdir(parents=True, exist_ok=True)
     dest = dest or (out_dir / f"{order.id}.pdf")
