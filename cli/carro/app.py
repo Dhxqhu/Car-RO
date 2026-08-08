@@ -239,27 +239,80 @@ def _map_obd(raw: dict) -> dict:
     }
 
 
-def _print_ro_table(orders: list[RepairOrder], title: str = "Search results") -> None:
+def _print_ro_table(
+    orders: list[RepairOrder],
+    title: str = "Search results",
+    *,
+    numbered: bool = False,
+) -> None:
     if not orders:
         CONSOLE.print("[dim]No matches.[/]")
         return
     table = Table(title=title)
+    if numbered:
+        table.add_column("#", style="bold cyan", justify="right")
     table.add_column("Id", style="cyan")
     table.add_column("Customer")
     table.add_column("Vehicle")
     table.add_column("VIN")
     table.add_column("Status")
     table.add_column("Updated")
-    for o in orders:
-        table.add_row(
+    for i, o in enumerate(orders, 1):
+        row = [
             o.id,
             o.customer_label(),
             o.vehicle_label(),
             o.vin or "—",
             o.status,
             o.updated,
-        )
+        ]
+        if numbered:
+            row.insert(0, str(i))
+        table.add_row(*row)
     CONSOLE.print(table)
+
+
+def _pick_ro_from_list(orders: list[RepairOrder]) -> str | None:
+    """Pick an RO: number when ≤10 hits, otherwise id (partial OK)."""
+    if not orders:
+        return None
+    if len(orders) == 1:
+        if Confirm.ask(f"Open [bold]{orders[0].id}[/]?", default=True):
+            return orders[0].id
+        return None
+
+    use_numbers = len(orders) <= 10
+    if use_numbers:
+        hint = f"1–{len(orders)} (or RO id)"
+        default = "1"
+    else:
+        hint = "RO id (partial OK)"
+        default = orders[0].id
+
+    raw = Prompt.ask(f"Open which? [{hint}]", default=default).strip()
+    if not raw:
+        return None
+
+    if use_numbers and raw.isdigit():
+        n = int(raw)
+        if 1 <= n <= len(orders):
+            return orders[n - 1].id
+        CONSOLE.print(f"[yellow]Pick 1–{len(orders)}.[/]")
+        return None
+
+    # Exact id
+    for o in orders:
+        if o.id.lower() == raw.lower():
+            return o.id
+    # Partial / suffix match among results
+    matches = [o for o in orders if raw.lower() in o.id.lower()]
+    if len(matches) == 1:
+        return matches[0].id
+    if len(matches) > 1:
+        CONSOLE.print("[yellow]Ambiguous — matches:[/] " + ", ".join(m.id for m in matches))
+        return None
+    CONSOLE.print(f"[yellow]Not in results:[/] {raw}")
+    return None
 
 
 def cmd_search(
@@ -286,7 +339,6 @@ def cmd_search(
         status=status,
         plate=plate,
     )
-    _print_ro_table(local_hits, title=f"Local matches ({len(local_hits)})")
 
     if remote:
         client = RemoteClient()
@@ -305,40 +357,40 @@ def cmd_search(
                     plate=plate,
                 )
                 remote_orders = [RepairOrder.from_dict(r) for r in raw]
-                # Dedupe against local ids for display
                 local_ids = {o.id for o in local_hits}
                 only_remote = [o for o in remote_orders if o.id not in local_ids]
-                _print_ro_table(
-                    only_remote,
-                    title=f"Server-only matches ({len(only_remote)})",
-                )
-                # Merge remote into local cache if opening
                 for o in remote_orders:
                     if o.id not in local_ids:
                         store.save(o)
-                local_hits = store.search(
-                    query,
-                    make=make,
-                    model=model,
-                    year=year,
-                    name=name,
-                    vin=vin,
-                    status=status,
-                    plate=plate,
-                )
+                # Rebuild combined list preserving search order preference:
+                # local hits first, then server-only
+                local_hits = local_hits + only_remote
             except Exception as exc:
                 CONSOLE.print(f"[yellow]Remote search failed:[/] {exc}")
 
     if not local_hits:
+        CONSOLE.print("[dim]No matches.[/]")
         return None
+
+    numbered = len(local_hits) <= 10
+    _print_ro_table(
+        local_hits,
+        title=f"Matches ({len(local_hits)})"
+        + (" — pick by #" if numbered else " — enter RO id"),
+        numbered=numbered,
+    )
+
     if open_hit:
         cmd_open(store, local_hits[0].id)
         return local_hits[0].id
-    if sys.stdin.isatty() and Confirm.ask("Open one in the form?", default=True):
-        rid = Prompt.ask("RO id", default=local_hits[0].id).strip()
-        if rid:
-            cmd_open(store, rid)
-            return rid
+
+    if not sys.stdin.isatty():
+        return None
+
+    rid = _pick_ro_from_list(local_hits)
+    if rid:
+        cmd_open(store, rid)
+        return rid
     return None
 
 
@@ -370,22 +422,19 @@ def cmd_list(store: LocalStore, pick: bool = False) -> str | None:
     if not orders:
         CONSOLE.print("[dim]No local repair orders yet.[/]")
         return None
-    table = Table(title="Repair orders")
-    table.add_column("Id", style="cyan")
-    table.add_column("Customer")
-    table.add_column("Vehicle")
-    table.add_column("Status")
-    table.add_column("Updated")
-    for o in orders:
-        table.add_row(o.id, o.customer_label(), o.vehicle_label(), o.status, o.updated)
-    CONSOLE.print(table)
+    numbered = pick and len(orders) <= 10
+    _print_ro_table(
+        orders,
+        title="Repair orders" + (" — pick by #" if numbered else ""),
+        numbered=numbered,
+    )
     if not pick:
         return None
-    rid = Prompt.ask("Open id (Enter=cancel)", default="").strip()
-    if not rid:
-        return None
-    cmd_open(store, rid)
-    return rid
+    rid = _pick_ro_from_list(orders)
+    if rid:
+        cmd_open(store, rid)
+        return rid
+    return None
 
 
 def cmd_open(store: LocalStore, ro_id: str) -> None:
