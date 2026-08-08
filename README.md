@@ -46,6 +46,14 @@ Car-RO is the habit-forming middle step: open a job, dump complaint + notes + OB
 
 Local-only works fine. The server is for people who want history that outlives a laptop SSD and who already mesh their devices with something like Tailscale.
 
+### Screenshots
+
+![Car-RO interactive menu](docs/screenshots/menu.png)
+
+![Car-RO search form](docs/screenshots/search.png)
+
+![Car-RO repair order form](docs/screenshots/ro-form.png)
+
 ### Example PDF output
 
 ![Sample Car-RO repair order PDF](docs/examples/sample-repair-order.png)
