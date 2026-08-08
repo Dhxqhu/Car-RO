@@ -12,4 +12,5 @@ config.local.toml
 .env
 data/
 inbox/
+photos/
 *.db
