@@ -64,7 +64,7 @@ Local-only works fine. The server is for people who want history that outlives a
 
 ## Quick install (workstation)
 
-Requirements: Linux (or similar), Python **3.10+**, `~/.local/bin` on your `PATH`.
+Requirements: Linux (or similar), Python **3.10+**. After install, `carro` lives in `~/.local/bin` — see [Terminal commands](#terminal-commands-carro-and-obdscan) if that directory is not already on your `PATH`.
 
 ```bash
 git clone https://github.com/Dhxqhu/Car-RO.git
@@ -100,6 +100,56 @@ ln -sfn "$(pwd)/scripts/carro" ~/.local/bin/carro
 test -f ~/.config/carro/config.toml || cp config.example.toml ~/.config/carro/config.toml
 carro config init   # optional: ensure token placeholder / dirs
 ```
+
+### Terminal commands (`carro` and `obdscan`)
+
+Install puts a launcher in `~/.local/bin`. That only works if that directory is on your `PATH`.
+
+**1. Symlink (Car-RO does this in `./scripts/install.sh`):**
+
+```bash
+mkdir -p ~/.local/bin
+# from your Car-RO checkout:
+ln -sfn "$(pwd)/scripts/carro" ~/.local/bin/carro
+```
+
+**2. Same idea for [obdscan](https://github.com/Dhxqhu/obdscan)** (after its venv + deps are set up):
+
+```bash
+cd /path/to/obdscan
+mkdir -p ~/.local/bin
+ln -sfn "$(pwd)/obdscan" ~/.local/bin/obdscan
+```
+
+**3. Put `~/.local/bin` on `PATH`** (once per shell config).
+
+bash (`~/.bashrc`):
+
+```bash
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
+```
+
+zsh (`~/.zshrc`):
+
+```bash
+typeset -U path
+path=("$HOME/.local/bin" $path)
+```
+
+Then reload (`source ~/.bashrc` / `source ~/.zshrc`) or open a new terminal.
+
+**4. Check:**
+
+```bash
+which carro obdscan
+carro --help          # or just: carro
+obdscan --help
+```
+
+If `which` finds nothing, `PATH` is still wrong. If the command runs but Python imports fail, finish the project’s venv install first (`./scripts/install.sh` for Car-RO; see obdscan’s README for its venv).
 
 ---
 
