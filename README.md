@@ -294,6 +294,20 @@ carro sync
 
 Systemd user unit template: `server/carro-server.service`.
 
+### Technician login (same shop, multiple PCs)
+
+Bay laptops share one shop Bearer token against **one** carro-server. Technicians pick their **name**, then enter a **4-digit login PIN**; that name is stamped on new ROs and shown on the customer PDF. The **admin PIN** is separate and must **not** match any login PIN.
+
+1. First `carro` menu start → setup wizard (admin PIN + first tech name/login PIN), or Config → **11 Technicians**
+2. Later starts: pick your name, then PIN (session lasts ~8 hours, or until logout)
+3. Menu **`t`** — switch technician / **change my PIN** / logout
+4. Adding a tech (admin): name → **generate PIN** (default) or enter one; PIN is shown once
+5. CLI: `carro tech login` · `carro tech logout` · `carro tech whoami` · `carro tech add`
+
+Roster file: `~/.config/carro/technicians.json` (PIN **hashes** only — never commit this). Admin PIN gates add/rename/reset/remove; a logged-in tech can change **their own** login PIN without admin.
+
+When `server_url` is set, the roster **pulls/pushes** on login, after admin edits, and on `carro sync`, so every bay PC shares the same tech list. This is **same-shop multi-PC**, not separate shops on one server.
+
 ### Adding another drive later
 
 ```bash
@@ -319,7 +333,7 @@ config.example.toml # copy to ~/.config/carro/config.toml
 
 ## Privacy
 
-This project is aimed at **your** lab and **your** bay notes. Keep real hostnames, LAN IPs, Tailscale names, tokens, customer PII dumps, and shop logos out of git. Operator config lives in `~/.config/carro/config.toml` only.
+This project is aimed at **your** lab and **your** bay notes. Keep real hostnames, LAN IPs, Tailscale names, tokens, customer PII dumps, shop logos, and `technicians.json` / session files out of git. Operator config lives in `~/.config/carro/` only.
 
 ---
 

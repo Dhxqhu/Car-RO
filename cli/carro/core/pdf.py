@@ -158,6 +158,9 @@ def export_pdf(order: RepairOrder, dest: Path | None = None) -> Path:
         Paragraph(f"Repair Order <b>{order.id}</b>", body),
         Paragraph(f"Status: {order.status} · Updated: {order.updated}", body),
     ]
+    tech = (order.technician_name or "").strip()
+    if tech:
+        left.append(Paragraph(f"Technician: {_xml_escape(tech)}", body))
     right: object = ""
     logo = _resolve_logo(cfg)
     if logo:
@@ -197,6 +200,7 @@ def export_pdf(order: RepairOrder, dest: Path | None = None) -> Path:
         ("VIN:", order.vin or "—"),
         ("Mileage:", order.mileage or "—"),
         ("Plate:", order.plate or "—"),
+        ("Technician:", order.technician_name or "—"),
     ]
     cust = [
         [Paragraph(_xml_escape(lab), label_style), Paragraph(_xml_escape(val), value_style)]

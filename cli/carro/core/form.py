@@ -107,6 +107,14 @@ class RepairOrderForm(CarroThemeApp[RepairOrder | None]):
             yield from self._row("VIN", Input(o.vin, id="vin", placeholder="17-char VIN"))
             yield from self._row("Mileage", Input(o.mileage, id="mileage", placeholder="Miles"))
             yield from self._row("Plate", Input(o.plate, id="plate", placeholder="Plate"))
+            yield from self._row(
+                "Technician",
+                Input(
+                    o.technician_name,
+                    id="technician_name",
+                    placeholder="From login (editable)",
+                ),
+            )
             with Horizontal(classes="row"):
                 yield Label("Status", classes="label")
                 yield Select(
@@ -148,6 +156,17 @@ class RepairOrderForm(CarroThemeApp[RepairOrder | None]):
         o.vin = self.query_one("#vin", Input).value.strip().upper()
         o.mileage = self.query_one("#mileage", Input).value.strip()
         o.plate = self.query_one("#plate", Input).value.strip()
+        new_tech_name = self.query_one("#technician_name", Input).value.strip()
+        if new_tech_name != (o.technician_name or ""):
+            o.technician_name = new_tech_name
+            # Name edited by hand — drop stable id unless still matching session
+            from carro.core import technicians as techmod
+
+            cur = techmod.current_technician()
+            if cur and new_tech_name == cur.name:
+                o.technician_id = cur.id
+            else:
+                o.technician_id = ""
         status = self.query_one("#status", Select).value
         if isinstance(status, str):
             o.status = status

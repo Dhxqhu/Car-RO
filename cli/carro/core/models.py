@@ -35,6 +35,8 @@ class RepairOrder:
     plate: str = ""
     complaint: str = ""
     tech_notes: str = ""
+    technician_name: str = ""
+    technician_id: str = ""
     status: str = "open"
     obd_snapshot: str = ""
     photos: list[dict[str, Any]] = field(default_factory=list)

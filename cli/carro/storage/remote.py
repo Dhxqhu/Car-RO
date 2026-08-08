@@ -136,3 +136,19 @@ class RemoteClient:
             r.raise_for_status()
             dest.write_bytes(r.content)
         return dest
+
+    def get_technicians(self) -> dict[str, Any]:
+        with httpx.Client(timeout=15.0) as client:
+            r = client.get(f"{self.base}/technicians", headers=self._headers())
+            r.raise_for_status()
+            return r.json()
+
+    def put_technicians(self, roster: dict[str, Any]) -> dict[str, Any]:
+        with httpx.Client(timeout=15.0) as client:
+            r = client.put(
+                f"{self.base}/technicians",
+                headers=self._headers(),
+                json=roster,
+            )
+            r.raise_for_status()
+            return r.json()

@@ -27,6 +27,19 @@ from carro.core.logo_setup import logo_status
 CONSOLE = Console()
 
 
+def _tech_status_summary() -> str:
+    try:
+        from carro.core import technicians as techmod
+
+        n = len(techmod.list_technicians())
+        cur = techmod.current_technician()
+        if cur:
+            return f"{n} tech(s) · logged in as {cur.name}"
+        return f"{n} tech(s)" if n else "(not set up)"
+    except Exception:
+        return "(unavailable)"
+
+
 def run_config_menu() -> None:
     """Numbered settings menu; loops until back."""
     ensure_dirs()
@@ -84,6 +97,11 @@ def run_config_menu() -> None:
             "Textual theme",
             str(cfg.get("textual_theme") or "ansi-dark"),
         )
+        table.add_row(
+            "[bold cyan]11[/]",
+            "Technicians",
+            _tech_status_summary(),
+        )
         table.add_row("[bold cyan]b[/]", "Back", "")
 
         CONSOLE.print()
@@ -128,6 +146,10 @@ def run_config_menu() -> None:
                     "textual_theme",
                     "Textual theme (e.g. ansi-dark, textual-dark, nord)",
                 )
+            elif choice == "11":
+                from carro.core.tech_ui import run_technicians_config_menu
+
+                run_technicians_config_menu()
             else:
                 CONSOLE.print("[yellow]Unknown option[/]")
         except (ValueError, OSError) as exc:

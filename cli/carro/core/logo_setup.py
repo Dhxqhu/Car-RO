@@ -21,19 +21,24 @@ BRANDING_LOGO = BRANDING_DIR / "logo.png"
 
 
 def logo_status(cfg: dict | None = None) -> tuple[str, Path | None]:
-    """Return (status label, resolved path if any)."""
+    """Return (status label, resolved path if any). Heal logo_path if file exists."""
     from carro.core.pdf import _resolve_logo
 
     cfg = cfg or load_config()
     path = _resolve_logo(cfg)
     if path:
+        # Keep config in sync when logo was installed before this menu existed
+        want = str(path)
+        if str(cfg.get("logo_path") or "") != want:
+            cfg["logo_path"] = want
+            save_config(cfg)
         return f"ready · {path}", path
     return "(none — PDF will show shop name only)", None
 
 
 def install_logo(source: Path, *, cfg: dict | None = None) -> Path:
     """
-    Copy an image into ~/.config/carro/logo.png (and Documents branding/)
+    Copy an image into ~/.config/carro/logo.* (and Documents branding/)
     and point config logo_path at the canonical file.
     """
     source = source.expanduser().resolve()
@@ -116,10 +121,28 @@ def find_logo_candidates(*, limit: int = 20) -> list[Path]:
     return [p for _, p in found[:limit]]
 
 
+def _confirm_replace(current: Path | None) -> bool:
+    if not current:
+        return True
+    CONSOLE.print(f"[yellow]You already have a logo:[/] {current}")
+    return Confirm.ask("Replace it with a new file?", default=False)
+
+
 def run_logo_setup() -> None:
-    """Guided logo installer for inexperienced users."""
+    """Guided logo installer — safe to open just to look; won’t overwrite unless you confirm."""
     cfg = load_config()
     status, current = logo_status(cfg)
+
+    tip = (
+        "[green]Logo is already set.[/] Press [bold]b[/] to leave it alone — "
+        "browsing this menu will not change your file unless you pick a replace option "
+        "and confirm."
+        if current
+        else (
+            "[dim]Easiest: save your logo into Downloads, then pick it from the list.\n"
+            f"Or put it here first: {BRANDING_LOGO}[/]"
+        )
+    )
 
     CONSOLE.print()
     CONSOLE.print(
@@ -128,26 +151,65 @@ def run_logo_setup() -> None:
             "This image appears [bold]top-right[/] on customer PDFs next to your shop name.\n"
             "Use a [bold]PNG[/] or [bold]JPG[/] (transparent PNG looks best).\n\n"
             f"Current: [cyan]{status}[/]\n\n"
-            "[dim]Easiest: save your logo into Downloads, then pick it from the list below.\n"
-            f"Or put it here first: {BRANDING_LOGO}[/]",
+            f"{tip}",
             title="Logo setup",
             border_style="cyan",
         )
     )
 
     table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_row("[bold cyan]1[/]", "Pick from Downloads / Desktop / Pictures")
-    table.add_row("[bold cyan]2[/]", "I already saved logo.png in Documents/Car-RO/branding/")
-    table.add_row("[bold cyan]3[/]", "Type a file path")
-    table.add_row("[bold cyan]4[/]", "Clear logo (shop name only)")
-    table.add_row("[bold cyan]b[/]", "Back")
+    if current:
+        table.add_row("[bold cyan]1[/]", "Keep current logo (I’m just looking)")
+        table.add_row("[bold cyan]2[/]", "Replace — pick from Downloads / Desktop / Pictures")
+        table.add_row("[bold cyan]3[/]", "Replace — use Documents/Car-RO/branding/logo.png")
+        table.add_row("[bold cyan]4[/]", "Replace — type a file path")
+        table.add_row("[bold cyan]5[/]", "Clear logo (shop name only)")
+        table.add_row("[bold cyan]b[/]", "Back")
+        default = "b"
+    else:
+        table.add_row("[bold cyan]1[/]", "Pick from Downloads / Desktop / Pictures")
+        table.add_row("[bold cyan]2[/]", "I already saved logo.png in Documents/Car-RO/branding/")
+        table.add_row("[bold cyan]3[/]", "Type a file path")
+        table.add_row("[bold cyan]4[/]", "Clear logo (shop name only)")
+        table.add_row("[bold cyan]b[/]", "Back")
+        default = "1"
     CONSOLE.print(table)
 
-    choice = Prompt.ask("Choice", default="1").strip().lower()
+    choice = Prompt.ask("Choice", default=default).strip().lower()
     if choice in {"b", "q", "back", ""}:
         return
 
     try:
+        if current:
+            if choice == "1":
+                CONSOLE.print(f"[dim]Keeping[/] {current}")
+                return
+            if choice == "2":
+                if _confirm_replace(current):
+                    _pick_from_candidates()
+                else:
+                    CONSOLE.print("[dim]Left your logo unchanged.[/]")
+            elif choice == "3":
+                if _confirm_replace(current):
+                    _from_branding_drop()
+                else:
+                    CONSOLE.print("[dim]Left your logo unchanged.[/]")
+            elif choice == "4":
+                if _confirm_replace(current):
+                    _from_typed_path()
+                else:
+                    CONSOLE.print("[dim]Left your logo unchanged.[/]")
+            elif choice == "5":
+                if Confirm.ask(
+                    "Really clear the logo? This deletes the installed copy.",
+                    default=False,
+                ):
+                    clear_logo()
+                    CONSOLE.print("[green]Logo cleared[/] — PDFs will use shop name only.")
+            else:
+                CONSOLE.print("[yellow]Unknown option[/]")
+            return
+
         if choice == "1":
             _pick_from_candidates()
         elif choice == "2":
@@ -178,7 +240,7 @@ def _pick_from_candidates() -> None:
         CONSOLE.print(
             "[yellow]No PNG/JPG found[/] in Downloads, Desktop, Pictures, or branding.\n"
             "Save your logo there (or into Documents/Car-RO/branding/), then try again.\n"
-            "Or choose option 3 and type the full path."
+            "Or choose type a file path."
         )
         return
     table = Table(title="Recent images")
@@ -188,8 +250,11 @@ def _pick_from_candidates() -> None:
     for i, p in enumerate(cands, 1):
         table.add_row(str(i), p.name, str(p.parent))
     CONSOLE.print(table)
-    raw = Prompt.ask(f"Pick 1–{len(cands)} (or empty to cancel)", default="1").strip()
+    raw = Prompt.ask(
+        f"Pick 1–{len(cands)} (or empty to cancel)", default=""
+    ).strip()
     if not raw:
+        CONSOLE.print("[dim]Cancelled — logo unchanged.[/]")
         return
     if not raw.isdigit() or not (1 <= int(raw) <= len(cands)):
         CONSOLE.print("[yellow]Cancelled[/]")
@@ -207,11 +272,15 @@ def _from_branding_drop() -> None:
             dest = install_logo(p)
             _finish(dest)
             return
-    extras = [
-        p
-        for p in BRANDING_DIR.iterdir()
-        if p.is_file() and p.suffix.lower() in LOGO_EXTS
-    ] if BRANDING_DIR.is_dir() else []
+    extras = (
+        [
+            p
+            for p in BRANDING_DIR.iterdir()
+            if p.is_file() and p.suffix.lower() in LOGO_EXTS
+        ]
+        if BRANDING_DIR.is_dir()
+        else []
+    )
     if extras:
         dest = install_logo(extras[0])
         _finish(dest)
@@ -220,12 +289,15 @@ def _from_branding_drop() -> None:
         f"[yellow]Nothing in[/] {BRANDING_DIR}\n"
         f"Copy your file there as [bold]logo.png[/], then choose this option again."
     )
-    CONSOLE.print(f"[dim]mkdir -p {BRANDING_DIR} && cp ~/Downloads/mylogo.png {BRANDING_LOGO}[/]")
+    CONSOLE.print(
+        f"[dim]mkdir -p {BRANDING_DIR} && cp ~/Downloads/mylogo.png {BRANDING_LOGO}[/]"
+    )
 
 
 def _from_typed_path() -> None:
-    raw = Prompt.ask("Full path to PNG/JPG").strip().strip('"').strip("'")
+    raw = Prompt.ask("Full path to PNG/JPG (empty cancels)").strip().strip('"').strip("'")
     if not raw:
+        CONSOLE.print("[dim]Cancelled — logo unchanged.[/]")
         return
     dest = install_logo(Path(raw))
     _finish(dest)

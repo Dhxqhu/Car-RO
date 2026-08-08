@@ -32,6 +32,14 @@ from carro.core.history_form import run_history_form
 from carro.core.models import RepairOrder
 from carro.core.pdf import export_pdf
 from carro.core.search_form import run_search_form
+from carro.core.tech_ui import (
+    ensure_technician_session,
+    prompt_login,
+    require_admin,
+    switch_technician,
+    sync_roster_with_server,
+)
+from carro.core import technicians as techmod
 from carro.obd.provider import pull_vehicle_fields
 from carro.photos.base import get_provider
 from carro.photos.providers.local import LocalPhotoIngress
@@ -59,6 +67,7 @@ def main(argv: list[str] | None = None) -> None:
         "sync": lambda: cmd_sync(store),
         "logo": lambda: run_logo_setup(),
         "config": lambda: cmd_config(args),
+        "tech": lambda: cmd_tech(args),
         "photo": lambda: cmd_photo(store, args),
         "history": lambda: cmd_history(
             store,
@@ -108,6 +117,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("id", nargs="?")
     sub.add_parser("sync", help="Push local ROs to server + prune cache")
     sub.add_parser("logo", help="Set shop logo for PDFs (easy wizard)")
+    s = sub.add_parser("tech", help="Technician login / logout / whoami / add")
+    s.add_argument(
+        "tech_action",
+        nargs="?",
+        default="whoami",
+        choices=["login", "logout", "whoami", "add"],
+        help="login | logout | whoami | add",
+    )
+    s.add_argument("--name", default="", help="Name for tech add")
     s = sub.add_parser("config", help="Show or set config")
     s.add_argument(
         "action",
@@ -154,10 +172,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def interactive_menu(store: LocalStore) -> None:
+    while True:
+        try:
+            ensure_technician_session()
+            break
+        except RuntimeError as exc:
+            CONSOLE.print(f"[red]{exc}[/]")
+            if not Confirm.ask("Try login again?", default=True):
+                CONSOLE.print("[dim]Continuing without a logged-in technician.[/]")
+                break
     current: str | None = None
     while True:
         CONSOLE.print()
-        table = Table(title="Car-RO", show_header=False, box=None, padding=(0, 2))
+        tech = techmod.current_technician()
+        title = "Car-RO"
+        if tech:
+            title = f"Car-RO · {tech.name}"
+        table = Table(title=title, show_header=False, box=None, padding=(0, 2))
         table.add_row("[bold cyan]1[/]", "New repair order (form)")
         table.add_row("[bold cyan]2[/]", "List / open in form")
         table.add_row("[bold cyan]3[/]", "Search ROs (form + server checkbox)")
@@ -168,9 +199,11 @@ def interactive_menu(store: LocalStore) -> None:
         table.add_row("[bold cyan]8[/]", "Add photos (file / inbox / iPhone / Shortcut)")
         table.add_row("[bold cyan]9[/]", "Export customer PDF")
         table.add_row("[bold cyan]s[/]", "Sync to server + prune local cache")
+        table.add_row("[bold cyan]t[/]", "Technician (switch / add techs / logout)")
         table.add_row("[bold cyan]c[/]", "Config (edit settings)")
         table.add_row("[bold cyan]q[/]", "Quit")
-        CONSOLE.print(Panel(table, border_style="cyan"))
+        subtitle = f"Logged in as {tech.name}" if tech else "Not logged in"
+        CONSOLE.print(Panel(table, border_style="cyan", subtitle=subtitle))
         if current:
             order = store.get(current)
             if order:
@@ -210,6 +243,8 @@ def interactive_menu(store: LocalStore) -> None:
                 cmd_pdf(store, current)
             elif choice == "s":
                 cmd_sync(store)
+            elif choice == "t":
+                switch_technician()
             elif choice == "c":
                 run_config_menu()
             else:
@@ -243,8 +278,31 @@ def _apply_obd_to_order(order: RepairOrder, *, ask: bool = False) -> RepairOrder
     return order
 
 
+def _maybe_stamp_order(order: RepairOrder) -> RepairOrder:
+    """Stamp current tech onto RO; ask before overwriting a different tech."""
+    tech = techmod.current_technician()
+    if not tech:
+        return order
+    has_existing = bool((order.technician_id or "").strip() or (order.technician_name or "").strip())
+    if has_existing:
+        same = order.technician_id == tech.id or (
+            not order.technician_id and order.technician_name == tech.name
+        )
+        if same:
+            return techmod.stamp_order(order, overwrite=True)
+        if not Confirm.ask(
+            f"RO already stamped as [cyan]{order.technician_name or order.technician_id}[/]. "
+            f"Replace with [cyan]{tech.name}[/]?",
+            default=False,
+        ):
+            return order
+        return techmod.stamp_order(order, overwrite=True)
+    return techmod.stamp_order(order)
+
+
 def _open_ro_form(store: LocalStore, order: RepairOrder) -> RepairOrder | None:
     """Full-screen navigable form; save persists + syncs."""
+    order = _maybe_stamp_order(order)
 
     def on_pull(o: RepairOrder) -> RepairOrder:
         return _apply_obd_to_order(o)
@@ -268,6 +326,8 @@ def cmd_new(store: LocalStore, from_obd: bool = False) -> RepairOrder:
         except Exception:
             CONSOLE.print("[yellow]OBD autofill unavailable — blank form.[/]")
     order = store.create(**{k: v for k, v in fields.items() if v})
+    order = _maybe_stamp_order(order)
+    store.save(order)
     if order.vin:
         _offer_history_after_vin(store, order.vin, exclude_id=order.id)
     CONSOLE.print(f"[cyan]Opening form[/] {order.id}")
@@ -299,6 +359,7 @@ def _print_ro_table(
     table.add_column("Id", style="cyan")
     table.add_column("Customer")
     table.add_column("Vehicle")
+    table.add_column("Tech")
     table.add_column("VIN")
     table.add_column("Status")
     table.add_column("Updated")
@@ -307,6 +368,7 @@ def _print_ro_table(
             o.id,
             o.customer_label(),
             o.vehicle_label(),
+            (o.technician_name or "—")[:12],
             o.vin or "—",
             o.status,
             o.updated,
@@ -780,6 +842,13 @@ def cmd_sync(store: LocalStore) -> None:
         except Exception as exc:
             CONSOLE.print(f"[red]Server unreachable:[/] {exc}")
             return
+        roster_status = sync_roster_with_server()
+        if roster_status == "pulled":
+            CONSOLE.print("[dim]Technician roster:[/] pulled from server")
+        elif roster_status == "pushed":
+            CONSOLE.print("[dim]Technician roster:[/] pushed to server")
+        elif roster_status.startswith("error:"):
+            CONSOLE.print(f"[yellow]Technician roster sync skipped:[/] {roster_status[7:]}")
         for order in store.list_orders():
             remote.upsert_ro(order)
             CONSOLE.print(f"  pushed {order.id}")
@@ -794,6 +863,49 @@ def cmd_sync(store: LocalStore) -> None:
             f"[dim]Local cache within limits "
             f"(keep {keep_n} ROs, {photo_n} with photos).[/]"
         )
+
+
+def cmd_tech(args: argparse.Namespace) -> None:
+    action = getattr(args, "tech_action", None) or "whoami"
+    if action == "login":
+        prompt_login()
+        return
+    if action == "logout":
+        techmod.clear_session()
+        CONSOLE.print("[dim]Logged out.[/]")
+        return
+    if action == "whoami":
+        tech = techmod.current_technician()
+        if tech:
+            CONSOLE.print(f"[cyan]{tech.name}[/] ({tech.id})")
+        else:
+            CONSOLE.print("[dim]Not logged in.[/] Use: carro tech login")
+        return
+    if action == "add":
+        if not techmod.has_technicians() and not techmod.load_roster().get("admin_pin_hash"):
+            from carro.core.tech_ui import run_first_tech_setup
+
+            run_first_tech_setup()
+            return
+        if not require_admin():
+            raise ValueError("Admin PIN required")
+        from carro.core.tech_ui import _add_tech
+
+        # Reuse interactive add (generate PIN by default)
+        name = (getattr(args, "name", "") or "").strip()
+        if name:
+            # Pre-seed: monkey via Prompt defaults is awkward — set via add helpers
+            pin = techmod.generate_pin()
+            tech = techmod.add_technician(name, pin)
+            from carro.core.tech_ui import _show_pin_once, _try_push_roster
+
+            _try_push_roster()
+            _show_pin_once(tech.name, pin)
+            CONSOLE.print(f"[green]Added[/] {tech.name} ({tech.id})")
+        else:
+            _add_tech()
+        return
+    raise ValueError(f"Unknown tech action: {action}")
 
 
 def cmd_config(args: argparse.Namespace) -> None:

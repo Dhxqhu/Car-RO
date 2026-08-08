@@ -47,6 +47,46 @@ def require_auth(authorization: str | None = Header(default=None)) -> None:
 app = FastAPI(title="carro-server", version="0.1.0")
 
 
+def _technicians_path() -> Path:
+    return VOLUMES.root / "technicians.json"
+
+
+def _load_technicians() -> dict:
+    path = _technicians_path()
+    if not path.is_file():
+        return {
+            "version": 1,
+            "updated": "",
+            "admin_pin_hash": "",
+            "technicians": [],
+        }
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "version": 1,
+            "updated": "",
+            "admin_pin_hash": "",
+            "technicians": [],
+        }
+    if not isinstance(raw, dict):
+        return {
+            "version": 1,
+            "updated": "",
+            "admin_pin_hash": "",
+            "technicians": [],
+        }
+    techs = raw.get("technicians")
+    if not isinstance(techs, list):
+        techs = []
+    return {
+        "version": 1,
+        "updated": str(raw.get("updated") or ""),
+        "admin_pin_hash": str(raw.get("admin_pin_hash") or ""),
+        "technicians": [t for t in techs if isinstance(t, dict)],
+    }
+
+
 @app.get("/health")
 def health(_: None = Depends(require_auth)):
     vols = {
@@ -58,6 +98,34 @@ def health(_: None = Depends(require_auth)):
         "default_volume": VOLUMES.default_name,
         "volumes": vols,
     }
+
+
+@app.get("/technicians")
+def get_technicians(_: None = Depends(require_auth)):
+    return _load_technicians()
+
+
+@app.put("/technicians")
+def put_technicians(body: dict, _: None = Depends(require_auth)):
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    techs = body.get("technicians")
+    if techs is not None and not isinstance(techs, list):
+        raise HTTPException(400, "technicians must be a list")
+    payload = {
+        "version": 1,
+        "updated": str(body.get("updated") or ""),
+        "admin_pin_hash": str(body.get("admin_pin_hash") or ""),
+        "technicians": [t for t in (techs or []) if isinstance(t, dict)],
+    }
+    if not payload["updated"]:
+        from datetime import datetime
+
+        payload["updated"] = datetime.now().isoformat(timespec="seconds")
+    path = _technicians_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return {"ok": True, **payload}
 
 
 @app.get("/volumes")
