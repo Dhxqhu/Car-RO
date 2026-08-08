@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+*.pdf
+.DS_Store
+# Never commit local operator config or data
+config.local.toml
+.env
+data/
+inbox/
+*.db

@@ -1,0 +1,13 @@
+[Unit]
+Description=Car-RO repair order storage server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/carro-server
+EnvironmentFile=-%h/.config/carro-server.env
+ExecStart=%h/carro-server/.venv/bin/uvicorn carro_server.main:app --host 0.0.0.0 --port 8787
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

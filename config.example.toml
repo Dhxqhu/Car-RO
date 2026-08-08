@@ -1,0 +1,16 @@
+# Copy to ~/.config/carro/config.toml and edit.
+# Do not commit your real server URL, token, or hostnames.
+
+shop_name = "My Shop"
+
+# Leave server_url empty for local-only mode.
+server_url = "http://YOUR_SERVER:8787"
+token = "generate-a-long-random-token"
+
+# How many recent repair orders to keep on this machine
+local_keep = 20
+local_photo_keep = 20
+
+[photos]
+provider = "local"  # local | web_qr (optional)
+inbox_dir = "~/Documents/Car-RO/inbox"

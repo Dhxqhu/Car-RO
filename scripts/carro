@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Launcher for Car-RO from a git checkout.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export PYTHONPATH="${ROOT}/cli:${ROOT}/server${PYTHONPATH:+:$PYTHONPATH}"
+if [[ -x "${ROOT}/.venv/bin/python" ]]; then
+  exec "${ROOT}/.venv/bin/python" -m carro "$@"
+fi
+exec python3 -m carro "$@"
