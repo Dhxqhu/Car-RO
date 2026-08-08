@@ -103,6 +103,8 @@ New photos can target a volume; metadata records which volume holds each file.
 
 **From this PC:** `carro photo add ~/pic.jpg --id RO-…` or drop files in `inbox_dir` and `carro photo ingest`.
 
+Photo files live in **`~/Documents/Car-RO/photos/<RO-id>/`** (and on the server volume). The empty `share/` folder in the repo is not used for uploads.
+
 ## Layout
 
 ```

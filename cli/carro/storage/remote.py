@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -101,3 +102,28 @@ class RemoteClient:
             )
             r.raise_for_status()
             return r.json()
+
+    def download_photo(
+        self,
+        ro_id: str,
+        relpath: str,
+        dest: Path,
+        *,
+        volume: str | None = None,
+    ) -> Path:
+        from pathlib import Path as P
+
+        dest = P(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        params = {}
+        if volume:
+            params["volume"] = volume
+        with httpx.Client(timeout=120.0) as client:
+            r = client.get(
+                f"{self.base}/ros/{ro_id}/photos/{P(relpath).name}",
+                headers=self._headers(),
+                params=params,
+            )
+            r.raise_for_status()
+            dest.write_bytes(r.content)
+        return dest

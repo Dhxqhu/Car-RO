@@ -629,19 +629,24 @@ def _phone_upload_flow(store: LocalStore, order: RepairOrder, *, tag: str) -> No
         raise RuntimeError(f"Could not sync RO to server before phone upload: {exc}") from exc
 
     def refresh() -> None:
+        from carro.storage.photos import ensure_local_photos
+
         try:
             remote_data = remote.get_ro(order.id)
             updated = RepairOrder.from_dict(remote_data)
-            # Keep local fields; merge photo list from server
             local = store.get(order.id) or order
             seen = {p.get("id") for p in local.photos}
             for p in updated.photos:
                 if p.get("id") not in seen:
                     local.photos.append(p)
+            # Prefer full server photo list if richer
+            if len(updated.photos) > len(local.photos):
+                local.photos = list(updated.photos)
             store.save(local)
+            paths = ensure_local_photos(local)
             CONSOLE.print(
                 f"[green]RO now has {len(local.photos)} photo(s)[/] "
-                f"(synced from server)"
+                f"· {len(paths)} file(s) in ~/Documents/Car-RO/photos/{local.id}/"
             )
         except Exception as exc:
             CONSOLE.print(f"[yellow]Could not refresh RO:[/] {exc}")

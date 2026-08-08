@@ -14,3 +14,4 @@ local_photo_keep = 20
 [photos]
 provider = "local"  # local | web_qr (optional)
 inbox_dir = "~/Documents/Car-RO/inbox"
+dir = "~/Documents/Car-RO/photos"

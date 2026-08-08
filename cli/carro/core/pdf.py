@@ -16,8 +16,9 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from carro.config import DATA_DIR, load_config
+from carro.config import DATA_DIR, load_config, photos_dir
 from carro.core.models import RepairOrder
+from carro.storage.photos import ensure_local_photos
 
 
 def export_pdf(order: RepairOrder, dest: Path | None = None) -> Path:
@@ -93,11 +94,12 @@ def export_pdf(order: RepairOrder, dest: Path | None = None) -> Path:
         )
 
     photo_paths = []
+    ensure_local_photos(order)
     for meta in order.photos:
         rel = meta.get("relpath") or meta.get("filename")
         if not rel:
             continue
-        p = DATA_DIR / "photos" / order.id / Path(rel).name
+        p = photos_dir() / order.id / Path(rel).name
         if p.is_file():
             photo_paths.append((meta.get("tag", "other"), p))
 
@@ -118,6 +120,15 @@ def export_pdf(order: RepairOrder, dest: Path | None = None) -> Path:
             while len(row) < 2:
                 row.append("")
             story.append(Table([row], colWidths=[3.2 * inch, 3.2 * inch]))
+    elif order.photos:
+        story.append(Paragraph("Photos", h2))
+        story.append(
+            Paragraph(
+                f"{len(order.photos)} on file but image bytes were not available locally "
+                "(try sync / phone refresh).",
+                body,
+            )
+        )
 
     story.append(Spacer(1, 0.3 * inch))
     story.append(

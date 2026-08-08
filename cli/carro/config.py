@@ -14,6 +14,8 @@ except ImportError:
 CONFIG_DIR = Path.home() / ".config" / "carro"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 DATA_DIR = Path.home() / ".local" / "share" / "carro"
+# Human-visible photo library (not the empty repo share/ stub)
+PHOTOS_DIR = Path.home() / "Documents" / "Car-RO" / "photos"
 DEFAULTS: dict = {
     "shop_name": "(shop name here)",
     "server_url": "",
@@ -23,6 +25,7 @@ DEFAULTS: dict = {
     "photos": {
         "provider": "local",
         "inbox_dir": str(Path.home() / "Documents" / "Car-RO" / "inbox"),
+        "dir": str(PHOTOS_DIR),
     },
 }
 
@@ -44,17 +47,24 @@ def load_config() -> dict:
             raw = tomllib.load(fh)
         if isinstance(raw, dict):
             cfg = _deep_merge(cfg, raw)
-    # Expand inbox path
-    inbox = cfg.get("photos", {}).get("inbox_dir", "")
-    if inbox:
-        cfg["photos"]["inbox_dir"] = str(Path(inbox).expanduser())
+    photos = cfg.setdefault("photos", {})
+    for key in ("inbox_dir", "dir"):
+        if photos.get(key):
+            photos[key] = str(Path(photos[key]).expanduser())
+    if not photos.get("dir"):
+        photos["dir"] = str(PHOTOS_DIR)
     cfg["server_url"] = str(cfg.get("server_url") or "").rstrip("/")
     return cfg
 
 
+def photos_dir(cfg: dict | None = None) -> Path:
+    cfg = cfg or load_config()
+    return Path((cfg.get("photos") or {}).get("dir") or PHOTOS_DIR).expanduser()
+
+
 def save_config(cfg: dict) -> Path:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    # Minimal TOML writer without tomli_w dependency
+    photos = cfg.get("photos") or {}
     lines = [
         f'shop_name = {_toml_str(cfg.get("shop_name", "(shop name here)"))}',
         f'server_url = {_toml_str(cfg.get("server_url", ""))}',
@@ -63,8 +73,9 @@ def save_config(cfg: dict) -> Path:
         f'local_photo_keep = {int(cfg.get("local_photo_keep", 20))}',
         "",
         "[photos]",
-        f'provider = {_toml_str((cfg.get("photos") or {}).get("provider", "local"))}',
-        f'inbox_dir = {_toml_str((cfg.get("photos") or {}).get("inbox_dir", ""))}',
+        f'provider = {_toml_str(photos.get("provider", "local"))}',
+        f'inbox_dir = {_toml_str(photos.get("inbox_dir", ""))}',
+        f'dir = {_toml_str(photos.get("dir", str(PHOTOS_DIR)))}',
         "",
     ]
     CONFIG_FILE.write_text("\n".join(lines), encoding="utf-8")
@@ -79,7 +90,7 @@ def _toml_str(value: object) -> str:
 def ensure_dirs(cfg: dict | None = None) -> None:
     cfg = cfg or load_config()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    (DATA_DIR / "photos").mkdir(parents=True, exist_ok=True)
     (DATA_DIR / "pdf").mkdir(parents=True, exist_ok=True)
+    photos_dir(cfg).mkdir(parents=True, exist_ok=True)
     inbox = Path((cfg.get("photos") or {}).get("inbox_dir") or DATA_DIR / "inbox")
     inbox.mkdir(parents=True, exist_ok=True)

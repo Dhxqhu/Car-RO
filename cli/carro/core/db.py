@@ -6,7 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from carro.config import DATA_DIR, load_config
+from carro.config import DATA_DIR, load_config, photos_dir
 from carro.core.models import RepairOrder, new_ro_id, now_iso
 
 
@@ -162,7 +162,7 @@ class LocalStore:
         for order in orders[keep:]:
             self.delete(order.id)
             # photo files
-            photo_dir = DATA_DIR / "photos" / order.id
+            photo_dir = photos_dir() / order.id
             if photo_dir.is_dir():
                 for p in photo_dir.iterdir():
                     p.unlink(missing_ok=True)
