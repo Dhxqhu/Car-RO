@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
-# Launcher for Car-RO from a git checkout.
+# Launcher for Car-RO from a git checkout (works when symlinked into ~/.local/bin).
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SOURCE="${BASH_SOURCE[0]:-$0}"
+while [[ -L "$SOURCE" ]]; do
+  SOURCE="$(readlink -f "$SOURCE")"
+done
+ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd)"
 export PYTHONPATH="${ROOT}/cli:${ROOT}/server${PYTHONPATH:+:$PYTHONPATH}"
-if [[ -x "${ROOT}/.venv/bin/python" ]]; then
-  exec "${ROOT}/.venv/bin/python" -m carro "$@"
+for candidate in "${ROOT}/.venv/bin/python3" "${ROOT}/.venv/bin/python"; do
+  if [[ -x "$candidate" ]]; then
+    exec "$candidate" -m carro "$@"
+  fi
+done
+if [[ -x /usr/bin/python3 ]]; then
+  exec /usr/bin/python3 -m carro "$@"
 fi
 exec python3 -m carro "$@"
