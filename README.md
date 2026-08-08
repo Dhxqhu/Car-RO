@@ -4,6 +4,8 @@
 
 Car-RO is a terminal app for documenting diagnostic and repair work — the stuff you wish you’d written down *while you were still under the hood*. It is **not** a DMS, not billing, and not meant to replace your shop’s official RO system. It is a personal / bay-side knowledge base that happens to spit out a clean PDF a service advisor can read.
 
+A gui is in progress for windows as i want to provide a proper gui tool for those just looking to take advantage of the cheap elm 327 devices, but this application was designed to be used in cli as it is my personal preference and i think it give a nice cyberpunk look that I think others with similar taste may find very tasteful in design. I plan to make a very professional looking gui though for those with a more modern taste. 
+
 Built for mechanics and techs who:
 
 - Have a **Linux laptop** (or similar) and are willing to open a terminal — you do **not** need to be a GitHub expert
