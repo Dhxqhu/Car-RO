@@ -46,6 +46,12 @@ Car-RO is the habit-forming middle step: open a job, dump complaint + notes + OB
 
 Local-only works fine. The server is for people who want history that outlives a laptop SSD and who already mesh their devices with something like Tailscale.
 
+### Example PDF output
+
+![Sample Car-RO repair order PDF](docs/examples/sample-repair-order.png)
+
+*Example only.* Shop name and logo are placeholders to show how branding appears on a finished PDF — not a claim about any particular workplace. Customer / VIN / plate values in the sample are fictional demo data.
+
 ---
 
 ## Quick install (workstation)
