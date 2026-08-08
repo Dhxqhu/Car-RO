@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Callable
 
 from textual import on
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import (
@@ -20,11 +20,12 @@ from textual.widgets import (
 )
 
 from carro.core.models import RepairOrder
+from carro.core.textual_theme import CarroThemeApp
 
 STATUS_OPTIONS = [("open", "open"), ("in_progress", "in_progress"), ("done", "done")]
 
 
-class RepairOrderForm(App[RepairOrder | None]):
+class RepairOrderForm(CarroThemeApp[RepairOrder | None]):
     """nano/vim-style form: Tab between fields, Ctrl+S save, Ctrl+Q quit."""
 
     CSS = """

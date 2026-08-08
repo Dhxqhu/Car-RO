@@ -5,10 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from textual import on
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Button, Footer, Header, Input, Label, Static
+
+from carro.core.textual_theme import CarroThemeApp
 
 
 @dataclass
@@ -18,7 +20,7 @@ class HistoryQuery:
     cancelled: bool = False
 
 
-class HistoryForm(App[HistoryQuery]):
+class HistoryForm(CarroThemeApp[HistoryQuery]):
     """VIN-first history lookup; name is fallback when VIN is empty or yields nothing."""
 
     CSS = """
@@ -94,6 +96,7 @@ class HistoryForm(App[HistoryQuery]):
             yield widget
 
     def on_mount(self) -> None:
+        super().on_mount()
         self.query_one("#vin", Input).focus()
 
     def _read(self) -> HistoryQuery:

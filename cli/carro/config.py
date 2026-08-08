@@ -30,6 +30,8 @@ DEFAULTS: dict = {
     # "auto" sizes from free disk on the photos volume; or an int count
     "local_keep": "auto",
     "local_photo_keep": "auto",
+    # Textual TUI theme (search / history / RO forms). Ctrl+P changes persist here.
+    "textual_theme": "ansi-dark",
     "photos": {
         "provider": "local",
         "inbox_dir": str(Path.home() / "Documents" / "Car-RO" / "inbox"),
@@ -220,6 +222,7 @@ def save_config(cfg: dict) -> Path:
         f'token = {_toml_str(cfg.get("token", ""))}',
         f'local_keep = {_keep_toml(cfg.get("local_keep", "auto"))}',
         f'local_photo_keep = {_keep_toml(cfg.get("local_photo_keep", "auto"))}',
+        f'textual_theme = {_toml_str(cfg.get("textual_theme", "ansi-dark"))}',
         "",
         "[photos]",
         f'provider = {_toml_str(photos.get("provider", "local"))}',

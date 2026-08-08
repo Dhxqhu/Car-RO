@@ -15,6 +15,9 @@ local_keep = "auto"
 # Of those, how many newest also keep photo files locally ("auto" / "match" / int).
 local_photo_keep = "auto"
 
+# Textual TUI theme for search / history / RO forms (Ctrl+P changes are saved here).
+textual_theme = "ansi-dark"
+
 [photos]
 provider = "local"  # local | web_qr (optional)
 inbox_dir = "~/Documents/Car-RO/inbox"

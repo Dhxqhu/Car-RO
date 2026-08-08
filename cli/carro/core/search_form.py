@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from textual import on
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import (
@@ -18,6 +18,8 @@ from textual.widgets import (
     Select,
     Static,
 )
+
+from carro.core.textual_theme import CarroThemeApp
 
 
 @dataclass
@@ -42,7 +44,7 @@ STATUS_OPTIONS = [
 ]
 
 
-class SearchForm(App[SearchQuery]):
+class SearchForm(CarroThemeApp[SearchQuery]):
     """Tab between search fields; checkbox for server/extended search."""
 
     CSS = """

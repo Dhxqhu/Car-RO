@@ -78,6 +78,11 @@ def run_config_menu() -> None:
             "Apply disk recommendation",
             recommend_pair(),
         )
+        table.add_row(
+            "[bold cyan]10[/]",
+            "Textual theme",
+            str(cfg.get("textual_theme") or "ansi-dark"),
+        )
         table.add_row("[bold cyan]b[/]", "Back", "")
 
         CONSOLE.print()
@@ -114,6 +119,12 @@ def run_config_menu() -> None:
                 _edit_photos_path(cfg, "inbox_dir", "Inbox directory")
             elif choice == "9":
                 _apply_disk_recommendation(cfg)
+            elif choice == "10":
+                _edit_str(
+                    cfg,
+                    "textual_theme",
+                    "Textual theme (e.g. ansi-dark, textual-dark, nord)",
+                )
             else:
                 CONSOLE.print("[yellow]Unknown option[/]")
         except (ValueError, OSError) as exc:
