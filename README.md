@@ -20,7 +20,7 @@ Built for mechanics and techs who:
 | **obdscan** (CLI OBD companion) | [Releases](https://github.com/Dhxqhu/obdscan/releases/latest) · [repo](https://github.com/Dhxqhu/obdscan) |
 | **GODIAG GT327** (ELM327 Bluetooth + DoIP/ENET adapter) | [Amazon](https://www.amazon.com/dp/B0DKXPRLPP) · [Godiag product page](https://www.godiagshop.eu/wholesale/godiag-gt327.html) |
 
-Car-RO can pull VIN / vehicle / DTC context from **obdscan** (and its Saved Codes exports) into a repair order. **obdscan** is written around cheap ELM327-class dongles such as the **GT327**, including the adapter’s DoIP ethernet mode for enhanced OEM packs.
+Car-RO can pull VIN / vehicle / DTC context from **obdscan** (and its Saved Codes exports) into a repair order. **obdscan** exists because Linux software for cheap ELM327 / GT327 adapters is scarce — the usual apt GUI (`scantool`) is ancient, and almost nothing uses the GT327’s DoIP ethernet mode. Car-RO is the write-up side of that same bay workflow.
 
 ---
 
