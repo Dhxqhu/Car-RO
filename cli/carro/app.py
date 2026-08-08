@@ -101,7 +101,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("key", nargs="?")
     s.add_argument("value", nargs="?")
     s = sub.add_parser("photo", help="Attach photos")
-    s.add_argument("action", choices=["add", "ingest", "list"], nargs="?", default="list")
+    s.add_argument(
+        "action",
+        choices=["add", "ingest", "list", "phone"],
+        nargs="?",
+        default="list",
+    )
     s.add_argument("paths", nargs="*")
     s.add_argument("--id", dest="ro_id")
     s.add_argument("--tag", default="intake", choices=["intake", "diag", "other"])
@@ -129,7 +134,7 @@ def interactive_menu(store: LocalStore) -> None:
         table.add_row("[bold cyan]3[/]", "Search ROs (form + server checkbox)")
         table.add_row("[bold cyan]4[/]", "Edit current (form)")
         table.add_row("[bold cyan]5[/]", "Pull OBD / Saved Codes into current")
-        table.add_row("[bold cyan]6[/]", "Add photos (local / inbox)")
+        table.add_row("[bold cyan]6[/]", "Add photos (file / inbox / iPhone QR)")
         table.add_row("[bold cyan]7[/]", "Export customer PDF")
         table.add_row("[bold cyan]8[/]", "Sync to server + prune local cache")
         table.add_row("[bold cyan]9[/]", "Config")
@@ -550,6 +555,11 @@ def cmd_photo(store: LocalStore, args: argparse.Namespace) -> None:
         for p in order.photos:
             CONSOLE.print(f"  {p.get('tag')}: {p.get('filename')} ({p.get('volume')})")
         return
+
+    if args.action == "phone":
+        _phone_upload_flow(store, order, tag=args.tag)
+        return
+
     cfg = load_config()
     provider = get_provider((cfg.get("photos") or {}).get("provider", "local"), cfg)
     if not isinstance(provider, LocalPhotoIngress):
@@ -565,7 +575,6 @@ def cmd_photo(store: LocalStore, args: argparse.Namespace) -> None:
         found = provider.add_paths(paths)
     else:
         found = provider.ingest_inbox()
-        # move ingested out of inbox after copy
     if not found:
         CONSOLE.print("[yellow]No images found.[/]")
         return
@@ -580,9 +589,48 @@ def cmd_photo(store: LocalStore, args: argparse.Namespace) -> None:
     _maybe_push(order)
 
 
+def _phone_upload_flow(store: LocalStore, order: RepairOrder, *, tag: str) -> None:
+    from carro.photos.phone_upload import start_phone_upload
+
+    remote = RemoteClient()
+    if not remote.enabled:
+        raise RuntimeError(
+            "Configure server_url (Tailscale) first: carro config show"
+        )
+    # Ensure RO exists on server before phone uploads
+    try:
+        remote.upsert_ro(order)
+    except Exception as exc:
+        raise RuntimeError(f"Could not sync RO to server before phone upload: {exc}") from exc
+
+    def refresh() -> None:
+        try:
+            remote_data = remote.get_ro(order.id)
+            updated = RepairOrder.from_dict(remote_data)
+            # Keep local fields; merge photo list from server
+            local = store.get(order.id) or order
+            seen = {p.get("id") for p in local.photos}
+            for p in updated.photos:
+                if p.get("id") not in seen:
+                    local.photos.append(p)
+            store.save(local)
+            CONSOLE.print(
+                f"[green]RO now has {len(local.photos)} photo(s)[/] "
+                f"(synced from server)"
+            )
+        except Exception as exc:
+            CONSOLE.print(f"[yellow]Could not refresh RO:[/] {exc}")
+
+    start_phone_upload(order.id, tag=tag, on_done=refresh)
+
+
 def _menu_photos(store: LocalStore, ro_id: str) -> None:
     tag = Prompt.ask("Tag", choices=["intake", "diag", "other"], default="intake")
-    mode = Prompt.ask("Source", choices=["add", "ingest"], default="add")
+    mode = Prompt.ask(
+        "Source",
+        choices=["phone", "add", "ingest"],
+        default="phone",
+    )
     args = argparse.Namespace(action=mode, paths=[], ro_id=ro_id, tag=tag)
     if mode == "add":
         raw = Prompt.ask("Image path(s), space-separated").strip()

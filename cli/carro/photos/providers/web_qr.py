@@ -1,4 +1,4 @@
-"""Optional web/QR photo provider stub — swap in later without changing RO core."""
+"""Optional web/QR provider — use menu photo → phone (Tailscale upload page)."""
 
 from __future__ import annotations
 
@@ -6,21 +6,17 @@ from pathlib import Path
 
 
 class WebQrPhotoIngress:
-    """Placeholder. Enable later via photos.provider = \"web_qr\"."""
+    """Deprecated stub: phone uploads go through `carro photo phone`."""
 
     name = "web_qr"
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
-        self._ro_id = ""
-        self._tag = "other"
 
     def start(self, ro_id: str, tag: str) -> None:
-        self._ro_id = ro_id
-        self._tag = tag
         raise RuntimeError(
-            "web_qr provider is not enabled yet. "
-            "Set photos.provider = \"local\" or use: carro photo add <file>"
+            "Use: carro photo phone --id RO-… --tag intake "
+            "(or menu 6 → phone) with Tailscale on the iPhone."
         )
 
     def collect(self) -> list[Path]:

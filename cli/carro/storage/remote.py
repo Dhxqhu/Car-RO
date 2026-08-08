@@ -61,6 +61,24 @@ class RemoteClient:
             r.raise_for_status()
             return r.json()
 
+    def create_upload_session(
+        self, ro_id: str, *, tag: str = "intake", ttl_sec: int = 3600
+    ) -> dict[str, Any]:
+        with httpx.Client(timeout=30.0) as client:
+            r = client.post(
+                f"{self.base}/upload-sessions",
+                headers=self._headers(),
+                json={"ro_id": ro_id, "tag": tag, "ttl_sec": ttl_sec},
+            )
+            r.raise_for_status()
+            return r.json()
+
+    def upload_session_status(self, token: str) -> dict[str, Any]:
+        with httpx.Client(timeout=15.0) as client:
+            r = client.get(f"{self.base}/u/{token}/status")
+            r.raise_for_status()
+            return r.json()
+
     def upload_photo(
         self,
         ro_id: str,

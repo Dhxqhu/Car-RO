@@ -92,11 +92,16 @@ curl -H "Authorization: Bearer YOUR_TOKEN" -H 'Content-Type: application/json' \
 
 New photos can target a volume; metadata records which volume holds each file.
 
-## Photos (modular)
+## Photos
 
-Default provider is **`local`**: `carro photo add` or drop files in `inbox_dir` then `carro photo ingest`.
+**From iPhone (Tailscale):**
 
-Swap providers later via config (`photos.provider`) without changing the RO core. Optional `web_qr` is stubbed for a future Tailscale upload page.
+1. Open an RO, menu **6 → phone** (or `carro photo phone --id RO-… --tag intake`)
+2. Turn on **Tailscale** on the iPhone
+3. Scan the QR / open the URL in Safari → take or pick photos → Upload
+4. Press Enter on the PC to refresh the RO
+
+**From this PC:** `carro photo add ~/pic.jpg --id RO-…` or drop files in `inbox_dir` and `carro photo ingest`.
 
 ## Layout
 
