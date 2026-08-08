@@ -117,10 +117,11 @@ carro sync             # push to your server + prune local cache
 
 Prior work is looked up by **car**, not by person — same vehicle / new owner still finds the trail; multi-car households still work via name fallback.
 
-- Menu **4** — quick VIN (or name) lookup for stop-ins  
+- Menu **4** — full-screen VIN / name lookup (same style as Search) for stop-ins  
 - Menu **5** — history for the **current** RO’s VIN (diag context; excludes the open job)  
 - After OBD/VIN autofill — offered when prior ROs exist  
-- On a hit: **open** the old RO, or **new** RO with year/make/model/VIN/plate/mileage copied (complaint/notes stay on the prior job)
+- After the history list: **text** (default diag pack: complaint / notes / OBD), **pdf** (full pack with photos; confirms if about more than 10 pages), **pdf-lite** (same without photos), or **pick** one RO to open / start new from vehicle  
+- Packs land in `~/.local/share/carro/history/`
 
 ### Forms (Textual)
 

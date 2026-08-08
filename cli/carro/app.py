@@ -27,6 +27,7 @@ from carro.core.config_menu import print_config_summary, run_config_menu
 from carro.core.db import LocalStore
 from carro.core.form import run_ro_form
 from carro.core.history import HistoryResult, vehicle_fields_from, vehicle_history
+from carro.core.history_form import run_history_form
 from carro.core.models import RepairOrder
 from carro.core.pdf import export_pdf
 from carro.core.search_form import run_search_form
@@ -467,11 +468,13 @@ def cmd_history(
 ) -> str | None:
     """VIN-first prior repair history; name fallback. Returns last opened/created RO id."""
     if not vin and not name and sys.stdin.isatty():
-        vin = Prompt.ask("VIN (preferred, blank to skip)", default="").strip()
-        if not vin:
-            name = Prompt.ask("Customer name fallback (blank cancels)", default="").strip()
+        q = run_history_form()
+        if q.cancelled:
+            CONSOLE.print("[dim]History cancelled.[/]")
+            return None
+        vin, name = q.vin, q.name
         if not vin and not name:
-            CONSOLE.print("[dim]Cancelled.[/]")
+            CONSOLE.print("[yellow]Enter a VIN or customer name.[/]")
             return None
 
     result = vehicle_history(
@@ -542,6 +545,18 @@ def _history_flow(store: LocalStore, result: HistoryResult) -> str | None:
     if not sys.stdin.isatty():
         return None
 
+    action = Prompt.ask(
+        "Action",
+        choices=["text", "pdf", "pdf-lite", "pick", "back"],
+        default="text",
+    )
+    if action == "back":
+        return None
+    if action == "text":
+        return _history_text_pack(result)
+    if action in {"pdf", "pdf-lite"}:
+        return _history_pdf_pack(result, include_photos=(action == "pdf"))
+    # pick one RO
     rid = _pick_ro_from_list(result.orders)
     if not rid:
         return None
@@ -551,9 +566,54 @@ def _history_flow(store: LocalStore, result: HistoryResult) -> str | None:
     return _history_actions(store, picked)
 
 
+def _history_text_pack(result: HistoryResult) -> str | None:
+    from carro.core.history_pack import open_text_pack, write_text_pack
+
+    path = write_text_pack(
+        result.orders,
+        vin=result.vin_query,
+        name=result.name_query,
+    )
+    CONSOLE.print(f"[green]Diag text pack[/] → {path}")
+    if Confirm.ask("Open in pager?", default=True):
+        open_text_pack(path)
+    return None
+
+
+def _history_pdf_pack(result: HistoryResult, *, include_photos: bool) -> str | None:
+    from carro.core.history_pack import (
+        HISTORY_PDF_PAGE_WARN,
+        estimate_pack_pages,
+        write_pdf_pack,
+    )
+
+    est = estimate_pack_pages(result.orders, include_photos=include_photos)
+    mode = "with photos" if include_photos else "text + OBD only"
+    if est > HISTORY_PDF_PAGE_WARN:
+        CONSOLE.print(
+            f"[yellow]This pack looks like ~{est:.0f} pages[/] ({mode}; "
+            f"warn at {HISTORY_PDF_PAGE_WARN})."
+        )
+        if not Confirm.ask("Write anyway?", default=False):
+            CONSOLE.print(
+                "[dim]Skipped. Try [bold]pdf-lite[/] or [bold]text[/] for a smaller pack.[/]"
+            )
+            return None
+    path = write_pdf_pack(
+        result.orders,
+        vin=result.vin_query,
+        name=result.name_query,
+        include_photos=include_photos,
+    )
+    CONSOLE.print(f"[green]History PDF pack[/] → {path} (~{est:.0f} pages est., {mode})")
+    if Confirm.ask("Open in PDF viewer?", default=True):
+        _open_pdf(path)
+    return None
+
+
 def _print_history_table(orders: list[RepairOrder], *, title: str) -> None:
     numbered = len(orders) <= 10
-    table = Table(title=title + (" — pick by #" if numbered else " — enter RO id"))
+    table = Table(title=title)
     if numbered:
         table.add_column("#", style="bold cyan", justify="right")
     table.add_column("Id", style="cyan")
