@@ -71,6 +71,17 @@ UPLOAD_PAGE = """<!DOCTYPE html>
     border-radius: .5rem; border: 1px solid #555;
   }
   textarea { min-height: 4.5rem; resize: vertical; }
+  .pick { display: grid; gap: .5rem; margin-top: .25rem; }
+  .pick input[type=file] {
+    position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden;
+  }
+  .filebtn {
+    display: block; text-align: center; font-weight: 700; font-size: 1rem;
+    padding: .85rem; border-radius: .5rem; border: 1px solid #0a7;
+    background: #0a7; color: #fff; cursor: pointer;
+  }
+  .filebtn.secondary { background: transparent; color: inherit; border-color: #555; }
+  .hint { color: #888; font-size: .85rem; margin: .5rem 0 0; }
   button {
     margin-top: 1rem; background: #0a7; color: #fff; border: none; font-weight: 700;
   }
@@ -93,8 +104,15 @@ UPLOAD_PAGE = """<!DOCTYPE html>
     </select>
     <label for="notes">Notes (optional)</label>
     <textarea id="notes" name="notes" placeholder="What this photo shows…"></textarea>
-    <label for="file">Photos (camera or library)</label>
-    <input id="file" name="file" type="file" accept="image/*" capture="environment" multiple required/>
+    <label>Photos</label>
+    <div class="pick">
+      <!-- No capture= on library input — iOS otherwise skips Photo Library -->
+      <label class="filebtn" for="file">Choose from library</label>
+      <input id="file" name="file" type="file" accept="image/*" multiple/>
+      <label class="filebtn secondary" for="camera">Take photo</label>
+      <input id="camera" type="file" accept="image/*" capture="environment"/>
+    </div>
+    <p class="hint">Library supports multiple. Camera adds one shot at a time — tap Upload after each, or pick several from the library.</p>
     <button type="submit" id="go">Upload</button>
   </form>
   <div id="status"></div>
@@ -103,10 +121,35 @@ const tagSel = document.getElementById('tag');
 tagSel.value = "__TAG__";
 const notesEl = document.getElementById('notes');
 const status = document.getElementById('status');
+const fileInput = document.getElementById('file');
+const cameraInput = document.getElementById('camera');
+
+function mergeCameraShot() {
+  const shot = cameraInput.files && cameraInput.files[0];
+  if (!shot) return;
+  const dt = new DataTransfer();
+  for (const f of fileInput.files) dt.items.add(f);
+  dt.items.add(shot);
+  fileInput.files = dt.files;
+  cameraInput.value = '';
+  status.innerHTML = `<div class="meta">${fileInput.files.length} photo(s) selected — tap Upload when ready.</div>`;
+}
+cameraInput.addEventListener('change', mergeCameraShot);
+fileInput.addEventListener('change', () => {
+  const n = fileInput.files.length;
+  status.innerHTML = n
+    ? `<div class="meta">${n} photo(s) selected — tap Upload when ready.</div>`
+    : '';
+});
+
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const files = document.getElementById('file').files;
-  if (!files.length) return;
+  mergeCameraShot();
+  const files = fileInput.files;
+  if (!files.length) {
+    status.innerHTML = '<div class="err">Pick or take a photo first.</div>';
+    return;
+  }
   const btn = document.getElementById('go');
   btn.disabled = true;
   status.innerHTML = '';
@@ -129,7 +172,7 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   }
   status.innerHTML += `<div class="meta">${ok} uploaded, ${fail} failed. You can add more or close this page.</div>`;
   btn.disabled = false;
-  document.getElementById('file').value = '';
+  fileInput.value = '';
 });
 </script>
 </body>
