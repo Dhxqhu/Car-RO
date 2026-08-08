@@ -673,16 +673,15 @@ def _history_actions(store: LocalStore, prior: RepairOrder) -> str | None:
 
 
 def cmd_list(store: LocalStore, pick: bool = False) -> str | None:
-    orders = store.list_orders()
+    # Menu "List / open" shows the 10 newest so picks stay numbered and short.
+    orders = store.list_orders(limit=10 if pick else None)
     if not orders:
         CONSOLE.print("[dim]No local repair orders yet.[/]")
         return None
-    numbered = pick and len(orders) <= 10
-    _print_ro_table(
-        orders,
-        title="Repair orders" + (" — pick by #" if numbered else ""),
-        numbered=numbered,
-    )
+    title = "Recent repair orders (10 newest)" if pick else "Repair orders"
+    if pick:
+        title += " — pick by #"
+    _print_ro_table(orders, title=title, numbered=pick)
     if not pick:
         return None
     rid = _pick_ro_from_list(orders)
