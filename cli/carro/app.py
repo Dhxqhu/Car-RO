@@ -27,6 +27,7 @@ from carro.core.db import LocalStore
 from carro.core.form import run_ro_form
 from carro.core.models import RepairOrder
 from carro.core.pdf import export_pdf
+from carro.core.search_form import run_search_form
 from carro.obd.provider import pull_vehicle_fields
 from carro.photos.base import get_provider
 from carro.photos.providers.local import LocalPhotoIngress
@@ -125,7 +126,7 @@ def interactive_menu(store: LocalStore) -> None:
         table = Table(title="Car-RO", show_header=False, box=None, padding=(0, 2))
         table.add_row("[bold cyan]1[/]", "New repair order (form)")
         table.add_row("[bold cyan]2[/]", "List / open in form")
-        table.add_row("[bold cyan]3[/]", "Search ROs (make/model/year/name/…)")
+        table.add_row("[bold cyan]3[/]", "Search ROs (form + server checkbox)")
         table.add_row("[bold cyan]4[/]", "Edit current (form)")
         table.add_row("[bold cyan]5[/]", "Pull OBD / Saved Codes into current")
         table.add_row("[bold cyan]6[/]", "Add photos (local / inbox)")
@@ -342,23 +343,25 @@ def cmd_search(
 
 
 def cmd_search_interactive(store: LocalStore) -> str | None:
-    CONSOLE.print("[cyan]Search[/] — free text and/or filters (Enter skips a filter)")
-    query = Prompt.ask("Free text (name, make, VIN, complaint…)", default="").strip()
-    make = Prompt.ask("Make", default="").strip()
-    model = Prompt.ask("Model", default="").strip()
-    year = Prompt.ask("Year", default="").strip()
-    name = Prompt.ask("Customer name", default="").strip()
-    vin = Prompt.ask("VIN", default="").strip()
-    remote = Confirm.ask("Include server store?", default=bool(RemoteClient().enabled))
+    remote_default = bool(RemoteClient().enabled)
+    q = run_search_form(default_remote=remote_default)
+    if q.cancelled:
+        CONSOLE.print("[dim]Search cancelled.[/]")
+        return None
+    if not any([q.query, q.make, q.model, q.year, q.name, q.vin, q.plate, q.status]):
+        CONSOLE.print("[yellow]Enter at least one search field.[/]")
+        return None
     return cmd_search(
         store,
-        query=query,
-        make=make,
-        model=model,
-        year=year,
-        name=name,
-        vin=vin,
-        remote=remote,
+        query=q.query,
+        make=q.make,
+        model=q.model,
+        year=q.year,
+        name=q.name,
+        vin=q.vin,
+        status=q.status,
+        plate=q.plate,
+        remote=q.remote,
     )
 
 

@@ -15,7 +15,14 @@ carro config init
 
 Command name: **`carro`**. Ensure `~/.local/bin` is on your `PATH` (most setups already have this).
 
-## Repair order form
+## Search
+
+Menu **3** opens a full-screen search form (same style as the RO editor): fields for free text, name, make, model, year, VIN, plate, status, plus a checkbox **Also search server** for older ROs past the local cache.
+
+```bash
+carro search ford
+carro search --make ford --year 2023 --remote
+```
 
 Opening or editing an RO launches a full-screen form (Textual):
 
