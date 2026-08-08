@@ -67,9 +67,11 @@ class SearchForm(App[SearchQuery]):
     """
 
     BINDINGS = [
-        Binding("ctrl+s", "submit", "Search", show=True),
+        Binding("ctrl+s", "submit", "Search", show=True, priority=True),
+        Binding("ctrl+enter", "submit", "Search", show=True, priority=True),
+        Binding("ctrl+j", "submit", "Search", show=False, priority=True),  # some terminals map Ctrl+Enter → Ctrl+J
         Binding("enter", "submit", "Search", show=False),
-        Binding("ctrl+q", "cancel", "Cancel", show=True),
+        Binding("ctrl+q", "cancel", "Cancel", show=True, priority=True),
         Binding("escape", "cancel", "Cancel", show=False),
     ]
 
@@ -80,7 +82,7 @@ class SearchForm(App[SearchQuery]):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static(
-            "Search repair orders    Tab move · Enter/Ctrl+S search · Ctrl+Q cancel",
+            "Search repair orders    Tab move · Enter / Ctrl+Enter / Ctrl+S search · Ctrl+Q cancel",
             id="title",
         )
         yield Static(
@@ -109,7 +111,7 @@ class SearchForm(App[SearchQuery]):
                     id="remote",
                 )
         with Horizontal(id="actions"):
-            yield Button("Search (Enter)", id="btn_search", variant="success")
+            yield Button("Search (Enter / Ctrl+Enter)", id="btn_search", variant="success")
             yield Button("Clear", id="btn_clear", variant="default")
             yield Button("Cancel (Ctrl+Q)", id="btn_cancel", variant="default")
         yield Footer()
@@ -141,6 +143,11 @@ class SearchForm(App[SearchQuery]):
     def action_cancel(self) -> None:
         q = SearchQuery(cancelled=True)
         self.exit(q)
+
+    @on(Input.Submitted)
+    def _input_enter(self) -> None:
+        """Plain Enter inside a field also runs search."""
+        self.action_submit()
 
     @on(Button.Pressed, "#btn_search")
     def _btn_search(self) -> None:
