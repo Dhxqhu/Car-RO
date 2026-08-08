@@ -26,6 +26,7 @@ from carro.config import ensure_dirs, load_config, save_config
 from carro.core.config_menu import print_config_summary, run_config_menu
 from carro.core.db import LocalStore
 from carro.core.form import run_ro_form
+from carro.core.history import HistoryResult, vehicle_fields_from, vehicle_history
 from carro.core.models import RepairOrder
 from carro.core.pdf import export_pdf
 from carro.core.search_form import run_search_form
@@ -56,6 +57,12 @@ def main(argv: list[str] | None = None) -> None:
         "sync": lambda: cmd_sync(store),
         "config": lambda: cmd_config(args),
         "photo": lambda: cmd_photo(store, args),
+        "history": lambda: cmd_history(
+            store,
+            vin=getattr(args, "vin", "") or "",
+            name=getattr(args, "name", "") or "",
+            exclude_id=getattr(args, "exclude", "") or None,
+        ),
         "search": lambda: cmd_search(
             store,
             query=" ".join(args.query) if getattr(args, "query", None) else "",
@@ -128,6 +135,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--status", default="", choices=["", "open", "in_progress", "done"])
     s.add_argument("--remote", action="store_true", help="Also search server store")
     s.add_argument("--open", action="store_true", help="Open first hit in form")
+    s = sub.add_parser(
+        "history",
+        help="Prior repair history by VIN (fallback: customer name)",
+    )
+    s.add_argument("--vin", default="", help="Vehicle VIN (preferred)")
+    s.add_argument("--name", default="", help="Customer name fallback")
+    s.add_argument(
+        "--exclude",
+        default="",
+        help="RO id to omit (e.g. current job when viewing prior history)",
+    )
     return p
 
 
@@ -139,12 +157,14 @@ def interactive_menu(store: LocalStore) -> None:
         table.add_row("[bold cyan]1[/]", "New repair order (form)")
         table.add_row("[bold cyan]2[/]", "List / open in form")
         table.add_row("[bold cyan]3[/]", "Search ROs (form + server checkbox)")
-        table.add_row("[bold cyan]4[/]", "Edit current (form)")
-        table.add_row("[bold cyan]5[/]", "Pull OBD / Saved Codes into current")
-        table.add_row("[bold cyan]6[/]", "Add photos (file / inbox / iPhone QR)")
-        table.add_row("[bold cyan]7[/]", "Export customer PDF")
-        table.add_row("[bold cyan]8[/]", "Sync to server + prune local cache")
-        table.add_row("[bold cyan]9[/]", "Config (edit settings)")
+        table.add_row("[bold cyan]4[/]", "Vehicle history (VIN / name)")
+        table.add_row("[bold cyan]5[/]", "History for current vehicle")
+        table.add_row("[bold cyan]6[/]", "Edit current (form)")
+        table.add_row("[bold cyan]7[/]", "Pull OBD / Saved Codes into current")
+        table.add_row("[bold cyan]8[/]", "Add photos (file / inbox / iPhone / Shortcut)")
+        table.add_row("[bold cyan]9[/]", "Export customer PDF")
+        table.add_row("[bold cyan]s[/]", "Sync to server + prune local cache")
+        table.add_row("[bold cyan]c[/]", "Config (edit settings)")
         table.add_row("[bold cyan]q[/]", "Quit")
         CONSOLE.print(Panel(table, border_style="cyan"))
         if current:
@@ -159,27 +179,34 @@ def interactive_menu(store: LocalStore) -> None:
             return
         try:
             if choice == "1":
-                order = cmd_new(store, from_obd=Confirm.ask("Pull from OBD/Saved Codes?", default=True))
+                order = cmd_new(
+                    store,
+                    from_obd=Confirm.ask("Pull from OBD/Saved Codes?", default=True),
+                )
                 current = order.id
             elif choice == "2":
                 current = cmd_list(store, pick=True) or current
             elif choice == "3":
                 current = cmd_search_interactive(store) or current
             elif choice == "4":
-                current = _need(current)
-                cmd_edit(store, current)
+                current = cmd_history(store) or current
             elif choice == "5":
-                current = _need(current)
-                cmd_pull_obd(store, current)
+                current = _history_for_current(store, _need(current)) or current
             elif choice == "6":
                 current = _need(current)
-                _menu_photos(store, current)
+                cmd_edit(store, current)
             elif choice == "7":
                 current = _need(current)
-                cmd_pdf(store, current)
+                cmd_pull_obd(store, current)
             elif choice == "8":
-                cmd_sync(store)
+                current = _need(current)
+                _menu_photos(store, current)
             elif choice == "9":
+                current = _need(current)
+                cmd_pdf(store, current)
+            elif choice == "s":
+                cmd_sync(store)
+            elif choice == "c":
                 run_config_menu()
             else:
                 CONSOLE.print("[yellow]Unknown option[/]")
@@ -237,6 +264,8 @@ def cmd_new(store: LocalStore, from_obd: bool = False) -> RepairOrder:
         except Exception:
             CONSOLE.print("[yellow]OBD autofill unavailable — blank form.[/]")
     order = store.create(**{k: v for k, v in fields.items() if v})
+    if order.vin:
+        _offer_history_after_vin(store, order.vin, exclude_id=order.id)
     CONSOLE.print(f"[cyan]Opening form[/] {order.id}")
     saved = _open_ro_form(store, order)
     return saved or order
@@ -429,6 +458,160 @@ def cmd_search_interactive(store: LocalStore) -> str | None:
     )
 
 
+def cmd_history(
+    store: LocalStore,
+    *,
+    vin: str = "",
+    name: str = "",
+    exclude_id: str | None = None,
+) -> str | None:
+    """VIN-first prior repair history; name fallback. Returns last opened/created RO id."""
+    if not vin and not name and sys.stdin.isatty():
+        vin = Prompt.ask("VIN (preferred, blank to skip)", default="").strip()
+        if not vin:
+            name = Prompt.ask("Customer name fallback (blank cancels)", default="").strip()
+        if not vin and not name:
+            CONSOLE.print("[dim]Cancelled.[/]")
+            return None
+
+    result = vehicle_history(
+        store, vin=vin, name=name, exclude_id=exclude_id or None
+    )
+    return _history_flow(store, result)
+
+
+def _history_for_current(store: LocalStore, ro_id: str) -> str | None:
+    order = store.get(ro_id)
+    if not order:
+        raise ValueError(f"RO not found: {ro_id}")
+    vin = order.vin or ""
+    name = ""
+    if not vin.strip():
+        name = f"{order.last_name} {order.first_name}".strip() or order.customer_label()
+        CONSOLE.print(
+            "[yellow]No VIN on this RO — falling back to customer name.[/]"
+        )
+    else:
+        CONSOLE.print(f"[dim]History for VIN[/] {vin}")
+    result = vehicle_history(
+        store, vin=vin, name=name, exclude_id=order.id
+    )
+    return _history_flow(store, result)
+
+
+def _offer_history_after_vin(
+    store: LocalStore, vin: str, *, exclude_id: str | None = None
+) -> str | None:
+    if not vin or not sys.stdin.isatty():
+        return None
+    result = vehicle_history(store, vin=vin, exclude_id=exclude_id)
+    if not result.orders:
+        return None
+    label = {
+        "vin_exact": "exact VIN",
+        "vin_partial": "partial VIN",
+        "name": "name",
+    }.get(result.matched_by, "match")
+    if not Confirm.ask(
+        f"[cyan]{len(result.orders)}[/] prior RO(s) for this vehicle ({label}) — view?",
+        default=True,
+    ):
+        return None
+    return _history_flow(store, result)
+
+
+def _history_flow(store: LocalStore, result: HistoryResult) -> str | None:
+    if not result.orders:
+        how = ""
+        if result.vin_query:
+            how = f" VIN {result.vin_query}"
+        elif result.name_query:
+            how = f" name “{result.name_query}”"
+        CONSOLE.print(f"[dim]No prior repair history{how}.[/]")
+        return None
+
+    title = f"Vehicle history ({len(result.orders)})"
+    if result.matched_by == "vin_exact":
+        title += f" — exact VIN {result.vin_query}"
+    elif result.matched_by == "vin_partial":
+        title += f" — partial VIN {result.vin_query}"
+    elif result.matched_by == "name":
+        title += f" — name “{result.name_query}”"
+
+    _print_history_table(result.orders, title=title)
+    if not sys.stdin.isatty():
+        return None
+
+    rid = _pick_ro_from_list(result.orders)
+    if not rid:
+        return None
+    picked = next((o for o in result.orders if o.id == rid), store.get(rid))
+    if not picked:
+        return None
+    return _history_actions(store, picked)
+
+
+def _print_history_table(orders: list[RepairOrder], *, title: str) -> None:
+    numbered = len(orders) <= 10
+    table = Table(title=title + (" — pick by #" if numbered else " — enter RO id"))
+    if numbered:
+        table.add_column("#", style="bold cyan", justify="right")
+    table.add_column("Id", style="cyan")
+    table.add_column("Customer")
+    table.add_column("Vehicle")
+    table.add_column("VIN")
+    table.add_column("Status")
+    table.add_column("Updated")
+    table.add_column("Complaint")
+    for i, o in enumerate(orders, 1):
+        complaint = (o.complaint or "").replace("\n", " ").strip()
+        if len(complaint) > 48:
+            complaint = complaint[:45] + "…"
+        row = [
+            o.id,
+            o.customer_label(),
+            o.vehicle_label(),
+            o.vin or "—",
+            o.status,
+            o.updated,
+            complaint or "—",
+        ]
+        if numbered:
+            row.insert(0, str(i))
+        table.add_row(*row)
+    CONSOLE.print(table)
+
+
+def _history_actions(store: LocalStore, prior: RepairOrder) -> str | None:
+    CONSOLE.print(
+        Panel(
+            f"[bold]{prior.id}[/] · {prior.customer_label()} · {prior.vehicle_label()}\n"
+            f"Complaint: {(prior.complaint or '—')[:120]}",
+            title="Prior RO",
+            border_style="magenta",
+        )
+    )
+    action = Prompt.ask(
+        "Action",
+        choices=["open", "new", "back"],
+        default="open",
+    )
+    if action == "back":
+        return None
+    if action == "open":
+        cmd_open(store, prior.id)
+        return prior.id
+    # new RO from vehicle
+    fields = vehicle_fields_from(prior)
+    order = store.create(**fields)
+    CONSOLE.print(
+        f"[green]New RO[/] {order.id} with vehicle from {prior.id} "
+        f"({order.vehicle_label() or order.vin})"
+    )
+    saved = _open_ro_form(store, order)
+    return (saved or order).id
+
+
 def cmd_list(store: LocalStore, pick: bool = False) -> str | None:
     orders = store.list_orders()
     if not orders:
@@ -480,6 +663,8 @@ def cmd_pull_obd(store: LocalStore, ro_id: str | None) -> None:
     store.save(order)
     CONSOLE.print(f"[green]Updated[/] {order.id} from OBD sources")
     _maybe_push(order)
+    if order.vin:
+        _offer_history_after_vin(store, order.vin, exclude_id=order.id)
     if Confirm.ask("Open form to review?", default=True):
         _open_ro_form(store, order)
 

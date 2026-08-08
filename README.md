@@ -103,6 +103,8 @@ carro new --from-obd   # new RO, try autofill from obdscan / Saved Codes
 carro list
 carro search ford
 carro search --make ford --year 2023 --remote
+carro history --vin 1FTEW1EP5PFA00000   # prior jobs for this car (server + local)
+carro history --name smith              # fallback when VIN unknown
 carro pull-obd RO-…
 carro photo add ./pic.jpg --id RO-… --tag intake --note "LH wiper motor"
 carro photo shortcut --id RO-… --tag intake  # iOS Share Sheet (setup page + ~7d URL)
@@ -110,6 +112,15 @@ carro photo phone --id RO-… --tag intake     # Tailscale QR → Safari
 carro pdf RO-…
 carro sync             # push to your server + prune local cache
 ```
+
+### Vehicle history (VIN-first)
+
+Prior work is looked up by **car**, not by person — same vehicle / new owner still finds the trail; multi-car households still work via name fallback.
+
+- Menu **4** — quick VIN (or name) lookup for stop-ins  
+- Menu **5** — history for the **current** RO’s VIN (diag context; excludes the open job)  
+- After OBD/VIN autofill — offered when prior ROs exist  
+- On a hit: **open** the old RO, or **new** RO with year/make/model/VIN/plate/mileage copied (complaint/notes stay on the prior job)
 
 ### Forms (Textual)
 

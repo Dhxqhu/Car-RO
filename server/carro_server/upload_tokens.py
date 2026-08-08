@@ -252,12 +252,13 @@ SHORTCUT_PAGE = """<!DOCTYPE html>
   code, .url {
     display: block; word-break: break-all; font-family: ui-monospace, monospace;
     font-size: .85rem; padding: .75rem; border-radius: .5rem;
-    border: 1px solid #555; background: #1111; margin: .5rem 0 1rem;
+    border: 1px solid #555; background: rgba(127,127,127,.12); margin: .5rem 0 1rem;
   }
   ol { padding-left: 1.2rem; }
-  li { margin: .35rem 0; }
+  li { margin: .45rem 0; }
   a { color: #0a7; }
   .box { border: 1px solid #555; border-radius: .5rem; padding: .75rem 1rem; margin: 1rem 0; }
+  .tip { font-size: .9rem; color: #888; margin: .25rem 0 .75rem; }
 </style>
 </head>
 <body>
@@ -268,37 +269,53 @@ SHORTCUT_PAGE = """<!DOCTYPE html>
   </div>
 
   <div class="box">
-    <strong>Upload URL</strong> (POST multipart)
+    <strong>Upload URL</strong> — paste this into <em>Get Contents of URL</em>
     <div class="url" id="url">__UPLOAD_URL__</div>
   </div>
 
-  <h2>Build the Shortcut (once)</h2>
+  <h2>Build the Shortcut</h2>
+  <p class="tip">On current iOS you do <strong>not</strong> name it first. Tap <strong>+</strong>, then <strong>Add Action</strong>, and search for the action. Rename at the end.</p>
   <ol>
-    <li>Open the <strong>Shortcuts</strong> app → <strong>+</strong> → name it <em>Car-RO Upload</em>.</li>
-    <li><strong>Share Sheet</strong>: Details (ⓘ) → enable <em>Show in Share Sheet</em> → accept <em>Images</em> (and Files if offered).</li>
-    <li>Add action <strong>Receive</strong> <em>Images</em> input from <em>Share Sheet</em>.</li>
-    <li>Add <strong>Repeat with Each</strong> over that magic variable (each photo).</li>
-    <li>Inside the loop, add <strong>Get Contents of URL</strong>:
+    <li>Open <strong>Shortcuts</strong> → tap <strong>+</strong>.</li>
+    <li>Tap <strong>Add Action</strong>.</li>
+    <li>Search for <strong>Get Contents of URL</strong> and add it (category <em>Web</em>).</li>
+    <li>Configure that action:
       <ul>
-        <li>URL = the upload URL above</li>
-        <li>Method = <strong>POST</strong></li>
-        <li>Request Body = <strong>Form</strong></li>
-        <li>Add field <code>file</code> → type <em>File</em> → Repeat Item</li>
-        <li>Add field <code>tag</code> → Text → <code>__TAG__</code> (or Ask Each Time)</li>
-        <li>Add field <code>notes</code> → Text → Ask Each Time (optional)</li>
+        <li><strong>URL</strong> → paste the upload URL from the box above</li>
+        <li>Tap <strong>Show More</strong> if you only see the URL field</li>
+        <li><strong>Method</strong> → <strong>POST</strong></li>
+        <li><strong>Request Body</strong> → <strong>Form</strong></li>
       </ul>
     </li>
-    <li>Optional: show Notification “Uploaded to Car-RO”.</li>
+    <li>Under Form, tap <strong>Add new field</strong> three times:
+      <ul>
+        <li><code>file</code> → field type <strong>File</strong> (not Text). Value comes later (Shortcut Input).</li>
+        <li><code>tag</code> → <strong>Text</strong> → type <code>__TAG__</code></li>
+        <li><code>notes</code> → <strong>Text</strong> → leave blank, or tap and choose <em>Ask Each Time</em></li>
+      </ul>
+    </li>
+    <li>Tap the title at the <strong>top</strong> of the screen (or the ⓘ / dropdown) to open shortcut details.</li>
+    <li>Enable <strong>Show in Share Sheet</strong>. Allow <strong>Images</strong> / Photos when asked. Done/Save.</li>
+    <li>Back in the shortcut: Form field <code>file</code> → set value to <strong>Shortcut Input</strong>
+        (the shared photo). If you only see text options, make sure the field type is <strong>File</strong>.</li>
+    <li>In details again, rename to <strong>Car-RO Upload</strong>.</li>
+  </ol>
+
+  <h2>Several photos in one share</h2>
+  <ol>
+    <li>Add action <strong>Repeat with Each</strong> (search “Repeat”).</li>
+    <li>Drag <strong>Get Contents of URL</strong> <em>inside</em> the loop.</li>
+    <li>Set Form <code>file</code> to <strong>Repeat Item</strong> instead of Shortcut Input.</li>
   </ol>
 
   <h2>Use it</h2>
   <ol>
-    <li>On the laptop: <code>carro photo shortcut --id __RO_ID__</code> (creates/refreshes this link).</li>
-    <li>Photos → select → Share → <strong>Car-RO Upload</strong>.</li>
-    <li>Back on the laptop, press Enter (or run refresh) so the RO picks up new photos.</li>
+    <li>Laptop: <code>carro photo shortcut --id __RO_ID__</code> when you start the job.</li>
+    <li>Phone: Photos → select → <strong>Share</strong> → <strong>Car-RO Upload</strong>.</li>
+    <li>Laptop: press Enter to refresh the RO.</li>
   </ol>
 
-  <p class="meta">Safari form upload still works: <a href="/u/__TOKEN__">open upload page</a>.</p>
+  <p class="meta">Prefer the web form? <a href="/u/__TOKEN__">Open Safari upload page</a>.</p>
 </body>
 </html>
 """
