@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "carro"
 version = "0.1.0"
-description = "Car repair order CLI for technicians (links to obdscan)"
+description = "Technician repair-order CLI + optional home-lab archive (PDF, photos, OBD)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

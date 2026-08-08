@@ -22,11 +22,14 @@ def attach_photos(
     paths: list[Path],
     *,
     tag: str = "other",
+    notes: str = "",
+    notes_by_path: dict[str, str] | None = None,
     sync_remote: bool = True,
 ) -> RepairOrder:
     dest_dir = photos_dir() / order.id
     dest_dir.mkdir(parents=True, exist_ok=True)
     remote = RemoteClient()
+    notes_by_path = notes_by_path or {}
     for src in paths:
         src = Path(src)
         if not src.is_file():
@@ -35,10 +38,12 @@ def attach_photos(
         dest_name = f"{photo_id}_{src.name}"
         dest = dest_dir / dest_name
         shutil.copy2(src, dest)
+        note = (notes_by_path.get(str(src)) or notes or "").strip()
         meta = {
             "id": photo_id,
             "filename": src.name,
             "tag": tag,
+            "notes": note,
             "volume": "local",
             "relpath": dest_name,
             "created": now_iso(),
@@ -47,7 +52,11 @@ def attach_photos(
         if sync_remote and remote.enabled:
             try:
                 remote_meta = remote.upload_photo(
-                    order.id, str(dest), tag=tag, filename=dest_name
+                    order.id,
+                    str(dest),
+                    tag=tag,
+                    filename=dest_name,
+                    notes=note,
                 )
                 if isinstance(remote_meta, dict):
                     meta["volume"] = remote_meta.get("volume", meta["volume"])

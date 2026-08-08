@@ -87,12 +87,13 @@ class RemoteClient:
         *,
         tag: str = "other",
         filename: str | None = None,
+        notes: str = "",
     ) -> dict[str, Any]:
         from pathlib import Path
 
         p = Path(path)
         files = {"file": (filename or p.name, p.read_bytes(), "application/octet-stream")}
-        data = {"tag": tag}
+        data = {"tag": tag, "notes": notes or ""}
         with httpx.Client(timeout=120.0) as client:
             r = client.post(
                 f"{self.base}/ros/{ro_id}/photos",

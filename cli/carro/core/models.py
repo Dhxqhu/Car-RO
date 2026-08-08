@@ -15,6 +15,7 @@ class PhotoMeta:
     id: str
     filename: str
     tag: str = "other"  # intake | diag | other
+    notes: str = ""
     volume: str = "local"
     relpath: str = ""
     created: str = ""

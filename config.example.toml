@@ -2,14 +2,18 @@
 # Do not commit your real server URL, token, shop name, or hostnames.
 
 shop_name = "(shop name here)"
+# Optional shop logo for PDF header (top-right). PNG/JPG recommended.
+# logo_path = "~/.config/carro/logo.png"
 
 # Leave server_url empty for local-only mode.
 server_url = "http://YOUR_SERVER:8787"
 token = "generate-a-long-random-token"
 
-# How many recent repair orders to keep on this machine
-local_keep = 20
-local_photo_keep = 20
+# How many recent repair orders to keep on this machine.
+# "auto" sizes from free disk on the photos volume; or use an integer.
+local_keep = "auto"
+# Of those, how many newest also keep photo files locally ("auto" / "match" / int).
+local_photo_keep = "auto"
 
 [photos]
 provider = "local"  # local | web_qr (optional)

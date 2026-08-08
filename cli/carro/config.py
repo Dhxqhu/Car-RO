@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import tomllib
 from copy import deepcopy
 from pathlib import Path
@@ -16,12 +17,19 @@ CONFIG_FILE = CONFIG_DIR / "config.toml"
 DATA_DIR = Path.home() / ".local" / "share" / "carro"
 # Human-visible photo library (not the empty repo share/ stub)
 PHOTOS_DIR = Path.home() / "Documents" / "Car-RO" / "photos"
+
+# Rough average footprint per RO with a few phone photos (for auto sizing)
+_AVG_RO_BYTES = 18 * 1024 * 1024
+_AVG_PHOTO_RO_BYTES = 28 * 1024 * 1024
+
 DEFAULTS: dict = {
     "shop_name": "(shop name here)",
+    "logo_path": "",
     "server_url": "",
     "token": "",
-    "local_keep": 20,
-    "local_photo_keep": 20,
+    # "auto" sizes from free disk on the photos volume; or an int count
+    "local_keep": "auto",
+    "local_photo_keep": "auto",
     "photos": {
         "provider": "local",
         "inbox_dir": str(Path.home() / "Documents" / "Car-RO" / "inbox"),
@@ -53,6 +61,8 @@ def load_config() -> dict:
             photos[key] = str(Path(photos[key]).expanduser())
     if not photos.get("dir"):
         photos["dir"] = str(PHOTOS_DIR)
+    if cfg.get("logo_path"):
+        cfg["logo_path"] = str(Path(cfg["logo_path"]).expanduser())
     cfg["server_url"] = str(cfg.get("server_url") or "").rstrip("/")
     return cfg
 
@@ -62,15 +72,154 @@ def photos_dir(cfg: dict | None = None) -> Path:
     return Path((cfg.get("photos") or {}).get("dir") or PHOTOS_DIR).expanduser()
 
 
+def storage_root(cfg: dict | None = None) -> Path:
+    """Directory used to judge free disk for local cache sizing."""
+    root = photos_dir(cfg)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        root = DATA_DIR
+        root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def disk_info(path: Path | None = None) -> dict:
+    """Free/total space for the volume holding local photos/cache."""
+    path = path or storage_root()
+    usage = shutil.disk_usage(path)
+    return {
+        "path": str(path),
+        "total": usage.total,
+        "used": usage.used,
+        "free": usage.free,
+        "total_gb": usage.total / (1024**3),
+        "used_gb": usage.used / (1024**3),
+        "free_gb": usage.free / (1024**3),
+    }
+
+
+def recommend_local_keep(path: Path | None = None) -> int:
+    """
+    Suggest how many ROs to keep locally from free disk.
+    Uses a slice of free space (capped) at a typical RO+photos footprint.
+    """
+    info = disk_info(path)
+    free = info["free"]
+    # Budget: smaller of 8% of free disk or 12 GiB; leave machines with little free room light
+    budget = min(int(free * 0.08), 12 * 1024**3)
+    if info["free_gb"] < 8:
+        budget = min(budget, int(free * 0.03))
+    n = int(budget / _AVG_RO_BYTES)
+    return max(5, min(n, 300))
+
+
+def recommend_local_photo_keep(path: Path | None = None, *, ro_keep: int | None = None) -> int:
+    """Suggest how many recent ROs should retain local photo files."""
+    info = disk_info(path)
+    free = info["free"]
+    budget = min(int(free * 0.05), 8 * 1024**3)
+    if info["free_gb"] < 8:
+        budget = min(budget, int(free * 0.02))
+    n = int(budget / _AVG_PHOTO_RO_BYTES)
+    n = max(3, min(n, 200))
+    if ro_keep is not None:
+        n = min(n, int(ro_keep))
+    return n
+
+
+def keep_presets(path: Path | None = None) -> list[tuple[str, object, str]]:
+    """Selectable local_keep choices: (label, value, detail)."""
+    rec = recommend_local_keep(path)
+    info = disk_info(path)
+    light = 10
+    standard = max(20, min(rec, max(25, rec // 2)))
+    heavy = min(300, max(rec, standard + 20))
+    return [
+        ("auto", "auto", f"follow free disk → ~{rec} ROs now ({info['free_gb']:.0f} GB free)"),
+        ("light", light, "small SSD / low free space"),
+        ("standard", standard, "typical shop laptop"),
+        ("recommended", rec, "sized for this machine right now"),
+        ("heavy", heavy, "keep more history locally"),
+        ("custom", None, "type any number"),
+    ]
+
+
+def photo_keep_presets(
+    path: Path | None = None, *, ro_keep: int | None = None
+) -> list[tuple[str, object, str]]:
+    rec = recommend_local_photo_keep(path, ro_keep=ro_keep)
+    info = disk_info(path)
+    light = 5
+    standard = max(8, min(rec, max(10, rec // 2)))
+    heavy = min(200, max(rec, standard + 10))
+    if ro_keep is not None:
+        heavy = min(heavy, int(ro_keep))
+        rec = min(rec, int(ro_keep))
+        standard = min(standard, int(ro_keep))
+    return [
+        ("auto", "auto", f"follow free disk → ~{rec} with photos ({info['free_gb']:.0f} GB free)"),
+        ("light", light, "metadata-heavy, few local images"),
+        ("standard", standard, "recent jobs keep photos"),
+        ("recommended", rec, "sized for this machine right now"),
+        ("heavy", heavy, "keep more photo files locally"),
+        ("match_ros", "match", "same as local RO keep"),
+        ("custom", None, "type any number"),
+    ]
+
+
+def _is_auto(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str) and value.strip().lower() in {"auto", "dynamic", ""}:
+        return True
+    return False
+
+
+def resolve_local_keep(cfg: dict | None = None) -> int:
+    cfg = cfg or load_config()
+    raw = cfg.get("local_keep", "auto")
+    if _is_auto(raw):
+        return recommend_local_keep()
+    return max(0, int(raw))
+
+
+def resolve_local_photo_keep(cfg: dict | None = None) -> int:
+    cfg = cfg or load_config()
+    ro_keep = resolve_local_keep(cfg)
+    raw = cfg.get("local_photo_keep", "auto")
+    if isinstance(raw, str) and raw.strip().lower() == "match":
+        return ro_keep
+    if _is_auto(raw):
+        return recommend_local_photo_keep(ro_keep=ro_keep)
+    return max(0, min(int(raw), ro_keep if ro_keep else int(raw)))
+
+
+def format_keep_setting(raw: object, resolved: int) -> str:
+    if isinstance(raw, str) and raw.strip().lower() == "match":
+        return f"match (→ {resolved})"
+    if _is_auto(raw):
+        return f"auto (→ {resolved})"
+    return str(int(raw))
+
+
 def save_config(cfg: dict) -> Path:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     photos = cfg.get("photos") or {}
+
+    def _keep_toml(value: object, default: object = "auto") -> str:
+        if value is None:
+            value = default
+        if isinstance(value, str):
+            return _toml_str(value.strip() or "auto")
+        return str(int(value))
+
     lines = [
         f'shop_name = {_toml_str(cfg.get("shop_name", "(shop name here)"))}',
+        f'logo_path = {_toml_str(cfg.get("logo_path", ""))}',
         f'server_url = {_toml_str(cfg.get("server_url", ""))}',
         f'token = {_toml_str(cfg.get("token", ""))}',
-        f'local_keep = {int(cfg.get("local_keep", 20))}',
-        f'local_photo_keep = {int(cfg.get("local_photo_keep", 20))}',
+        f'local_keep = {_keep_toml(cfg.get("local_keep", "auto"))}',
+        f'local_photo_keep = {_keep_toml(cfg.get("local_photo_keep", "auto"))}',
         "",
         "[photos]",
         f'provider = {_toml_str(photos.get("provider", "local"))}',

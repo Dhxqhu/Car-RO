@@ -195,6 +195,7 @@ async def upload_photo(
     ro_id: str,
     file: UploadFile = File(...),
     tag: str = Form("other"),
+    notes: str = Form(""),
     volume: str | None = Form(None),
     _: None = Depends(require_auth),
 ):
@@ -203,7 +204,12 @@ async def upload_photo(
         raise HTTPException(400, "Empty file")
     try:
         return _save_photo_bytes(
-            ro_id, file.filename or "photo.bin", data, tag or "other", volume
+            ro_id,
+            file.filename or "photo.bin",
+            data,
+            tag or "other",
+            volume,
+            notes=notes or "",
         )
     except KeyError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -230,7 +236,14 @@ def download_photo(
     return FileResponse(path)
 
 
-def _save_photo_bytes(ro_id: str, filename: str, data: bytes, tag: str, volume: str | None = None) -> dict:
+def _save_photo_bytes(
+    ro_id: str,
+    filename: str,
+    data: bytes,
+    tag: str,
+    volume: str | None = None,
+    notes: str = "",
+) -> dict:
     vol = volume or VOLUMES.default_name
     dest_dir = VOLUMES.photos_dir(ro_id, vol)
     photo_id = uuid.uuid4().hex[:12]
@@ -242,6 +255,7 @@ def _save_photo_bytes(ro_id: str, filename: str, data: bytes, tag: str, volume: 
         "id": photo_id,
         "filename": safe_name,
         "tag": tag,
+        "notes": (notes or "").strip(),
         "volume": vol,
         "relpath": dest_name,
     }
@@ -310,6 +324,7 @@ async def upload_via_token(
     token: str,
     file: UploadFile = File(...),
     tag: str = Form(""),
+    notes: str = Form(""),
 ):
     sess = UPLOADS.get(token)
     if not sess:
@@ -318,7 +333,13 @@ async def upload_via_token(
     data = await file.read()
     if not data:
         raise HTTPException(400, "Empty file")
-    meta = _save_photo_bytes(sess.ro_id, file.filename or "photo.jpg", data, use_tag)
+    meta = _save_photo_bytes(
+        sess.ro_id,
+        file.filename or "photo.jpg",
+        data,
+        use_tag,
+        notes=notes or "",
+    )
     UPLOADS.bump(token)
     return {"ok": True, "photo": meta, "uploads": UPLOADS.get(token).uploads if UPLOADS.get(token) else 0}
 

@@ -151,17 +151,51 @@ class LocalStore:
             hits.append(order)
         return hits
 
-    def prune(self, keep: int | None = None) -> list[str]:
-        """Drop oldest ROs beyond keep count. Returns removed ids."""
+    def prune(self, keep: int | None = None, photo_keep: int | None = None) -> list[str]:
+        """
+        Trim local cache to configured limits.
+        - keep: max ROs retained in local SQLite (oldest beyond this are deleted)
+        - photo_keep: among retained ROs, only this many newest keep photo files on disk
+        Returns removed RO ids (fully deleted).
+        """
+        from carro.config import resolve_local_keep, resolve_local_photo_keep
+
         cfg = load_config()
-        keep = int(keep if keep is not None else cfg.get("local_keep", 20))
+        keep = int(keep if keep is not None else resolve_local_keep(cfg))
+        photo_keep = int(
+            photo_keep if photo_keep is not None else resolve_local_photo_keep(cfg)
+        )
+        photo_keep = max(0, min(photo_keep, keep))
         orders = self.list_orders()
+        removed: list[str] = []
+
+        # Strip photos from ROs that are kept but outside photo_keep window
+        for order in orders[photo_keep:keep]:
+            photo_dir = photos_dir() / order.id
+            if not photo_dir.is_dir():
+                continue
+            cleared = False
+            for p in list(photo_dir.iterdir()):
+                try:
+                    p.unlink(missing_ok=True)
+                    cleared = True
+                except OSError:
+                    pass
+            try:
+                photo_dir.rmdir()
+            except OSError:
+                pass
+            if cleared:
+                # Keep metadata so PDF/server still know photos existed remotely
+                for meta in order.photos:
+                    meta["local_cleared"] = True
+                self.save(order)
+
         if len(orders) <= keep:
-            return []
-        removed = []
+            return removed
+
         for order in orders[keep:]:
             self.delete(order.id)
-            # photo files
             photo_dir = photos_dir() / order.id
             if photo_dir.is_dir():
                 for p in photo_dir.iterdir():

@@ -22,7 +22,8 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
-from carro.config import CONFIG_FILE, ensure_dirs, load_config, save_config
+from carro.config import ensure_dirs, load_config, save_config
+from carro.core.config_menu import print_config_summary, run_config_menu
 from carro.core.db import LocalStore
 from carro.core.form import run_ro_form
 from carro.core.models import RepairOrder
@@ -97,7 +98,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("id", nargs="?")
     sub.add_parser("sync", help="Push local ROs to server + prune cache")
     s = sub.add_parser("config", help="Show or set config")
-    s.add_argument("action", nargs="?", choices=["show", "set", "init"], default="show")
+    s.add_argument(
+        "action",
+        nargs="?",
+        choices=["show", "set", "init", "menu"],
+        default="menu",
+    )
     s.add_argument("key", nargs="?")
     s.add_argument("value", nargs="?")
     s = sub.add_parser("photo", help="Attach photos")
@@ -110,6 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("paths", nargs="*")
     s.add_argument("--id", dest="ro_id")
     s.add_argument("--tag", default="intake", choices=["intake", "diag", "other"])
+    s.add_argument("--note", default=None, help="Optional note stored with attached photo(s)")
     s = sub.add_parser("search", help="Search ROs by make/model/year/name/VIN/…")
     s.add_argument("query", nargs="*", help="Free-text query")
     s.add_argument("--make", default="")
@@ -137,7 +144,7 @@ def interactive_menu(store: LocalStore) -> None:
         table.add_row("[bold cyan]6[/]", "Add photos (file / inbox / iPhone QR)")
         table.add_row("[bold cyan]7[/]", "Export customer PDF")
         table.add_row("[bold cyan]8[/]", "Sync to server + prune local cache")
-        table.add_row("[bold cyan]9[/]", "Config")
+        table.add_row("[bold cyan]9[/]", "Config (edit settings)")
         table.add_row("[bold cyan]q[/]", "Quit")
         CONSOLE.print(Panel(table, border_style="cyan"))
         if current:
@@ -173,7 +180,7 @@ def interactive_menu(store: LocalStore) -> None:
             elif choice == "8":
                 cmd_sync(store)
             elif choice == "9":
-                cmd_config(argparse.Namespace(action="show", key=None, value=None))
+                run_config_menu()
             else:
                 CONSOLE.print("[yellow]Unknown option[/]")
         except (RuntimeError, ValueError) as exc:
@@ -513,6 +520,8 @@ def _open_pdf(path: Path) -> None:
 
 
 def cmd_sync(store: LocalStore) -> None:
+    from carro.config import resolve_local_keep, resolve_local_photo_keep
+
     remote = RemoteClient()
     if not remote.enabled:
         CONSOLE.print("[yellow]No server_url configured — local only.[/]")
@@ -528,44 +537,48 @@ def cmd_sync(store: LocalStore) -> None:
             remote.upsert_ro(order)
             CONSOLE.print(f"  pushed {order.id}")
     removed = store.prune()
+    cfg = load_config()
+    keep_n = resolve_local_keep(cfg)
+    photo_n = resolve_local_photo_keep(cfg)
     if removed:
         CONSOLE.print(f"[dim]Pruned local cache:[/] {', '.join(removed)}")
     else:
-        CONSOLE.print("[dim]Local cache within local_keep limit.[/]")
+        CONSOLE.print(
+            f"[dim]Local cache within limits "
+            f"(keep {keep_n} ROs, {photo_n} with photos).[/]"
+        )
 
 
 def cmd_config(args: argparse.Namespace) -> None:
     cfg = load_config()
-    if args.action == "init":
+    action = args.action or "menu"
+    if action == "menu":
+        run_config_menu()
+        return
+    if action == "init":
         cfg["token"] = cfg.get("token") or secrets.token_urlsafe(24)
         path = save_config(cfg)
         ensure_dirs(cfg)
         CONSOLE.print(f"[green]Wrote[/] {path}")
         return
-    if args.action == "set":
+    if action == "set":
         if not args.key:
             raise ValueError("Usage: carro config set <key> <value>")
         key, value = args.key, args.value if args.value is not None else ""
         if key.startswith("photos."):
             cfg.setdefault("photos", {})[key.split(".", 1)[1]] = value
         elif key in {"local_keep", "local_photo_keep"}:
-            cfg[key] = int(value)
+            v = str(value).strip().lower()
+            if v in {"auto", "dynamic", "match"}:
+                cfg[key] = "match" if v == "match" else "auto"
+            else:
+                cfg[key] = int(value)
         else:
             cfg[key] = value
         save_config(cfg)
         CONSOLE.print(f"[green]Set[/] {key}")
         return
-    CONSOLE.print(Panel(
-        f"file: {CONFIG_FILE}\n"
-        f"shop_name: {cfg.get('shop_name')}\n"
-        f"server_url: {cfg.get('server_url') or '(local only)'}\n"
-        f"token: {'(set)' if cfg.get('token') else '(empty)'}\n"
-        f"local_keep: {cfg.get('local_keep')}\n"
-        f"photos.provider: {(cfg.get('photos') or {}).get('provider')}\n"
-        f"photos.inbox_dir: {(cfg.get('photos') or {}).get('inbox_dir')}",
-        title="carro config",
-        border_style="cyan",
-    ))
+    print_config_summary()
 
 
 def cmd_photo(store: LocalStore, args: argparse.Namespace) -> None:
@@ -578,7 +591,11 @@ def cmd_photo(store: LocalStore, args: argparse.Namespace) -> None:
             CONSOLE.print("[dim]No photos.[/]")
             return
         for p in order.photos:
-            CONSOLE.print(f"  {p.get('tag')}: {p.get('filename')} ({p.get('volume')})")
+            note = (p.get("notes") or p.get("note") or "").strip()
+            line = f"  {p.get('tag')}: {p.get('filename')} ({p.get('volume')})"
+            if note:
+                line += f" — {note}"
+            CONSOLE.print(line)
         return
 
     if args.action == "phone":
@@ -603,7 +620,14 @@ def cmd_photo(store: LocalStore, args: argparse.Namespace) -> None:
     if not found:
         CONSOLE.print("[yellow]No images found.[/]")
         return
-    order = attach_photos(store, order, found, tag=args.tag)
+    notes_by_path = _collect_photo_notes(found, preset=getattr(args, "note", None))
+    order = attach_photos(
+        store,
+        order,
+        found,
+        tag=args.tag,
+        notes_by_path=notes_by_path,
+    )
     if args.action == "ingest":
         for p in found:
             try:
@@ -612,6 +636,33 @@ def cmd_photo(store: LocalStore, args: argparse.Namespace) -> None:
                 pass
     CONSOLE.print(f"[green]Attached[/] {len(found)} photo(s) → {order.id}")
     _maybe_push(order)
+
+
+def _collect_photo_notes(
+    paths: list[Path], *, preset: str | None = None
+) -> dict[str, str]:
+    """Optional notes at attach time. Blank skips."""
+    if preset is not None:
+        note = preset.strip()
+        return {str(p): note for p in paths} if note else {}
+    if len(paths) == 1:
+        note = Prompt.ask(
+            f"Note for {paths[0].name} (optional)",
+            default="",
+        ).strip()
+        return {str(paths[0]): note} if note else {}
+    shared = Prompt.ask(
+        "Note for all photos (optional; leave blank to note each)",
+        default="",
+    ).strip()
+    if shared:
+        return {str(p): shared for p in paths}
+    out: dict[str, str] = {}
+    for p in paths:
+        note = Prompt.ask(f"Note for {p.name} (optional)", default="").strip()
+        if note:
+            out[str(p)] = note
+    return out
 
 
 def _phone_upload_flow(store: LocalStore, order: RepairOrder, *, tag: str) -> None:
@@ -661,7 +712,7 @@ def _menu_photos(store: LocalStore, ro_id: str) -> None:
         choices=["phone", "add", "ingest"],
         default="phone",
     )
-    args = argparse.Namespace(action=mode, paths=[], ro_id=ro_id, tag=tag)
+    args = argparse.Namespace(action=mode, paths=[], ro_id=ro_id, tag=tag, note=None)
     if mode == "add":
         raw = Prompt.ask("Image path(s), space-separated").strip()
         args.paths = raw.split() if raw else []

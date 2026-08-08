@@ -41,7 +41,7 @@ def start_phone_upload(
             f"RO: [cyan]{ro_id}[/]  tag: [cyan]{tag}[/]\n"
             f"1. Turn on Tailscale on the iPhone\n"
             f"2. Scan the QR (or open the URL in Safari)\n"
-            f"3. Take / choose photos and tap Upload\n"
+            f"3. Optionally add notes, take / choose photos, and tap Upload\n"
             f"4. Come back here and press Enter to refresh the RO\n\n"
             f"[bold]{url}[/]",
             border_style="magenta",

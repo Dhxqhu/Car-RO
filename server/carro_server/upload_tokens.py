@@ -66,10 +66,11 @@ UPLOAD_PAGE = """<!DOCTYPE html>
   h1 { font-size: 1.25rem; margin: 0 0 .5rem; }
   .meta { color: #888; font-size: .9rem; margin-bottom: 1rem; }
   label { display: block; margin: .75rem 0 .25rem; font-weight: 600; }
-  select, input[type=file], button {
+  select, input[type=file], textarea, button {
     width: 100%; box-sizing: border-box; font-size: 1rem; padding: .75rem;
     border-radius: .5rem; border: 1px solid #555;
   }
+  textarea { min-height: 4.5rem; resize: vertical; }
   button {
     margin-top: 1rem; background: #0a7; color: #fff; border: none; font-weight: 700;
   }
@@ -90,6 +91,8 @@ UPLOAD_PAGE = """<!DOCTYPE html>
       <option value="diag">diag</option>
       <option value="other">other</option>
     </select>
+    <label for="notes">Notes (optional)</label>
+    <textarea id="notes" name="notes" placeholder="What this photo shows…"></textarea>
     <label for="file">Photos (camera or library)</label>
     <input id="file" name="file" type="file" accept="image/*" capture="environment" multiple required/>
     <button type="submit" id="go">Upload</button>
@@ -98,6 +101,7 @@ UPLOAD_PAGE = """<!DOCTYPE html>
 <script>
 const tagSel = document.getElementById('tag');
 tagSel.value = "__TAG__";
+const notesEl = document.getElementById('notes');
 const status = document.getElementById('status');
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -106,11 +110,13 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   const btn = document.getElementById('go');
   btn.disabled = true;
   status.innerHTML = '';
+  const notes = notesEl.value.trim();
   let ok = 0, fail = 0;
   for (const file of files) {
     const fd = new FormData();
     fd.append('file', file, file.name);
     fd.append('tag', tagSel.value);
+    fd.append('notes', notes);
     try {
       const r = await fetch(location.pathname, { method: 'POST', body: fd });
       if (!r.ok) throw new Error(await r.text());
