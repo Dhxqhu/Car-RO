@@ -161,7 +161,19 @@ def export_pdf(order: RepairOrder, dest: Path | None = None) -> Path:
     right: object = ""
     logo = _resolve_logo(cfg)
     if logo:
-        right = Image(str(logo), width=1.9 * inch, height=0.46 * inch)
+        try:
+            from reportlab.lib.utils import ImageReader
+
+            reader = ImageReader(str(logo))
+            iw, ih = reader.getSize()
+            max_w, max_h = 1.9 * inch, 0.55 * inch
+            if iw > 0 and ih > 0:
+                scale = min(max_w / iw, max_h / ih)
+                right = Image(str(logo), width=iw * scale, height=ih * scale)
+            else:
+                right = Image(str(logo), width=max_w, height=max_h)
+        except Exception:
+            right = Image(str(logo), width=1.9 * inch, height=0.46 * inch)
     header = Table([[left, right]], colWidths=[4.6 * inch, 2.0 * inch])
     header.setStyle(
         TableStyle(

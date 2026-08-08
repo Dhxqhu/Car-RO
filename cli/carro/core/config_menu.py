@@ -22,6 +22,7 @@ from carro.config import (
     resolve_local_photo_keep,
     save_config,
 )
+from carro.core.logo_setup import logo_status
 
 CONSOLE = Console()
 
@@ -60,8 +61,8 @@ def run_config_menu() -> None:
         )
         table.add_row(
             "[bold cyan]6[/]",
-            "Logo path",
-            str(cfg.get("logo_path") or "(none)"),
+            "Shop logo (PDF)",
+            logo_status(cfg)[0],
         )
         table.add_row(
             "[bold cyan]7[/]",
@@ -112,7 +113,9 @@ def run_config_menu() -> None:
             elif choice == "5":
                 _edit_keep(cfg, key="local_photo_keep")
             elif choice == "6":
-                _edit_str(cfg, "logo_path", "Logo path")
+                from carro.core.logo_setup import run_logo_setup
+
+                run_logo_setup()
             elif choice == "7":
                 _edit_photos_path(cfg, "dir", "Photos directory")
             elif choice == "8":
@@ -259,7 +262,7 @@ def print_config_summary() -> None:
             f"local_keep: {format_keep_setting(cfg.get('local_keep'), resolve_local_keep(cfg))}\n"
             f"local_photo_keep: "
             f"{format_keep_setting(cfg.get('local_photo_keep'), resolve_local_photo_keep(cfg))}\n"
-            f"logo_path: {cfg.get('logo_path') or '(none)'}\n"
+            f"logo: {logo_status(cfg)[0]}\n"
             f"photos.provider: {(cfg.get('photos') or {}).get('provider')}\n"
             f"photos.dir: {(cfg.get('photos') or {}).get('dir')}\n"
             f"photos.inbox_dir: {(cfg.get('photos') or {}).get('inbox_dir')}\n"

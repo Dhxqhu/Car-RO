@@ -99,6 +99,23 @@ carro config           # shop name, logo, optional server, …
 
 Set your shop name (and optional logo) in the config menu. **Do not** put real tokens, hostnames, or shop secrets into git — they stay in `~/.config/carro/`.
 
+### Add your shop logo (PDF)
+
+The logo shows **top-right** on customer PDFs. You do not need to edit config files by hand.
+
+1. Save your logo as a **PNG** or **JPG** (e.g. into Downloads)  
+2. Run either:
+
+```bash
+carro logo
+# or: carro → c Config → 6 Shop logo
+```
+
+3. Pick the file from the list (or choose “I already saved logo.png in Documents/Car-RO/branding/”)  
+4. Export a PDF (`carro pdf` or menu **9**) to check it  
+
+Car-RO copies the image to `~/.config/carro/` for you. Change or clear it anytime from the same menu.
+
 ### Optional: install with git
 
 If you already use git:

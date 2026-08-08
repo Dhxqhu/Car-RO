@@ -24,6 +24,7 @@ from rich.table import Table
 
 from carro.config import ensure_dirs, load_config, save_config
 from carro.core.config_menu import print_config_summary, run_config_menu
+from carro.core.logo_setup import run_logo_setup
 from carro.core.db import LocalStore
 from carro.core.form import run_ro_form
 from carro.core.history import HistoryResult, vehicle_fields_from, vehicle_history
@@ -56,6 +57,7 @@ def main(argv: list[str] | None = None) -> None:
         "pull-obd": lambda: cmd_pull_obd(store, args.id),
         "pdf": lambda: cmd_pdf(store, args.id),
         "sync": lambda: cmd_sync(store),
+        "logo": lambda: run_logo_setup(),
         "config": lambda: cmd_config(args),
         "photo": lambda: cmd_photo(store, args),
         "history": lambda: cmd_history(
@@ -105,6 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("pdf", help="Export customer PDF")
     s.add_argument("id", nargs="?")
     sub.add_parser("sync", help="Push local ROs to server + prune cache")
+    sub.add_parser("logo", help="Set shop logo for PDFs (easy wizard)")
     s = sub.add_parser("config", help="Show or set config")
     s.add_argument(
         "action",

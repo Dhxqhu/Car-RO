@@ -3,6 +3,7 @@
 
 shop_name = "(shop name here)"
 # Optional shop logo for PDF header (top-right). PNG/JPG recommended.
+# Easiest: run `carro logo` (or config menu → Shop logo) — it copies the file for you.
 # logo_path = "~/.config/carro/logo.png"
 
 # Leave server_url empty for local-only mode.
