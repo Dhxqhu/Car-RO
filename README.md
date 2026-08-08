@@ -11,7 +11,14 @@ Built for mechanics and techs who:
 - Want a **typed PDF** for the advisor instead of chicken-scratch on a carbon form
 - Want **phone photos** attached to the write-up without fighting AirDrop into a random Downloads folder every time
 
-Pair it with [obdscan](https://github.com/Dhxqhu/obdscan) (optional) to pull VIN / vehicle / DTC context into the RO.
+### Companion tools & hardware
+
+| | Link |
+| --- | --- |
+| **obdscan** (CLI OBD companion) | [github.com/Dhxqhu/obdscan](https://github.com/Dhxqhu/obdscan) |
+| **GODIAG GT327** (ELM327 Bluetooth + DoIP/ENET adapter) | [Amazon](https://www.amazon.com/dp/B0DKXPRLPP) · [Godiag product page](https://www.godiagshop.eu/wholesale/godiag-gt327.html) |
+
+Car-RO can pull VIN / vehicle / DTC context from **obdscan** (and its Saved Codes exports) into a repair order. **obdscan** is written around cheap ELM327-class dongles such as the **GT327**, including the adapter’s DoIP ethernet mode for enhanced OEM packs.
 
 ---
 
