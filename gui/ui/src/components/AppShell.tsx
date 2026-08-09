@@ -1,11 +1,24 @@
-import { Cable, Moon, Sun, Wrench } from "lucide-react";
+import { Cable, Moon, Sun } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
+import carroMark from "@/assets/carro-mark-512.png";
+import carroMarkOnDark from "@/assets/carro-mark-512-on-dark.png";
+import carroWordmark from "@/assets/carro-wordmark.png";
+import carroWordmarkOnDark from "@/assets/carro-wordmark-on-dark.png";
 
 const workspaces = [
-  { to: "/", label: "Orders", match: (p: string) => p === "/" || p.startsWith("/ro") },
+  {
+    to: "/",
+    label: "Orders",
+    match: (p: string) =>
+      p === "/" ||
+      p.startsWith("/ro") ||
+      p.startsWith("/history") ||
+      p.startsWith("/settings") ||
+      p.startsWith("/techs"),
+  },
   { to: "/scan", label: "Scanner", match: (p: string) => p.startsWith("/scan") },
 ];
 
@@ -31,19 +44,40 @@ export function AppShell({
   const { pathname } = useLocation();
   const inScan = pathname.startsWith("/scan");
   const scannerShell = variant === "scanner";
+  const dark = theme === "dark";
 
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-20 border-b border-border/80 bg-bg/80 backdrop-blur-md">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-5 py-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-accent-fg">
-              {scannerShell ? <Cable className="h-4 w-4" /> : <Wrench className="h-4 w-4" />}
-            </div>
-            <div>
-              <div className="font-[family-name:var(--font-display)] text-lg font-semibold leading-none tracking-tight">
-                {scannerShell ? "obdscan" : "Car-RO"}
+            {scannerShell ? (
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-accent-fg">
+                <Cable className="h-4 w-4" />
               </div>
+            ) : (
+              <img
+                src={dark ? carroMarkOnDark : carroMark}
+                alt=""
+                width={36}
+                height={36}
+                className="h-9 w-9 object-contain"
+                draggable={false}
+              />
+            )}
+            <div>
+              {scannerShell ? (
+                <div className="font-[family-name:var(--font-display)] text-lg font-semibold leading-none tracking-tight">
+                  obdscan
+                </div>
+              ) : (
+                <img
+                  src={dark ? carroWordmarkOnDark : carroWordmark}
+                  alt="Car-RO"
+                  className="h-7 w-auto max-w-[9.5rem] object-contain object-left"
+                  draggable={false}
+                />
+              )}
               <div className="mt-1 text-xs text-muted">
                 {scannerShell
                   ? scannerOnly

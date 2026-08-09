@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useTheme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
+import carroWordmark from "@/assets/carro-wordmark.png";
+import carroWordmarkOnDark from "@/assets/carro-wordmark-on-dark.png";
 
 const PIN_LEN = 4;
 
@@ -122,10 +124,13 @@ export function LoginPage({
           onSubmit={submit}
           className="rounded-2xl border border-border bg-surface p-8 shadow-sm"
         >
-          <p className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
-            Car-RO
-          </p>
-          <p className="mt-2 text-sm text-muted">
+          <img
+            src={theme === "dark" ? carroWordmarkOnDark : carroWordmark}
+            alt="Car-RO"
+            className="mx-auto h-12 w-auto max-w-full object-contain sm:h-14"
+            draggable={false}
+          />
+          <p className="mt-3 text-sm text-muted">
             Pick your name and enter your 4-digit PIN to stamp repair orders.
           </p>
 
