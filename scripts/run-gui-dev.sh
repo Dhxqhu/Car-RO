@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
 # Start local engine + Vite UI for GUI development.
+# Usage:
+#   ./scripts/run-gui-dev.sh           # full app (login → Orders or Open Scanner)
+#   ./scripts/run-gui-dev.sh --scanner # scanner-only (skip login / no Orders)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+SCANNER_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --scanner|-s) SCANNER_ONLY=1 ;;
+  esac
+done
+
 export PYTHONPATH="$ROOT/cli:$ROOT/server:$ROOT/engine${PYTHONPATH:+:$PYTHONPATH}"
+if [[ -d "$(dirname "$ROOT")/obdscan" ]]; then
+  export OBDSCAN_ROOT="${OBDSCAN_ROOT:-$(dirname "$ROOT")/obdscan}"
+fi
+
 PY="${ROOT}/.venv/bin/python"
 if [[ ! -x "$PY" ]]; then
   echo "error: run ./scripts/install.sh first" >&2
@@ -21,5 +35,12 @@ cd "$ROOT/gui/ui"
 if [[ ! -d node_modules ]]; then
   npm install
 fi
-echo "==> UI on http://127.0.0.1:1420 (proxies /api → engine)"
+
+if [[ "$SCANNER_ONLY" -eq 1 ]]; then
+  export VITE_CARRO_MODE=scanner
+  echo "==> UI (scanner-only) on http://127.0.0.1:1420/?mode=scanner"
+else
+  unset VITE_CARRO_MODE || true
+  echo "==> UI on http://127.0.0.1:1420 (proxies /api → engine)"
+fi
 npm run dev

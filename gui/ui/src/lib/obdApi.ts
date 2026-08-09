@@ -63,6 +63,15 @@ export const obdApi = {
       obdscan_found: boolean;
       wired: boolean;
       session: ObdSession;
+      lock?: {
+        held: boolean;
+        stale?: boolean;
+        pid?: number;
+        owner?: string;
+        port?: string;
+        path?: string;
+        alive?: boolean;
+      };
     }>("/obd/health"),
   session: () => req<{ session: ObdSession }>("/obd/session"),
   adapters: () =>

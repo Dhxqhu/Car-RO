@@ -1,4 +1,4 @@
-import { Moon, Sun, Wrench } from "lucide-react";
+import { Cable, Moon, Sun, Wrench } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/useTheme";
@@ -15,10 +15,21 @@ const orderLinks = [
   { to: "/techs", label: "Technicians" },
 ];
 
-export function AppShell({ techName }: { techName?: string }) {
+export function AppShell({
+  variant = "full",
+  techName,
+  scannerOnly = false,
+  onExit,
+}: {
+  variant?: "full" | "scanner";
+  techName?: string;
+  scannerOnly?: boolean;
+  onExit?: () => void;
+}) {
   const { theme, toggle } = useTheme();
   const { pathname } = useLocation();
   const inScan = pathname.startsWith("/scan");
+  const scannerShell = variant === "scanner";
 
   return (
     <div className="min-h-screen">
@@ -26,42 +37,50 @@ export function AppShell({ techName }: { techName?: string }) {
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-5 py-3">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-accent-fg">
-              <Wrench className="h-4 w-4" />
+              {scannerShell ? <Cable className="h-4 w-4" /> : <Wrench className="h-4 w-4" />}
             </div>
             <div>
               <div className="font-[family-name:var(--font-display)] text-lg font-semibold leading-none tracking-tight">
-                Car-RO
+                {scannerShell ? "obdscan" : "Car-RO"}
               </div>
-              {techName ? (
-                <div className="mt-1 text-xs text-muted">Logged in as {techName}</div>
-              ) : null}
+              <div className="mt-1 text-xs text-muted">
+                {scannerShell
+                  ? scannerOnly
+                    ? "Scanner only"
+                    : "Scanner · no technician login"
+                  : techName
+                    ? `Logged in as ${techName}`
+                    : null}
+              </div>
             </div>
-            <div
-              className="ml-2 flex rounded-lg border border-border bg-surface p-0.5"
-              role="tablist"
-              aria-label="Workspace"
-            >
-              {workspaces.map((w) => {
-                const active = w.match(pathname);
-                return (
-                  <NavLink
-                    key={w.to}
-                    to={w.to}
-                    role="tab"
-                    aria-selected={active}
-                    className={cn(
-                      "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-                      active ? "bg-accent text-accent-fg" : "text-muted hover:text-fg",
-                    )}
-                  >
-                    {w.label}
-                  </NavLink>
-                );
-              })}
-            </div>
+            {!scannerShell ? (
+              <div
+                className="ml-2 flex rounded-lg border border-border bg-surface p-0.5"
+                role="tablist"
+                aria-label="Workspace"
+              >
+                {workspaces.map((w) => {
+                  const active = w.match(pathname);
+                  return (
+                    <NavLink
+                      key={w.to}
+                      to={w.to}
+                      role="tab"
+                      aria-selected={active}
+                      className={cn(
+                        "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                        active ? "bg-accent text-accent-fg" : "text-muted hover:text-fg",
+                      )}
+                    >
+                      {w.label}
+                    </NavLink>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
           <nav className="flex items-center gap-1">
-            {!inScan
+            {!scannerShell && !inScan
               ? orderLinks.map((l) => (
                   <NavLink
                     key={l.to}
@@ -78,6 +97,11 @@ export function AppShell({ techName }: { techName?: string }) {
                   </NavLink>
                 ))
               : null}
+            {onExit ? (
+              <Button variant="ghost" onClick={onExit}>
+                {scannerShell ? "Exit to login" : "Log out"}
+              </Button>
+            ) : null}
             <Button variant="ghost" size="icon" onClick={toggle} aria-label="Toggle theme">
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>

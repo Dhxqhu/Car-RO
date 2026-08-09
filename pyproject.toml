@@ -20,8 +20,15 @@ dependencies = [
   "textual>=0.80",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
 [project.scripts]
 carro = "carro.app:main"
 
 [tool.setuptools.packages.find]
 where = ["cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["cli"]

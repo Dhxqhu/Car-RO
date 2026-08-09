@@ -1,12 +1,18 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { Cable, Moon, Sun } from "lucide-react";
 import { api, type Technician } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useTheme } from "@/hooks/useTheme";
-import { Moon, Sun } from "lucide-react";
 
-export function LoginPage({ onAuthed }: { onAuthed: (name: string) => void }) {
+export function LoginPage({
+  onAuthed,
+  onOpenScanner,
+}: {
+  onAuthed: (name: string) => void;
+  onOpenScanner: () => void;
+}) {
   const { theme, toggle } = useTheme();
   const [techs, setTechs] = useState<Technician[]>([]);
   const [techId, setTechId] = useState("");
@@ -49,57 +55,75 @@ export function LoginPage({ onAuthed }: { onAuthed: (name: string) => void }) {
       >
         {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
       </Button>
-      <form
-        onSubmit={submit}
-        className="w-full max-w-md animate-[fadeIn_0.35s_ease] rounded-2xl border border-border bg-surface p-8 shadow-sm"
-      >
-        <p className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
-          Car-RO
-        </p>
-        <p className="mt-2 text-sm text-muted">
-          Pick your name and enter your 4-digit PIN to stamp repair orders.
-        </p>
+      <div className="w-full max-w-md animate-[fadeIn_0.35s_ease] space-y-4">
+        <form
+          onSubmit={submit}
+          className="rounded-2xl border border-border bg-surface p-8 shadow-sm"
+        >
+          <p className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
+            Car-RO
+          </p>
+          <p className="mt-2 text-sm text-muted">
+            Pick your name and enter your 4-digit PIN to stamp repair orders.
+          </p>
 
-        <div className="mt-8 space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="tech">Technician</Label>
-            <select
-              id="tech"
-              className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
-              value={techId}
-              onChange={(e) => setTechId(e.target.value)}
-            >
-              {techs.length === 0 ? (
-                <option value="">No technicians — set up via CLI first</option>
-              ) : (
-                techs.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))
-              )}
-            </select>
+          <div className="mt-8 space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="tech">Technician</Label>
+              <select
+                id="tech"
+                className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
+                value={techId}
+                onChange={(e) => setTechId(e.target.value)}
+              >
+                {techs.length === 0 ? (
+                  <option value="">No technicians — set up via CLI first</option>
+                ) : (
+                  techs.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="pin">PIN</Label>
+              <Input
+                id="pin"
+                type="password"
+                inputMode="numeric"
+                maxLength={4}
+                pattern="\d{4}"
+                placeholder="••••"
+                value={pin}
+                onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                autoFocus
+              />
+            </div>
+            {error ? <p className="text-sm text-danger">{error}</p> : null}
+            <Button className="w-full" disabled={loading || !techId || pin.length !== 4}>
+              {loading ? "Checking…" : "Continue"}
+            </Button>
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="pin">PIN</Label>
-            <Input
-              id="pin"
-              type="password"
-              inputMode="numeric"
-              maxLength={4}
-              pattern="\d{4}"
-              placeholder="••••"
-              value={pin}
-              onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
-              autoFocus
-            />
-          </div>
-          {error ? <p className="text-sm text-danger">{error}</p> : null}
-          <Button className="w-full" disabled={loading || !techId || pin.length !== 4}>
-            {loading ? "Checking…" : "Continue"}
+        </form>
+
+        <div className="rounded-2xl border border-dashed border-border bg-surface/60 p-6">
+          <p className="text-sm font-medium">Just need the scan tool?</p>
+          <p className="mt-1 text-sm text-muted">
+            Open Scanner without a PIN. Orders and tech settings stay locked until you log in.
+          </p>
+          <Button
+            type="button"
+            variant="secondary"
+            className="mt-4 w-full"
+            onClick={onOpenScanner}
+          >
+            <Cable className="h-4 w-4" />
+            Open Scanner
           </Button>
         </div>
-      </form>
+      </div>
       <style>{`@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}`}</style>
     </div>
   );

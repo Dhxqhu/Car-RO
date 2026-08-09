@@ -38,3 +38,7 @@ def last_vehicle_file() -> Path:
 
 def adapters_file() -> Path:
     return Path.home() / ".config" / "obdscan" / "adapters.json"
+
+
+def session_lock_file() -> Path:
+    return Path.home() / ".cache" / "obdscan" / "session.lock"

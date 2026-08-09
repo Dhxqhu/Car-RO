@@ -8,6 +8,7 @@ export function ScanConnectPage() {
   const [found, setFound] = useState<boolean | null>(null);
   const [root, setRoot] = useState<string | null>(null);
   const [wired, setWired] = useState(false);
+  const [lockHint, setLockHint] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -19,6 +20,13 @@ export function ScanConnectPage() {
         setFound(h.obdscan_found);
         setRoot(h.obdscan_root);
         setWired(h.wired);
+        if (h.lock?.held) {
+          setLockHint(`${h.lock.owner || "unknown"} (pid ${h.lock.pid}) · ${h.lock.port || "—"}`);
+        } else if (h.lock?.stale) {
+          setLockHint("stale lock (will clear on next connect)");
+        } else {
+          setLockHint(null);
+        }
       })
       .catch((e: Error) => setMsg(e.message));
 
@@ -54,7 +62,10 @@ export function ScanConnectPage() {
 
   return (
     <div className="space-y-4">
-      <ScaffoldNote />
+      <ScaffoldNote>
+        Connect opens a real ElmSession in the local engine and takes the shared adapter lock.
+        Codes / live pages are still scaffold until the next pass.
+      </ScaffoldNote>
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="rounded-xl border border-border bg-surface p-4">
           <div className="text-xs font-medium uppercase tracking-wide text-muted">Status</div>
@@ -96,6 +107,10 @@ export function ScanConnectPage() {
             <div className="flex justify-between gap-2">
               <dt>Live bus wired</dt>
               <dd className="text-fg">{wired ? "yes" : "not yet"}</dd>
+            </div>
+            <div className="flex justify-between gap-2">
+              <dt>Adapter lock</dt>
+              <dd className="text-right text-fg">{lockHint || "free"}</dd>
             </div>
           </dl>
           {root ? (

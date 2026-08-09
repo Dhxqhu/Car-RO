@@ -4,8 +4,8 @@ One **Tauri 2** desktop app for Windows and Linux with two workspaces:
 
 | Workspace | Purpose |
 | --- | --- |
-| **Orders** | Car-RO repair-order notes (login, RO editor, PDF, sync) |
-| **Scanner** | obdscan GUI scaffold (connect, codes, live, saved, adapters) |
+| **Orders** | Car-RO repair-order notes (tech PIN, RO editor, PDF, sync) |
+| **Scanner** | obdscan GUI (connect, codes, live, saved, adapters) — **no PIN required** |
 
 Same visual system (React + Tailwind, dark/light). One local Python engine serves both.
 
@@ -13,11 +13,23 @@ Same visual system (React + Tailwind, dark/light). One local Python engine serve
 gui/ui                → Vite + React + TypeScript
 gui/src-tauri         → Tauri shell (Windows + Linux)
 engine/carro_engine   → FastAPI: /session, /ros, /config, …
-engine/obd_engine     → FastAPI: /obd/* (scaffold; ElmSession wiring later)
-obdscan (sibling)     → CLI + libraries the OBD routes will call
+engine/obd_engine     → FastAPI: /obd/* + ElmSession + session.lock
+obdscan (sibling)     → CLI + libraries the OBD routes call
 ```
 
-Header switcher: **Orders** | **Scanner**. CLI tools (`carro`, `obdscan`) stay first-class; the GUI is the bay-friendly front end, not a replacement.
+### Login choices
+
+1. **Technician + PIN** → full app (Orders \| Scanner switcher)  
+2. **Open Scanner** → Scanner only, no tech session (Exit returns to login)  
+3. **Scanner-only launch** → skip login entirely:
+
+```bash
+./scripts/run-gui-dev.sh --scanner
+# or open http://127.0.0.1:1420/?mode=scanner
+# or VITE_CARRO_MODE=scanner / CARRO_MODE=scanner
+```
+
+CLI tools (`carro`, `obdscan`) stay first-class. A future small Python-only Scanner GUI is planned separately; it will share the same adapter lock and Saved Codes paths (see [OBD_HANDOFF.md](OBD_HANDOFF.md)).
 
 ## Prerequisites
 
@@ -26,7 +38,7 @@ Header switcher: **Orders** | **Scanner**. CLI tools (`carro`, `obdscan`) stay f
 | Node 20+ | UI |
 | Rust stable | `rustup` — required to build Tauri |
 | Python 3.10+ | Engine (repo `.venv` from `./scripts/install.sh`) |
-| obdscan checkout | Optional for scaffold; required later for live bus. Sibling `../obdscan` or `OBDSCAN_ROOT` |
+| obdscan checkout | Required for live Connect. Sibling `../obdscan` or `OBDSCAN_ROOT` |
 | Linux packages | WebKitGTK for Tauri (distro-specific; see below) |
 
 ### Linux system packages (Debian/Ubuntu example)
@@ -124,15 +136,20 @@ Routes under `/scan/*` + engine under `/obd/*`:
 
 | UI | Engine | Status |
 | --- | --- | --- |
-| Connect | `GET /obd/health`, `POST /obd/connect` | Scaffold (connect returns 501 until ElmSession is owned by the engine) |
+| Connect | `GET /obd/health`, `POST /obd/connect` | Live ElmSession + `session.lock` |
 | Codes / Live | `/obd/codes`, `/obd/live` | Stub pages |
-| Vehicle | `GET /obd/vehicle` | Reads `~/.cache/obdscan/last_vehicle.json` |
-| Saved | `GET /obd/saved` | Lists `Documents/Saved Codes` (shared with Car-RO autofill) |
+| Vehicle | `GET /obd/vehicle` | Cache / Saved Codes via provider |
+| Saved | `GET /obd/saved` | Lists `Documents/Saved Codes` |
 | Adapters | `GET /obd/adapters` | Reads `~/.config/obdscan/adapters.json` |
 
-Next implementation pass: hold an `ElmSession` (and optional DoIP) inside `obd_engine`, mirror CLI modules, and “Send to RO” from a saved scan.
+**Handoff + lock contract:** [OBD_HANDOFF.md](OBD_HANDOFF.md).
 
-**Handoff contract** (paths, writers, pull priority): [OBD_HANDOFF.md](OBD_HANDOFF.md).
+### Deferred (later)
+
+- Windows `.exe` + engine sidecar packaging  
+- Smaller Python-only Scanner GUI  
+
+Handoff + lock unit tests: `pytest` (see [OBD_HANDOFF.md](OBD_HANDOFF.md)).
 
 ## Theme
 

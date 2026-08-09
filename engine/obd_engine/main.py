@@ -1,16 +1,13 @@
 """
-FastAPI routes that will drive obdscan from the desktop GUI.
-
-Framework only for now: status + stubs. Real ELM/DoIP work lands later by
-calling into the sibling ``obdscan`` package (see ``OBDSCAN_ROOT``).
+FastAPI routes that drive obdscan from the desktop GUI.
 
 Filesystem handoff paths come from ``carro.obd.paths`` — same as CLI pull.
+Live bus ownership is ``obd_engine.session`` + shared ``session.lock``.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -18,31 +15,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from carro.obd.paths import adapters_file, last_vehicle_file, saved_codes_dir
+from carro.obd.session_lock import lock_status
+from obd_engine import session as obd_session
+from obd_engine.session import AdapterBusyError
 
 router = APIRouter(prefix="/obd", tags=["obd"])
-
-# In-memory session placeholder until ElmSession is wired through.
-_session: dict[str, Any] = {
-    "connected": False,
-    "port": None,
-    "baud": None,
-    "adapter_label": None,
-    "protocol": None,
-    "vin": None,
-}
-
-
-def _obdscan_root() -> Path | None:
-    env = os.environ.get("OBDSCAN_ROOT", "").strip()
-    if env:
-        p = Path(env).expanduser().resolve()
-        if (p / "obdscan.py").is_file() or (p / "elm.py").is_file():
-            return p
-    # Common sibling checkout next to Car-RO
-    sibling = Path(__file__).resolve().parents[3] / "obdscan"
-    if (sibling / "obdscan.py").is_file():
-        return sibling
-    return None
 
 
 def _read_json(path: Path) -> Any | None:
@@ -67,21 +44,19 @@ class LivePidsBody(BaseModel):
 
 @router.get("/health")
 def obd_health() -> dict[str, Any]:
-    root = _obdscan_root()
+    extras = obd_session.health_extras()
     lv = last_vehicle_file()
     sc = saved_codes_dir()
     return {
         "ok": True,
-        "obdscan_root": str(root) if root else None,
-        "obdscan_found": root is not None,
-        "wired": False,  # flips true when ElmSession is hooked up
-        "session": dict(_session),
+        **extras,
         "paths": {
             "saved_codes": str(sc),
             "last_vehicle": str(lv),
             "adapters": str(adapters_file()),
             "last_vehicle_exists": lv.is_file(),
             "saved_codes_exists": sc.is_dir(),
+            "session_lock": extras.get("lock", {}).get("path"),
         },
     }
 
@@ -95,7 +70,6 @@ def list_adapters() -> dict[str, Any]:
     if isinstance(raw, dict):
         default_id = str(raw.get("default") or "") or None
         items = raw.get("adapters") or {}
-        # obdscan stores adapters as { id: { label, port, baud, ... } }
         if isinstance(items, dict):
             for aid, item in items.items():
                 if isinstance(item, dict):
@@ -108,45 +82,40 @@ def list_adapters() -> dict[str, Any]:
         "path": str(path),
         "default_id": default_id,
         "adapters": adapters,
-        "note": "Read-only scaffold — edit via obdscan CLI Config for now.",
+        "note": "Read-only list — edit via obdscan CLI Config for now.",
     }
 
 
 @router.get("/session")
 def get_session() -> dict[str, Any]:
-    return {"session": dict(_session)}
+    return {"session": obd_session.public_session(), "lock": lock_status()}
 
 
 @router.post("/connect")
 def connect(body: ConnectBody) -> dict[str, Any]:
-    """
-    Placeholder connect. Returns 501 until the GUI engine owns an ElmSession.
-    """
-    root = _obdscan_root()
-    if not root:
-        raise HTTPException(
-            503,
-            "obdscan not found. Set OBDSCAN_ROOT or clone obdscan next to Car-RO.",
+    try:
+        sess = obd_session.connect(
+            port=body.port,
+            baud=body.baud,
+            adapter_id=body.adapter_id,
         )
-    raise HTTPException(
-        501,
-        "OBD connect not wired yet — use `obdscan` CLI for now. "
-        f"Will use port={body.port or 'adapter-default'} baud={body.baud or 'adapter-default'}.",
-    )
+    except AdapterBusyError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except ConnectionError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except Exception as exc:  # serial / import issues
+        raise HTTPException(502, f"Connect failed: {exc}") from exc
+    return {"session": sess, "lock": lock_status()}
 
 
 @router.post("/disconnect")
 def disconnect() -> dict[str, Any]:
-    _session.update(
-        {
-            "connected": False,
-            "port": None,
-            "baud": None,
-            "protocol": None,
-            "vin": None,
-        }
-    )
-    return {"ok": True, "session": dict(_session)}
+    sess = obd_session.disconnect()
+    return {"ok": True, "session": sess, "lock": lock_status()}
 
 
 @router.get("/vehicle")
@@ -162,7 +131,7 @@ def vehicle_info() -> dict[str, Any]:
     return {
         "source": None,
         "vehicle": None,
-        "note": "No cached vehicle. Run obdscan save / vehicle info, or wire /obd/connect.",
+        "note": "No cached vehicle. Run obdscan save / vehicle info, or connect.",
     }
 
 

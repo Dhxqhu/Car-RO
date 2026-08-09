@@ -200,7 +200,7 @@ def _parse_saved_report(path: Path) -> dict[str, str]:
             out["make"] = val.title()
     # Filename often embeds VIN when body is incomplete
     if not out.get("vin"):
-        m = re.search(r"_([A-HJ-NPR-Z0-9]{17})\.txt$", path.name.upper())
+        m = re.search(r"_([A-HJ-NPR-Z0-9]{17})\.txt$", path.name, re.IGNORECASE)
         if m:
-            out["vin"] = m.group(1)
+            out["vin"] = m.group(1).upper()
     return out
