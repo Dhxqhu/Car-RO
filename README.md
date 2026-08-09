@@ -1,10 +1,14 @@
+<p align="center">
+  <img src="docs/branding/carro-wordmark.png" alt="Car-RO" width="420" />
+</p>
+
 # Car-RO
 
 **Technician repair-order notes for people who also like running their own gear.**
 
-Car-RO is a terminal app for documenting diagnostic and repair work — the stuff you wish you’d written down *while you were still under the hood*. It is **not** a DMS, not billing, and not meant to replace your shop’s official RO system. It is a personal / bay-side knowledge base that happens to spit out a clean PDF a service advisor can read.
+Car-RO documents diagnostic and repair work — the stuff you wish you’d written down *while you were still under the hood*. It is **not** a DMS, not billing, and not meant to replace your shop’s official RO system. It is a personal / bay-side knowledge base that happens to spit out a clean PDF a service advisor can read.
 
-A gui is in progress for windows as i want to provide a proper gui tool for those just looking to take advantage of the cheap elm 327 devices, but this application was designed to be used in cli as it is my personal preference and i think it give a nice cyberpunk look that I think others with similar taste may find very tasteful in design. I plan to make a very professional looking gui though for those with a more modern taste. 
+Use the **CLI** if you like the terminal workflow, or the **desktop GUI** (Orders + Scanner) if you want a mouse-driven shop tool — same data, same config, same server. The GUI also wraps the cheap ELM327 / GT327 scan path for people who mainly want a proper scan tool UI.
 
 Built for mechanics and techs who:
 
@@ -43,6 +47,7 @@ Car-RO is the habit-forming middle step: open a job, dump complaint + notes + OB
 | Piece | What it does |
 | --- | --- |
 | **CLI (`carro`)** | Interactive menu + full-screen forms for new / edit / search |
+| **Desktop GUI** | Orders workspace + Scanner (obdscan) — Windows & Linux |
 | **Local SQLite** | Fast cache of recent ROs on the laptop |
 | **Customer PDF** | Shop header/logo, boxed complaint & tech notes, OBD block, photos + captions |
 | **Optional server** | Bulk storage on *your* disk(s), multi-volume aware |
