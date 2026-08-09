@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Plus, RefreshCw, Search } from "lucide-react";
+import { History, Plus, RefreshCw, Search } from "lucide-react";
 import { api, type RepairOrder } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -61,6 +61,10 @@ export function RoListPage() {
           <p className="mt-1 text-sm text-muted">Bay cache — sync to push/pull the shop server.</p>
         </div>
         <div className="flex gap-2">
+          <Button variant="secondary" onClick={() => nav("/history")} disabled={busy}>
+            <History className="h-4 w-4" />
+            History
+          </Button>
           <Button variant="secondary" onClick={() => void sync()} disabled={busy}>
             <RefreshCw className="h-4 w-4" />
             Sync

@@ -7,6 +7,7 @@ import { detectScannerOnlyBoot, persistMode, type AppMode } from "@/lib/sessionM
 import { LoginPage } from "@/pages/LoginPage";
 import { RoEditorPage } from "@/pages/RoEditorPage";
 import { RoListPage } from "@/pages/RoListPage";
+import { HistoryPage } from "@/pages/HistoryPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { TechsPage } from "@/pages/TechsPage";
 import { ScanAdaptersPage } from "@/pages/scan/ScanAdaptersPage";
@@ -121,6 +122,7 @@ export default function App() {
             >
               <Route index element={<RoListPage />} />
               <Route path="ro/:id" element={<RoEditorPage />} />
+              <Route path="history" element={<HistoryPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="techs" element={<TechsPage />} />
               {scanRoutes()}

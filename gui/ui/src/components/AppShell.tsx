@@ -11,7 +11,8 @@ const workspaces = [
 
 const orderLinks = [
   { to: "/", label: "Orders", end: true },
-  { to: "/settings", label: "Settings" },
+  { to: "/history", label: "History" },
+  { to: "/settings", label: "Config" },
   { to: "/techs", label: "Technicians" },
 ];
 

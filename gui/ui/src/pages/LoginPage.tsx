@@ -1,10 +1,12 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ClipboardEvent } from "react";
 import { Cable, Moon, Sun } from "lucide-react";
 import { api, type Technician } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useTheme } from "@/hooks/useTheme";
+import { cn } from "@/lib/utils";
+
+const PIN_LEN = 4;
 
 export function LoginPage({
   onAuthed,
@@ -16,9 +18,11 @@ export function LoginPage({
   const { theme, toggle } = useTheme();
   const [techs, setTechs] = useState<Technician[]>([]);
   const [techId, setTechId] = useState("");
-  const [pin, setPin] = useState("");
+  const [digits, setDigits] = useState<string[]>(() => Array(PIN_LEN).fill(""));
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
+  const pin = digits.join("");
 
   useEffect(() => {
     api
@@ -30,8 +34,64 @@ export function LoginPage({
       .catch((e: Error) => setError(e.message));
   }, []);
 
+  useEffect(() => {
+    inputsRef.current[0]?.focus();
+  }, []);
+
+  function focusAt(i: number) {
+    const el = inputsRef.current[Math.max(0, Math.min(PIN_LEN - 1, i))];
+    el?.focus();
+    el?.select();
+  }
+
+  function setDigitAt(index: number, value: string) {
+    const d = value.replace(/\D/g, "").slice(-1);
+    setDigits((prev) => {
+      const next = [...prev];
+      next[index] = d;
+      return next;
+    });
+    if (d && index < PIN_LEN - 1) focusAt(index + 1);
+  }
+
+  function onKeyDown(index: number, e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Backspace") {
+      e.preventDefault();
+      setDigits((prev) => {
+        const next = [...prev];
+        if (next[index]) {
+          next[index] = "";
+        } else if (index > 0) {
+          next[index - 1] = "";
+          queueMicrotask(() => focusAt(index - 1));
+        }
+        return next;
+      });
+      return;
+    }
+    if (e.key === "ArrowLeft" && index > 0) {
+      e.preventDefault();
+      focusAt(index - 1);
+    }
+    if (e.key === "ArrowRight" && index < PIN_LEN - 1) {
+      e.preventDefault();
+      focusAt(index + 1);
+    }
+  }
+
+  function onPaste(e: ClipboardEvent<HTMLInputElement>) {
+    e.preventDefault();
+    const raw = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, PIN_LEN);
+    if (!raw) return;
+    const next = Array(PIN_LEN).fill("");
+    for (let i = 0; i < raw.length; i++) next[i] = raw[i];
+    setDigits(next);
+    focusAt(Math.min(raw.length, PIN_LEN - 1));
+  }
+
   async function submit(e: FormEvent) {
     e.preventDefault();
+    if (pin.length !== PIN_LEN) return;
     setLoading(true);
     setError("");
     try {
@@ -39,6 +99,8 @@ export function LoginPage({
       onAuthed(r.technician.name);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
+      setDigits(Array(PIN_LEN).fill(""));
+      queueMicrotask(() => focusAt(0));
     } finally {
       setLoading(false);
     }
@@ -88,21 +150,38 @@ export function LoginPage({
               </select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="pin">PIN</Label>
-              <Input
-                id="pin"
-                type="password"
-                inputMode="numeric"
-                maxLength={4}
-                pattern="\d{4}"
-                placeholder="••••"
-                value={pin}
-                onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
-                autoFocus
-              />
+              <Label id="pin-label">PIN</Label>
+              <div
+                className="flex justify-center gap-2"
+                role="group"
+                aria-labelledby="pin-label"
+              >
+                {digits.map((digit, i) => (
+                  <input
+                    key={i}
+                    ref={(el) => {
+                      inputsRef.current[i] = el;
+                    }}
+                    type="password"
+                    inputMode="numeric"
+                    autoComplete={i === 0 ? "one-time-code" : "off"}
+                    maxLength={1}
+                    aria-label={`PIN digit ${i + 1}`}
+                    value={digit}
+                    onChange={(e) => setDigitAt(i, e.target.value)}
+                    onKeyDown={(e) => onKeyDown(i, e)}
+                    onPaste={onPaste}
+                    onFocus={(e) => e.target.select()}
+                    className={cn(
+                      "h-14 w-14 rounded-xl border border-border bg-bg text-center font-mono text-2xl text-fg",
+                      "outline-none transition-[border-color,box-shadow] focus:border-accent focus:ring-2 focus:ring-accent/30",
+                    )}
+                  />
+                ))}
+              </div>
             </div>
             {error ? <p className="text-sm text-danger">{error}</p> : null}
-            <Button className="w-full" disabled={loading || !techId || pin.length !== 4}>
+            <Button className="w-full" disabled={loading || !techId || pin.length !== PIN_LEN}>
               {loading ? "Checking…" : "Continue"}
             </Button>
           </div>

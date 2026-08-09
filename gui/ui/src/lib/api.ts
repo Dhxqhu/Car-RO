@@ -36,12 +36,46 @@ export type RepairOrder = {
   updated: string;
 };
 
+export type ConfigSnapshot = {
+  config_file: string;
+  shop_name: string;
+  server_url: string;
+  token_set: boolean;
+  theme: string;
+  textual_theme: string;
+  logo_path: string;
+  logo_status: string;
+  local_keep: string | number;
+  local_keep_resolved: number;
+  local_keep_display: string;
+  local_photo_keep: string | number;
+  local_photo_keep_resolved: number;
+  local_photo_keep_display: string;
+  photos_dir: string;
+  photos_inbox_dir: string;
+  photos_provider: string;
+  disk: { path: string; free_gb: number; total_gb: number };
+  recommend: { local_keep: number; local_photo_keep: number };
+  keep_presets: Array<{ label: string; value: string | number; detail: string }>;
+  photo_keep_presets: Array<{ label: string; value: string | number; detail: string }>;
+};
+
+export type HistoryResult = {
+  orders: RepairOrder[];
+  matched_by: string;
+  vin_query: string;
+  name_query: string;
+  remote_enabled: boolean;
+};
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`${engineBase()}${path}`, {
     ...init,
     headers: {
       Accept: "application/json",
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...(init?.body && !(init.body instanceof FormData)
+        ? { "Content-Type": "application/json" }
+        : {}),
       ...init?.headers,
     },
   });
@@ -57,6 +91,11 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (r.status === 204) return undefined as T;
   return r.json() as Promise<T>;
+}
+
+export function photoUrl(roId: string, relpath: string): string {
+  const name = relpath.split(/[/\\]/).pop() || relpath;
+  return `${engineBase()}/ros/${encodeURIComponent(roId)}/photos/file/${encodeURIComponent(name)}`;
 }
 
 export const api = {
@@ -88,16 +127,85 @@ export const api = {
     req<{ photos: Array<Record<string, unknown>> }>(
       `/ros/${encodeURIComponent(id)}/photos`,
     ),
-  sync: () => req<{ ok: boolean; message: string }>("/sync", { method: "POST" }),
-  getConfig: () =>
+  uploadPhotos: (id: string, files: File[], tag: string, notes = "") => {
+    const fd = new FormData();
+    fd.append("tag", tag);
+    fd.append("notes", notes);
+    for (const f of files) fd.append("files", f);
+    return req<RepairOrder>(`/ros/${encodeURIComponent(id)}/photos`, {
+      method: "POST",
+      body: fd,
+    });
+  },
+  ingestInboxPhotos: (id: string, tag: string, notes = "") =>
+    req<RepairOrder>(`/ros/${encodeURIComponent(id)}/photos/ingest`, {
+      method: "POST",
+      body: JSON.stringify({ tag, notes }),
+    }),
+  startPhoneUpload: (id: string, tag: string, mode: "phone" | "shortcut") =>
     req<{
-      shop_name: string;
-      server_url: string;
-      token_set: boolean;
-      theme: string;
-    }>("/config"),
-  setConfig: (body: Record<string, string>) =>
-    req<{ ok: boolean }>("/config", { method: "PUT", body: JSON.stringify(body) }),
+      token: string;
+      url: string;
+      help_url: string;
+      tag: string;
+      mode: string;
+      ttl_sec: number;
+    }>(`/ros/${encodeURIComponent(id)}/photos/phone`, {
+      method: "POST",
+      body: JSON.stringify({ tag, mode }),
+    }),
+  refreshPhotos: (id: string) =>
+    req<RepairOrder & { _local_files?: number }>(
+      `/ros/${encodeURIComponent(id)}/photos/refresh`,
+      { method: "POST" },
+    ),
+  history: (vin: string, name: string, excludeId?: string) => {
+    const params = new URLSearchParams();
+    if (vin.trim()) params.set("vin", vin.trim());
+    if (name.trim()) params.set("name", name.trim());
+    if (excludeId) params.set("exclude_id", excludeId);
+    return req<HistoryResult>(`/history?${params.toString()}`);
+  },
+  historyPack: (
+    vin: string,
+    name: string,
+    kind: "text" | "pdf" | "pdf-lite",
+    excludeId?: string,
+  ) =>
+    req<{
+      path: string;
+      kind: string;
+      count: number;
+      estimated_pages?: number;
+    }>("/history/pack", {
+      method: "POST",
+      body: JSON.stringify({
+        vin,
+        name,
+        kind,
+        exclude_id: excludeId || null,
+      }),
+    }),
+  historyNewFrom: (priorId: string) =>
+    req<RepairOrder>("/history/new-from", {
+      method: "POST",
+      body: JSON.stringify({ prior_id: priorId }),
+    }),
+  sync: () => req<{ ok: boolean; message: string }>("/sync", { method: "POST" }),
+  getConfig: () => req<ConfigSnapshot>("/config"),
+  setConfig: (body: Record<string, unknown>) =>
+    req<{ ok: boolean } & ConfigSnapshot>("/config", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  generateToken: () =>
+    req<{ ok: boolean; token: string } & ConfigSnapshot>("/config/generate-token", {
+      method: "POST",
+    }),
+  applyDiskRecommendation: () =>
+    req<{ ok: boolean } & ConfigSnapshot>("/config/apply-disk-recommendation", {
+      method: "POST",
+    }),
   addTech: (name: string, pin: string, adminPin: string) =>
     req<Technician>("/technicians", {
       method: "POST",
