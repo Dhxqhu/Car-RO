@@ -52,6 +52,22 @@ Local-only works fine. The server is for people who want history that outlives a
 
 ### Screenshots
 
+#### Desktop GUI
+
+![Car-RO GUI login](docs/screenshots/login.png)
+
+*Technician login with brand wordmark and 4-box PIN.*
+
+![Car-RO GUI repair orders](docs/screenshots/orders-list.png)
+
+*Orders workspace — bay cache list, sync, history.*
+
+![Car-RO GUI scanner](docs/screenshots/scanner-connect.png)
+
+*Scanner workspace — obdscan connect / engine bridge (no PIN required for scanner-only).*
+
+#### CLI
+
 ![Car-RO menu with technician login](docs/screenshots/menu.png)
 
 *Main menu after technician PIN login (name on the banner). Demo tech name only.*
