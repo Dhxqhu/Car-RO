@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="docs/branding/carro-wordmark.png" alt="Car-RO" width="420" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/branding/carro-wordmark-on-dark.png" />
+    <img src="docs/branding/carro-wordmark.png" alt="Car-RO" width="420" />
+  </picture>
 </p>
 
 # Car-RO
@@ -59,15 +62,15 @@ Local-only works fine. The server is for people who want history that outlives a
 
 #### Desktop GUI
 
-![Car-RO GUI login](docs/screenshots/login.png)
+![Car-RO GUI login](docs/screenshots/login.png?v=2)
 
 *Technician login with brand wordmark and 4-box PIN.*
 
-![Car-RO GUI repair orders](docs/screenshots/orders-list.png)
+![Car-RO GUI repair orders](docs/screenshots/orders-list.png?v=2)
 
 *Orders workspace — bay cache list, sync, history.*
 
-![Car-RO GUI scanner](docs/screenshots/scanner-connect.png)
+![Car-RO GUI scanner](docs/screenshots/scanner-connect.png?v=2)
 
 *Scanner workspace — obdscan connect / engine bridge (no PIN required for scanner-only).*
 
