@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ConnectionHints, parseApiError } from "@/components/ConnectionHints";
 import { ScaffoldNote } from "@/components/ScaffoldNote";
 import { Button } from "@/components/ui/button";
 import { obdApi, type ObdAdapter, type ObdSession } from "@/lib/obdApi";
@@ -8,11 +9,14 @@ export function ScanConnectPage() {
   const [found, setFound] = useState<boolean | null>(null);
   const [root, setRoot] = useState<string | null>(null);
   const [wired, setWired] = useState(false);
+  const [platform, setPlatform] = useState<string | null>(null);
+  const [healthHints, setHealthHints] = useState<string[]>([]);
   const [lockHint, setLockHint] = useState<string | null>(null);
   const [adapters, setAdapters] = useState<ObdAdapter[]>([]);
   const [defaultId, setDefaultId] = useState<string | null>(null);
   const [adapterId, setAdapterId] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
+  const [errHints, setErrHints] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
   const refresh = () =>
@@ -21,6 +25,8 @@ export function ScanConnectPage() {
       setFound(h.obdscan_found);
       setRoot(h.obdscan_root);
       setWired(h.wired);
+      setPlatform(h.platform ?? null);
+      setHealthHints(h.connection_hints ?? []);
       if (h.lock?.held) {
         setLockHint(`${h.lock.owner || "unknown"} (pid ${h.lock.pid}) · ${h.lock.port || "—"}`);
       } else if (h.lock?.stale) {
@@ -37,10 +43,13 @@ export function ScanConnectPage() {
 
   useEffect(() => {
     let cancelled = false;
-    void refresh()
-      .catch((e: Error) => {
-        if (!cancelled) setMsg(e.message);
-      });
+    void refresh().catch((e: unknown) => {
+      if (!cancelled) {
+        const { message, hints } = parseApiError(e);
+        setMsg(message);
+        setErrHints(hints);
+      }
+    });
     return () => {
       cancelled = true;
     };
@@ -49,11 +58,14 @@ export function ScanConnectPage() {
   const connect = async () => {
     setBusy(true);
     setMsg(null);
+    setErrHints([]);
     try {
       await obdApi.connect(adapterId ? { adapter_id: adapterId } : {});
       await refresh();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
+      const { message, hints } = parseApiError(e);
+      setMsg(message);
+      setErrHints(hints);
     } finally {
       setBusy(false);
     }
@@ -62,15 +74,27 @@ export function ScanConnectPage() {
   const disconnect = async () => {
     setBusy(true);
     setMsg(null);
+    setErrHints([]);
     try {
       const r = await obdApi.disconnect();
       setSession(r.session);
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : String(e));
+      const { message, hints } = parseApiError(e);
+      setMsg(message);
+      setErrHints(hints);
     } finally {
       setBusy(false);
     }
   };
+
+  const showHints =
+    errHints.length > 0
+      ? errHints
+      : found === false
+        ? healthHints
+        : msg
+          ? healthHints
+          : [];
 
   return (
     <div className="space-y-4">
@@ -119,10 +143,10 @@ export function ScanConnectPage() {
             </label>
           ) : null}
           <div className="mt-4 flex flex-wrap gap-2">
-            <Button onClick={connect} disabled={busy}>
+            <Button onClick={() => void connect()} disabled={busy}>
               Connect
             </Button>
-            <Button variant="ghost" onClick={disconnect} disabled={busy}>
+            <Button variant="ghost" onClick={() => void disconnect()} disabled={busy}>
               Disconnect
             </Button>
           </div>
@@ -135,6 +159,10 @@ export function ScanConnectPage() {
             <div className="flex justify-between gap-2">
               <dt>obdscan found</dt>
               <dd className="text-fg">{found == null ? "…" : found ? "yes" : "no"}</dd>
+            </div>
+            <div className="flex justify-between gap-2">
+              <dt>Host OS</dt>
+              <dd className="text-fg">{platform || "—"}</dd>
             </div>
             <div className="flex justify-between gap-2">
               <dt>Live bus wired</dt>
@@ -156,6 +184,13 @@ export function ScanConnectPage() {
         </div>
       </div>
       {msg ? <p className="text-sm text-danger">{msg}</p> : null}
+      {found === false || msg || errHints.length > 0 ? (
+        <ConnectionHints
+          title={found === false ? "obdscan not found — try this" : "Connection tips"}
+          hints={showHints}
+          platform={platform}
+        />
+      ) : null}
     </div>
   );
 }

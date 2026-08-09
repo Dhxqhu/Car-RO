@@ -30,6 +30,29 @@ def _need_elm() -> None:
         raise HTTPException(409, str(exc)) from exc
 
 
+def _connection_hints(*, context: str = "connect", message: str = "", transport: str | None = None) -> list[str]:
+    try:
+        obd_session.ensure_obdscan_path()
+        from platform_ports import connection_hints, hints_for_error  # type: ignore
+
+        if message:
+            return hints_for_error(message, transport=transport)
+        return connection_hints(context=context)
+    except Exception:
+        return [
+            "Check adapter power, port path (Linux /dev/… or Windows COMx), and baud.",
+            "GT327: BT/ELM for serial; ENET is DoIP only.",
+        ]
+
+
+def _http_fail(status: int, message: str, *, context: str = "connect", transport: str | None = None) -> None:
+    hints = _connection_hints(context=context, message=message, transport=transport)
+    raise HTTPException(
+        status,
+        detail={"message": message, "hints": hints, "context": context},
+    )
+
+
 def _read_json(path: Path) -> Any | None:
     if not path.is_file():
         return None
@@ -160,15 +183,16 @@ def connect(body: ConnectBody) -> dict[str, Any]:
             adapter_id=body.adapter_id,
         )
     except AdapterBusyError as exc:
-        raise HTTPException(409, str(exc)) from exc
+        _http_fail(409, str(exc), context="connect")
     except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        _http_fail(400, str(exc), context="connect")
     except RuntimeError as exc:
-        raise HTTPException(503, str(exc)) from exc
+        ctx = "obdscan" if "obdscan" in str(exc).lower() else "connect"
+        _http_fail(503, str(exc), context=ctx)
     except ConnectionError as exc:
-        raise HTTPException(502, str(exc)) from exc
+        _http_fail(502, str(exc), context="connect")
     except Exception as exc:  # serial / import issues
-        raise HTTPException(502, f"Connect failed: {exc}") from exc
+        _http_fail(502, f"Connect failed: {exc}", context="connect")
     return {"session": sess, "lock": lock_status()}
 
 
@@ -393,9 +417,14 @@ def autosetup_usb(body: AutosetupUsbBody | None = None) -> dict[str, Any]:
     try:
         result = adapter_setup.autosetup_usb(port=(body.port if body else None))
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(502, f"USB autosetup failed: {exc}") from exc
+        _http_fail(502, f"USB autosetup failed: {exc}", context="usb", transport="usb_serial")
     if not result.get("ok"):
-        raise HTTPException(404, result.get("error") or "USB autosetup failed")
+        err = result.get("error") or "USB autosetup failed"
+        result["hints"] = result.get("hints") or _connection_hints(
+            context="usb", message=str(err), transport="usb_serial"
+        )
+        _http_fail(404, str(err), context="usb", transport="usb_serial")
+    result.setdefault("hints", _connection_hints(context="usb"))
     return result
 
 
@@ -409,10 +438,20 @@ def autosetup_bluetooth(body: AutosetupBtBody | None = None) -> dict[str, Any]:
             scan_seconds=body.scan_seconds,
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(502, f"Bluetooth autosetup failed: {exc}") from exc
+        _http_fail(
+            502,
+            f"Bluetooth autosetup failed: {exc}",
+            context="bluetooth",
+            transport="bluetooth",
+        )
     # Partial success (profile saved, ELM not seen) still 200 with ok flag
     if not result.get("ok") and not result.get("adapter_id"):
-        raise HTTPException(404, result.get("error") or "Bluetooth autosetup failed")
+        err = result.get("error") or "Bluetooth autosetup failed"
+        _http_fail(404, str(err), context="bluetooth", transport="bluetooth")
+    if not result.get("elm_ok"):
+        result["hints"] = result.get("hints") or _connection_hints(
+            context="bluetooth", transport="bluetooth"
+        )
     return result
 
 

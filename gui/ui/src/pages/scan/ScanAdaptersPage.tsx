@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ConnectionHints, parseApiError } from "@/components/ConnectionHints";
 import { ScaffoldNote } from "@/components/ScaffoldNote";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +18,8 @@ export function ScanAdaptersPage() {
   const [baud, setBaud] = useState("38400");
   const [busy, setBusy] = useState(false);
   const [discoverNote, setDiscoverNote] = useState<string | null>(null);
+  const [hints, setHints] = useState<string[]>([]);
+  const [platform, setPlatform] = useState<string | null>(null);
 
   const refresh = () =>
     obdApi
@@ -27,10 +30,18 @@ export function ScanAdaptersPage() {
         setPath(r.path);
         setNote(r.note ?? null);
       })
-      .catch((e: Error) => setErr(e.message));
+      .catch((e: unknown) => {
+        const { message, hints: h } = parseApiError(e);
+        setErr(message);
+        setHints(h);
+      });
 
   useEffect(() => {
     void refresh();
+    void obdApi
+      .health()
+      .then((h) => setPlatform(h.platform ?? null))
+      .catch(() => undefined);
   }, []);
 
   const runSetup = async (kind: "usb" | "bt") => {
@@ -38,10 +49,12 @@ export function ScanAdaptersPage() {
     setErr(null);
     setMsg(null);
     setDiscoverNote(null);
+    setHints([]);
     try {
       if (kind === "usb") {
         const r = await obdApi.autosetupUsb();
         setMsg(r.message || `USB adapter ${r.adapter_id} ready`);
+        if (r.hints?.length) setHints(r.hints);
       } else {
         setDiscoverNote("Scanning Bluetooth (~8s) — keep the adapter on and in BT/ELM mode…");
         const r = await obdApi.autosetupBluetooth({ scan_seconds: 8 });
@@ -52,11 +65,16 @@ export function ScanAdaptersPage() {
             (r.warning ? `${r.warning} · ` : "") +
               "Profile saved; ELM hello not seen yet — try Connect from this page.",
           );
+          setHints(r.hints ?? []);
+        } else if (r.hints?.length) {
+          setHints(r.hints);
         }
       }
       await refresh();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      const { message, hints: h } = parseApiError(e);
+      setErr(message);
+      setHints(h);
     } finally {
       setBusy(false);
     }
@@ -95,17 +113,24 @@ export function ScanAdaptersPage() {
               void (async () => {
                 setBusy(true);
                 setErr(null);
+                setHints([]);
                 try {
                   const d = await obdApi.discoverAdapters();
+                  if (d.platform) setPlatform(d.platform);
                   const usb = d.usb.map((u) => u.path).join(", ") || "(none)";
                   const bt =
                     d.bluetooth
                       .slice(0, 8)
-                      .map((b) => `${b.name || "?"} ${b.addr}`)
+                      .map((b) => `${b.name || "?"} ${b.addr || b.port || ""}`.trim())
                       .join(" · ") || "(none)";
                   setDiscoverNote(`USB: ${usb}\nBluetooth: ${bt}`);
+                  if ((!d.usb.length || !d.bluetooth.length) && d.hints?.length) {
+                    setHints(d.hints);
+                  }
                 } catch (e) {
-                  setErr(e instanceof Error ? e.message : String(e));
+                  const { message, hints: h } = parseApiError(e);
+                  setErr(message);
+                  setHints(h);
                 } finally {
                   setBusy(false);
                 }
@@ -122,6 +147,13 @@ export function ScanAdaptersPage() {
 
       {err ? <p className="text-sm text-danger">{err}</p> : null}
       {msg ? <p className="text-sm text-muted">{msg}</p> : null}
+      {hints.length > 0 ? (
+        <ConnectionHints
+          title={err ? "Not found — common fixes" : "Connection tips"}
+          hints={hints}
+          platform={platform}
+        />
+      ) : null}
 
       {adapters.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-sm text-muted">
@@ -160,7 +192,11 @@ export function ScanAdaptersPage() {
                             setMsg(`Default → ${aid}`);
                             return refresh();
                           })
-                          .catch((e: Error) => setErr(e.message))
+                          .catch((e: unknown) => {
+                            const { message, hints: h } = parseApiError(e);
+                            setErr(message);
+                            setHints(h);
+                          })
                       }
                     >
                       Set default
@@ -170,8 +206,15 @@ export function ScanAdaptersPage() {
                       onClick={() =>
                         void obdApi
                           .connect({ adapter_id: aid })
-                          .then(() => setMsg(`Connected with ${aid}`))
-                          .catch((e: Error) => setErr(e.message))
+                          .then(() => {
+                            setMsg(`Connected with ${aid}`);
+                            setHints([]);
+                          })
+                          .catch((e: unknown) => {
+                            const { message, hints: h } = parseApiError(e);
+                            setErr(message);
+                            setHints(h);
+                          })
                       }
                     >
                       Connect
@@ -203,6 +246,7 @@ export function ScanAdaptersPage() {
           onClick={() =>
             void (async () => {
               setErr(null);
+              setHints([]);
               try {
                 await obdApi.upsertAdapter({
                   id,
@@ -214,7 +258,9 @@ export function ScanAdaptersPage() {
                 setMsg(`Saved ${id}`);
                 await refresh();
               } catch (e) {
-                setErr(e instanceof Error ? e.message : String(e));
+                const { message, hints: h } = parseApiError(e);
+                setErr(message);
+                setHints(h);
               }
             })()
           }

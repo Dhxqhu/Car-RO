@@ -157,12 +157,44 @@ def disconnect(*, quiet: bool = False) -> dict[str, Any]:
 
 def health_extras() -> dict[str, Any]:
     root = obdscan_root()
+    platform = "windows" if sys.platform.startswith("win") else (
+        "linux" if sys.platform.startswith("linux") else "other"
+    )
+    hints: list[str] = []
+    if root is not None:
+        try:
+            ensure_obdscan_path()
+            from platform_ports import connection_hints, platform_label  # type: ignore
+
+            platform = platform_label().lower()
+            hints = connection_hints(context="general")
+        except Exception:
+            hints = []
+    else:
+        hints = [
+            "Clone https://github.com/Dhxqhu/obdscan next to Car-RO, or set OBDSCAN_ROOT to that folder.",
+            "Restart the engine after setting OBDSCAN_ROOT.",
+        ]
+        if platform == "windows":
+            hints.append(
+                r"Example: setx OBDSCAN_ROOT %USERPROFILE%\Documents\obdscan  (open a new terminal after)."
+            )
+            hints.append(
+                "Serial adapters use COMx — pair Bluetooth in Settings, or check Device Manager → Ports."
+            )
+        else:
+            hints.append("Example: export OBDSCAN_ROOT=$HOME/Documents/obdscan")
+            hints.append(
+                "Serial adapters use /dev/ttyUSB* or /dev/rfcomm* — dialout group required for USB."
+            )
     return {
         "obdscan_root": str(root) if root else None,
         "obdscan_found": root is not None,
         "wired": root is not None,
         "session": public_session(),
         "lock": lock_status(),
+        "platform": platform,
+        "connection_hints": hints,
     }
 
 

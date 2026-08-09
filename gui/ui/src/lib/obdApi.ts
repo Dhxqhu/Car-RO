@@ -8,6 +8,15 @@ function engineBase(): string {
   return "/api";
 }
 
+export class ObdApiError extends Error {
+  hints: string[];
+  constructor(message: string, hints: string[] = []) {
+    super(message);
+    this.name = "ObdApiError";
+    this.hints = hints;
+  }
+}
+
 export type ObdSession = {
   connected: boolean;
   port: string | null;
@@ -55,14 +64,24 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!r.ok) {
-    let detail = r.statusText;
+    let message = r.statusText || "Request failed";
+    let hints: string[] = [];
     try {
-      const j = await r.json();
-      detail = j.detail || JSON.stringify(j);
+      const j = (await r.json()) as { detail?: unknown };
+      const d = j.detail;
+      if (typeof d === "string") {
+        message = d;
+      } else if (d && typeof d === "object") {
+        const obj = d as { message?: string; hints?: unknown };
+        message = typeof obj.message === "string" ? obj.message : JSON.stringify(d);
+        if (Array.isArray(obj.hints)) hints = obj.hints.map(String);
+      } else if (j && typeof j === "object") {
+        message = JSON.stringify(j);
+      }
     } catch {
       /* ignore */
     }
-    throw new Error(typeof detail === "string" ? detail : "Request failed");
+    throw new ObdApiError(message, hints);
   }
   if (r.status === 204) return undefined as T;
   return r.json() as Promise<T>;
@@ -75,6 +94,8 @@ export const obdApi = {
       obdscan_root: string | null;
       obdscan_found: boolean;
       wired: boolean;
+      platform?: string;
+      connection_hints?: string[];
       session: ObdSession;
       lock?: {
         held: boolean;
@@ -115,8 +136,10 @@ export const obdApi = {
   discoverAdapters: () =>
     req<{
       usb: { path: string; detail: string }[];
-      bluetooth: { addr: string; name: string; paired: string }[];
+      bluetooth: { addr: string; name: string; paired: string; port?: string }[];
       note?: string;
+      platform?: string;
+      hints?: string[];
     }>("/obd/adapters/discover"),
   autosetupUsb: (port?: string) =>
     req<{
@@ -126,6 +149,7 @@ export const obdApi = {
       baud?: number;
       banner?: string;
       message?: string;
+      hints?: string[];
       tried?: { path: string; elm: boolean; baud?: number; banner?: string }[];
     }>("/obd/adapters/autosetup/usb", {
       method: "POST",
@@ -144,6 +168,7 @@ export const obdApi = {
       message?: string;
       warning?: string | null;
       error?: string;
+      hints?: string[];
       devices?: { addr: string; name: string }[];
     }>("/obd/adapters/autosetup/bluetooth", {
       method: "POST",

@@ -49,14 +49,27 @@ def discover() -> dict[str, Any]:
         ]
     else:
         bluetooth = list_bluetooth_devices(scan_seconds=6.0)
+    platform = "windows" if plat.is_windows() else ("linux" if plat.is_linux() else "other")
+    hints: list[str] = []
+    if not usb:
+        hints.extend(plat.connection_hints(context="usb"))
+    if not bluetooth:
+        hints.extend(plat.connection_hints(context="bluetooth"))
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for h in hints:
+        if h not in seen:
+            seen.add(h)
+            uniq.append(h)
     return {
         "usb": usb,
         "bluetooth": bluetooth,
-        "platform": "windows" if plat.is_windows() else ("linux" if plat.is_linux() else "other"),
+        "platform": platform,
         "note": (
             f"{plat.usb_setup_hint()} {plat.bluetooth_setup_hint()} "
             "DoIP uses ethernet separately."
         ),
+        "hints": uniq,
     }
 
 
@@ -162,6 +175,7 @@ def autosetup_usb(*, port: str | None = None) -> dict[str, Any]:
             "ok": False,
             "error": f"No USB serial devices found. {plat.usb_setup_hint()}",
             "tried": [],
+            "hints": plat.connection_hints(context="usb"),
         }
 
     tried: list[dict[str, Any]] = []
@@ -202,6 +216,7 @@ def autosetup_usb(*, port: str | None = None) -> dict[str, Any]:
             "Check cable, permissions, and baud."
         ),
         "tried": tried,
+        "hints": plat.connection_hints(context="usb"),
     }
 
 
@@ -244,6 +259,7 @@ def autosetup_bluetooth(
                     "(not ENET), ensure bluetoothctl works, then retry."
                 ),
                 "devices": [],
+                "hints": plat.connection_hints(context="bluetooth"),
             }
         best = devices[0]
         addr = best["addr"]
@@ -327,6 +343,7 @@ def _autosetup_bluetooth_windows(
             "ok": False,
             "error": plat.bluetooth_setup_hint(),
             "devices": [],
+            "hints": plat.connection_hints(context="bluetooth"),
         }
 
     tried: list[dict[str, Any]] = []
