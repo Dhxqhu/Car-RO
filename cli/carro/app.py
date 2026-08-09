@@ -271,7 +271,9 @@ def _need(current: str | None) -> str:
 
 
 def _apply_obd_to_order(order: RepairOrder, *, ask: bool = False) -> RepairOrder:
-    raw = pull_vehicle_fields()
+    # Prefer a report matching this RO's VIN so a newer scan of another car
+    # does not silently overwrite the wrong vehicle.
+    raw = pull_vehicle_fields(prefer_vin=order.vin or None)
     if not raw:
         raise RuntimeError("Nothing found from obdscan / Saved Codes")
     mapped = _map_obd(raw)

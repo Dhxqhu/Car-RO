@@ -7,7 +7,8 @@ from typing import Callable
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
+from carro.core.touch_scroll import TouchFriendlyScroll
 from textual.widgets import (
     Button,
     Footer,
@@ -20,7 +21,7 @@ from textual.widgets import (
 )
 
 from carro.core.models import RepairOrder
-from carro.core.textual_theme import CarroThemeApp
+from carro.core.textual_theme import CARRO_SCROLL_BINDINGS, CarroThemeApp
 
 STATUS_OPTIONS = [("open", "open"), ("in_progress", "in_progress"), ("done", "done")]
 
@@ -73,6 +74,7 @@ class RepairOrderForm(CarroThemeApp[RepairOrder | None]):
     """
 
     BINDINGS = [
+        *CARRO_SCROLL_BINDINGS,
         Binding("ctrl+s", "save", "Save", show=True),
         Binding("ctrl+q", "quit_form", "Quit", show=True),
         Binding("escape", "quit_form", "Quit", show=False),
@@ -97,7 +99,7 @@ class RepairOrderForm(CarroThemeApp[RepairOrder | None]):
             f"Repair Order  {o.id}    Tab/Shift+Tab move · Ctrl+S save · Ctrl+Q quit · F2 OBD",
             id="title",
         )
-        with VerticalScroll(id="body"):
+        with TouchFriendlyScroll(id="body"):
             yield from self._row("First name", Input(o.first_name, id="first_name", placeholder="First"))
             yield from self._row("Last name", Input(o.last_name, id="last_name", placeholder="Last"))
             yield from self._row("Phone", Input(o.phone, id="phone", placeholder="Phone"))

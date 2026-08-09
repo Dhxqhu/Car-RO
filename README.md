@@ -275,7 +275,8 @@ The empty repo `share/` folder is unused. Branding/logo stay local (`branding/`,
 ## Optional home-lab server
 
 **Full monkey-proof guide (multi-PC):** [docs/SERVER_SETUP.md](docs/SERVER_SETUP.md)  
-**Windows bay PCs:** [docs/WINDOWS.md](docs/WINDOWS.md)
+**Windows bay PCs:** [docs/WINDOWS.md](docs/WINDOWS.md)  
+**Desktop GUI (Tauri + React — Orders + Scanner workspaces):** [docs/GUI.md](docs/GUI.md)
 
 Short version — on a Linux box with disk you trust:
 
@@ -322,13 +323,19 @@ curl -H "Authorization: Bearer YOUR_TOKEN" -H 'Content-Type: application/json' \
 ```
 cli/carro/              # CLI package (forms, PDF, OBD hook, photo providers)
 server/carro_server     # FastAPI archive + phone upload sessions
+engine/                 # Local API for the desktop GUI
+gui/ui                  # React + Tailwind UI (dark/light)
+gui/src-tauri           # Tauri 2 shell (Windows + Linux)
 scripts/carro           # launcher used by ~/.local/bin/carro
 scripts/install.sh      # Linux workstation install
 scripts/install.ps1     # Windows workstation install
 scripts/install-server.sh
 scripts/join-server.sh  # point a bay PC at the shop server
+scripts/run-gui-dev.sh  # engine + Vite UI
+scripts/run-gui-tauri.sh
 docs/SERVER_SETUP.md    # multi-PC server guide
 docs/WINDOWS.md         # Windows bay PC guide
+docs/GUI.md             # desktop GUI build / run
 config.example.toml     # copy to ~/.config/carro/config.toml
 ```
 

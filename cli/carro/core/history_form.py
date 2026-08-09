@@ -7,10 +7,11 @@ from dataclasses import dataclass
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Horizontal
+from carro.core.touch_scroll import TouchFriendlyScroll
 from textual.widgets import Button, Footer, Header, Input, Label, Static
 
-from carro.core.textual_theme import CarroThemeApp
+from carro.core.textual_theme import CARRO_SCROLL_BINDINGS, CarroThemeApp
 
 
 @dataclass
@@ -44,6 +45,7 @@ class HistoryForm(CarroThemeApp[HistoryQuery]):
     """
 
     BINDINGS = [
+        *CARRO_SCROLL_BINDINGS,
         Binding("ctrl+s", "submit", "Lookup", show=True, priority=True),
         Binding("ctrl+j", "submit", "Lookup", show=True, priority=True),
         Binding("enter", "submit", "Lookup", show=False),
@@ -67,7 +69,7 @@ class HistoryForm(CarroThemeApp[HistoryQuery]):
             "or finds nothing. Server archive is included when configured.",
             id="hint",
         )
-        with VerticalScroll(id="body"):
+        with TouchFriendlyScroll(id="body"):
             yield from self._row(
                 "VIN",
                 Input(

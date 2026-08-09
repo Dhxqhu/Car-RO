@@ -1,0 +1,17 @@
+{
+  "name": "carro-gui",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev:ui": "npm --prefix ui run dev",
+    "build:ui": "npm --prefix ui run build",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:build:linux": "tauri build --bundles deb,appimage",
+    "tauri:build:windows": "tauri build --bundles msi,nsis"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.6"
+  }
+}

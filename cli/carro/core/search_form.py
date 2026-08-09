@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Horizontal
+from carro.core.touch_scroll import TouchFriendlyScroll
 from textual.widgets import (
     Button,
     Checkbox,
@@ -19,7 +20,7 @@ from textual.widgets import (
     Static,
 )
 
-from carro.core.textual_theme import CarroThemeApp
+from carro.core.textual_theme import CARRO_SCROLL_BINDINGS, CarroThemeApp
 
 
 @dataclass
@@ -69,6 +70,7 @@ class SearchForm(CarroThemeApp[SearchQuery]):
     """
 
     BINDINGS = [
+        *CARRO_SCROLL_BINDINGS,
         Binding("ctrl+s", "submit", "Search", show=True, priority=True),
         Binding("ctrl+j", "submit", "Search", show=True, priority=True),
         Binding("enter", "submit", "Search", show=False),
@@ -90,7 +92,7 @@ class SearchForm(CarroThemeApp[SearchQuery]):
             "Free text matches name, make, model, VIN, complaint, notes, etc.",
             id="hint",
         )
-        with VerticalScroll(id="body"):
+        with TouchFriendlyScroll(id="body"):
             yield from self._row(
                 "Free text",
                 Input(placeholder="e.g. bronco, smith, P0420…", id="query"),
