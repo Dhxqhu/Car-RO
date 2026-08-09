@@ -274,7 +274,7 @@ The empty repo `share/` folder is unused. Branding/logo stay local (`branding/`,
 
 ## Optional home-lab server
 
-**Full monkey-proof guide (multi-PC):** [docs/SERVER_SETUP.md](docs/SERVER_SETUP.md)  
+**Full beginner guide (multi-PC, shop token, forgot/rotate token):** [docs/SERVER_SETUP.md](docs/SERVER_SETUP.md)  
 **Windows bay PCs:** [docs/WINDOWS.md](docs/WINDOWS.md)  
 **Desktop GUI (Tauri + React — Orders + Scanner workspaces):** [docs/GUI.md](docs/GUI.md)
 
@@ -293,6 +293,8 @@ carro sync
 ```
 
 Systemd user unit: `server/carro-server.service`. Advanced env: `CARRO_DATA_DIR`, `CARRO_TOKEN`, `CARRO_VOLUMES`.
+
+The **shop API token** lives on the server as `CARRO_TOKEN` in `~/.config/carro-server.env`. It is a shared password so bay PCs can sync — **not** a technician PIN. Lookup and rotation steps are in SERVER_SETUP.md.
 
 ### Technician login (same shop, multiple PCs)
 

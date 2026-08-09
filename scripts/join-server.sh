@@ -20,7 +20,11 @@ echo "  Join an existing Car-RO server (bay PC)"
 echo "=============================================="
 echo
 echo "Use the URL + token from the server install output"
-echo "(or from ~/.config/carro-server.env on the server)."
+echo "(or on the server: grep CARRO_TOKEN ~/.config/carro-server.env)."
+echo
+echo "This is the shop API token — the same value on every bay PC."
+echo "Do not generate a new token on this laptop unless you also"
+echo "changed CARRO_TOKEN on the server (see docs/SERVER_SETUP.md)."
 echo
 
 read -r -p "Server URL (e.g. http://homebaseserver:8787): " URL

@@ -49,7 +49,7 @@ If `carro` is not found:
 
 ## Join the shop server
 
-After the Linux server is set up ([SERVER_SETUP.md](SERVER_SETUP.md)):
+After the Linux server is set up ([SERVER_SETUP.md](SERVER_SETUP.md) — start there if this is your first time):
 
 ```powershell
 carro config set server_url http://YOUR_SERVER:8787
@@ -59,7 +59,14 @@ carro sync
 
 Or: `carro` → **`c` Config** → Server URL + API token.
 
-Use the **same** URL and token as every other bay PC.
+Use the **same** URL and **same shop token** as every other bay PC.  
+Get the token from the server install handoff block, or on the server run:
+
+```bash
+grep CARRO_TOKEN ~/.config/carro-server.env
+```
+
+Do **not** invent a new token on this PC during normal setup. “Generate new token” only changes this laptop; the server will reject it until you also update `CARRO_TOKEN` on the server and every other bay (see **Rotate the shop token** in [SERVER_SETUP.md](SERVER_SETUP.md)).
 
 ---
 
