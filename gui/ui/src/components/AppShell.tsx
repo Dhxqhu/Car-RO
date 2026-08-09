@@ -3,7 +3,6 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
-import carroMark from "@/assets/carro-mark-512.png";
 import carroMarkOnDark from "@/assets/carro-mark-512-on-dark.png";
 import carroWordmark from "@/assets/carro-wordmark.png";
 import carroWordmarkOnDark from "@/assets/carro-wordmark-on-dark.png";
@@ -52,18 +51,20 @@ export function AppShell({
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-5 py-3">
           <div className="flex items-center gap-3">
             {scannerShell ? (
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-accent-fg">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-accent-fg shadow-sm ring-1 ring-black/10 dark:ring-white/15">
                 <Cable className="h-4 w-4" />
               </div>
             ) : (
-              <img
-                src={dark ? carroMarkOnDark : carroMark}
-                alt=""
-                width={36}
-                height={36}
-                className="h-9 w-9 object-contain"
-                draggable={false}
-              />
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-accent p-1 shadow-sm ring-1 ring-black/10 dark:ring-white/15">
+                <img
+                  src={carroMarkOnDark}
+                  alt=""
+                  width={28}
+                  height={28}
+                  className="h-7 w-7 object-contain"
+                  draggable={false}
+                />
+              </div>
             )}
             <div>
               {scannerShell ? (
