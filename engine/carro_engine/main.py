@@ -46,6 +46,7 @@ from carro.obd.provider import pull_vehicle_fields  # noqa: E402
 from carro.photos.providers.local import LocalPhotoIngress  # noqa: E402
 from carro.storage.photos import attach_photos, ensure_local_photos  # noqa: E402
 from carro.storage.remote import RemoteClient  # noqa: E402
+from obd_engine.doip_routes import router as doip_router  # noqa: E402
 from obd_engine.main import router as obd_router  # noqa: E402
 
 app = FastAPI(title="carro-engine", version="0.1.0")
@@ -57,6 +58,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(obd_router)
+app.include_router(doip_router)
 
 store = LocalStore()
 

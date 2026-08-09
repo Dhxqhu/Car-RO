@@ -90,6 +90,20 @@ Textual forms need a real terminal (Windows Terminal). The old `cmd.exe` window 
 
 ---
 
+## Scanner / OBD adapters (USB + Bluetooth)
+
+Serial paths differ by OS; Car-RO and [obdscan](https://github.com/Dhxqhu/obdscan) share `platform_ports.py`:
+
+| | Linux | Windows |
+| --- | --- | --- |
+| USB ELM | `/dev/ttyUSB*` or `/dev/ttyACM*` | `COMx` (Device Manager → Ports) |
+| Bluetooth ELM | `/dev/rfcomm*` after `rfcomm` bind | Pair in **Settings → Bluetooth**, then use the **Standard Serial over Bluetooth link (COMx)** |
+| DoIP / ENET | Normal ethernet / IP | Same — not a COM/rfcomm path |
+
+Override anytime with `OBD_PORT` (e.g. `COM5` or `/dev/ttyUSB0`). In the Scanner GUI, **Adapters → Auto-setup** picks the right style for the host OS.
+
+---
+
 ## Later ideas (not required yet)
 
 - One-click `carro.exe` via PyInstaller (Release asset)  

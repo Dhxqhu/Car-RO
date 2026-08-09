@@ -29,6 +29,9 @@ _state: dict[str, Any] = {
 }
 _elm: Any = None
 _atexit_registered = False
+_live_pids: list[str] | None = None
+_profile_store: Any = None
+_dtc_db: dict[str, str] | None = None
 
 
 def obdscan_root() -> Path | None:
@@ -43,7 +46,7 @@ def obdscan_root() -> Path | None:
     return None
 
 
-def _ensure_obdscan_path() -> Path:
+def ensure_obdscan_path() -> Path:
     root = obdscan_root()
     if not root:
         raise RuntimeError(
@@ -53,6 +56,10 @@ def _ensure_obdscan_path() -> Path:
     if root_s not in sys.path:
         sys.path.insert(0, root_s)
     return root
+
+
+# Back-compat alias for internal callers
+_ensure_obdscan_path = ensure_obdscan_path
 
 
 def public_session() -> dict[str, Any]:
@@ -78,7 +85,9 @@ def connect(
         ad = adapters.get(adapter_id)
         if not isinstance(ad, dict):
             raise ValueError(f"Unknown adapter id: {adapter_id}")
-        use_port = port or str(ad.get("port") or "/dev/rfcomm0")
+        from platform_ports import default_serial_port  # type: ignore
+
+        use_port = port or str(ad.get("port") or default_serial_port())
         use_baud = int(baud if baud is not None else ad.get("baud") or 38400)
         label = adapter_label(ad)
     else:
@@ -157,11 +166,69 @@ def health_extras() -> dict[str, Any]:
     }
 
 
+def require_elm() -> Any:
+    """Return the live ElmSession or raise RuntimeError."""
+    if _elm is None or not _state.get("connected"):
+        raise RuntimeError("Not connected — use Scanner Connect first.")
+    return _elm
+
+
+def set_vin(vin: str | None) -> None:
+    _state["vin"] = vin
+
+
+_DEFAULT_LIVE = ["RPM", "SPEED", "COOLANT", "LOAD", "THROTTLE"]
+
+
+def get_live_pids() -> list[str]:
+    global _live_pids
+    if _live_pids is None:
+        _live_pids = list(_DEFAULT_LIVE)
+    return list(_live_pids)
+
+
+def set_live_pids(pids: list[str]) -> list[str]:
+    global _live_pids
+    cleaned = [p.strip().upper() for p in pids if p and str(p).strip()]
+    _live_pids = cleaned
+    return list(_live_pids)
+
+
+def profile_store() -> Any:
+    global _profile_store
+    ensure_obdscan_path()
+    if _profile_store is None:
+        from custom_pids import ProfileStore  # type: ignore
+
+        _profile_store = ProfileStore()
+    else:
+        _profile_store.load()
+    return _profile_store
+
+
+def dtc_db() -> dict[str, str]:
+    """Load generic DTC definitions; reload if a prior attempt returned empty."""
+    global _dtc_db
+    ensure_obdscan_path()
+    if _dtc_db is None or len(_dtc_db) == 0:
+        from dtc_db import load_dtc_db  # type: ignore
+
+        _dtc_db = load_dtc_db()
+    return _dtc_db
+
+
 __all__ = [
     "AdapterBusyError",
     "connect",
     "disconnect",
+    "dtc_db",
+    "ensure_obdscan_path",
+    "get_live_pids",
     "health_extras",
     "obdscan_root",
+    "profile_store",
     "public_session",
+    "require_elm",
+    "set_live_pids",
+    "set_vin",
 ]

@@ -26,7 +26,7 @@ Only one living process may hold the ELM serial port at a time.
 | --- | --- |
 | `pid` | Process that opened the adapter |
 | `owner` | `obdscan-cli` · `carro-engine` · `obdscan-gui` (future) |
-| `port` | Serial path, e.g. `/dev/rfcomm0` |
+| `port` | Serial path — Linux `/dev/rfcomm0` or `/dev/ttyUSB0`; Windows `COMx` (see `platform_ports` / [WINDOWS.md](WINDOWS.md)) |
 | `started_at` | UTC ISO timestamp |
 
 Rules:

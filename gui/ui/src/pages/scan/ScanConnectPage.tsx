@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ScaffoldNote } from "@/components/ScaffoldNote";
 import { Button } from "@/components/ui/button";
-import { obdApi, type ObdSession } from "@/lib/obdApi";
+import { obdApi, type ObdAdapter, type ObdSession } from "@/lib/obdApi";
 
 export function ScanConnectPage() {
   const [session, setSession] = useState<ObdSession | null>(null);
@@ -9,36 +9,48 @@ export function ScanConnectPage() {
   const [root, setRoot] = useState<string | null>(null);
   const [wired, setWired] = useState(false);
   const [lockHint, setLockHint] = useState<string | null>(null);
+  const [adapters, setAdapters] = useState<ObdAdapter[]>([]);
+  const [defaultId, setDefaultId] = useState<string | null>(null);
+  const [adapterId, setAdapterId] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const refresh = () =>
-    obdApi
-      .health()
-      .then((h) => {
-        setSession(h.session);
-        setFound(h.obdscan_found);
-        setRoot(h.obdscan_root);
-        setWired(h.wired);
-        if (h.lock?.held) {
-          setLockHint(`${h.lock.owner || "unknown"} (pid ${h.lock.pid}) · ${h.lock.port || "—"}`);
-        } else if (h.lock?.stale) {
-          setLockHint("stale lock (will clear on next connect)");
-        } else {
-          setLockHint(null);
-        }
-      })
-      .catch((e: Error) => setMsg(e.message));
+    Promise.all([obdApi.health(), obdApi.adapters().catch(() => null)]).then(([h, a]) => {
+      setSession(h.session);
+      setFound(h.obdscan_found);
+      setRoot(h.obdscan_root);
+      setWired(h.wired);
+      if (h.lock?.held) {
+        setLockHint(`${h.lock.owner || "unknown"} (pid ${h.lock.pid}) · ${h.lock.port || "—"}`);
+      } else if (h.lock?.stale) {
+        setLockHint("stale lock (will clear on next connect)");
+      } else {
+        setLockHint(null);
+      }
+      if (a) {
+        setAdapters(a.adapters);
+        setDefaultId(a.default_id);
+        if (!adapterId && a.default_id) setAdapterId(a.default_id);
+      }
+    });
 
   useEffect(() => {
-    void refresh();
+    let cancelled = false;
+    void refresh()
+      .catch((e: Error) => {
+        if (!cancelled) setMsg(e.message);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const connect = async () => {
     setBusy(true);
     setMsg(null);
     try {
-      await obdApi.connect();
+      await obdApi.connect(adapterId ? { adapter_id: adapterId } : {});
       await refresh();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -63,8 +75,8 @@ export function ScanConnectPage() {
   return (
     <div className="space-y-4">
       <ScaffoldNote>
-        Connect opens a real ElmSession in the local engine and takes the shared adapter lock.
-        Codes / live pages are still scaffold until the next pass.
+        Connect opens a real ElmSession and takes the shared adapter lock (obdscan menu 1–3).
+        DoIP / ENET is on the DoIP tab — flip the GT327 switch for that path.
       </ScaffoldNote>
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="rounded-xl border border-border bg-surface p-4">
@@ -86,6 +98,26 @@ export function ScanConnectPage() {
               <dd className="text-fg">{session?.protocol || "—"}</dd>
             </div>
           </dl>
+          {adapters.length > 0 ? (
+            <label className="mt-4 block space-y-1.5 text-sm">
+              <span className="text-muted">Connect with</span>
+              <select
+                className="flex h-10 w-full rounded-lg border border-border bg-bg px-3 text-sm text-fg"
+                value={adapterId}
+                onChange={(e) => setAdapterId(e.target.value)}
+              >
+                {adapters.map((a, i) => {
+                  const id = String(a.id ?? i);
+                  return (
+                    <option key={id} value={id}>
+                      {String(a.label ?? id)}
+                      {defaultId === id ? " (default)" : ""}
+                    </option>
+                  );
+                })}
+              </select>
+            </label>
+          ) : null}
           <div className="mt-4 flex flex-wrap gap-2">
             <Button onClick={connect} disabled={busy}>
               Connect
@@ -118,7 +150,7 @@ export function ScanConnectPage() {
           ) : (
             <p className="mt-3 text-sm text-muted">
               Clone or set <code className="text-fg">OBDSCAN_ROOT</code> so the engine can import
-              ElmSession later.
+              ElmSession.
             </p>
           )}
         </div>

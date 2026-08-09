@@ -13,9 +13,13 @@ import { TechsPage } from "@/pages/TechsPage";
 import { ScanAdaptersPage } from "@/pages/scan/ScanAdaptersPage";
 import { ScanCodesPage } from "@/pages/scan/ScanCodesPage";
 import { ScanConnectPage } from "@/pages/scan/ScanConnectPage";
+import { ScanDoipPage } from "@/pages/scan/ScanDoipPage";
 import { ScanInfoPage } from "@/pages/scan/ScanInfoPage";
 import { ScanLayout } from "@/pages/scan/ScanLayout";
+import { ScanLibrariesPage } from "@/pages/scan/ScanLibrariesPage";
 import { ScanLivePage } from "@/pages/scan/ScanLivePage";
+import { ScanProfilesPage } from "@/pages/scan/ScanProfilesPage";
+import { ScanRawPage } from "@/pages/scan/ScanRawPage";
 import { ScanSavedPage } from "@/pages/scan/ScanSavedPage";
 
 function scanRoutes(): ReactNode {
@@ -25,6 +29,10 @@ function scanRoutes(): ReactNode {
       <Route path="codes" element={<ScanCodesPage />} />
       <Route path="live" element={<ScanLivePage />} />
       <Route path="info" element={<ScanInfoPage />} />
+      <Route path="profiles" element={<ScanProfilesPage />} />
+      <Route path="doip" element={<ScanDoipPage />} />
+      <Route path="libraries" element={<ScanLibrariesPage />} />
+      <Route path="raw" element={<ScanRawPage />} />
       <Route path="saved" element={<ScanSavedPage />} />
       <Route path="adapters" element={<ScanAdaptersPage />} />
     </Route>

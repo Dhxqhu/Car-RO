@@ -130,17 +130,24 @@ and launch the Tauri binary — or use `scripts/run-gui-dev.sh` for day-to-day.
 
 Photos: metadata count on RO; attach still via CLI photo tools in this pass.
 
-## Scanner features (framework)
+## Scanner features (CLI parity)
 
-Routes under `/scan/*` + engine under `/obd/*`:
+Routes under `/scan/*` + engine under `/obd/*` — same capabilities as the obdscan interactive menu:
 
-| UI | Engine | Status |
+| UI | Engine | CLI menu |
 | --- | --- | --- |
-| Connect | `GET /obd/health`, `POST /obd/connect` | Live ElmSession + `session.lock` |
-| Codes / Live | `/obd/codes`, `/obd/live` | Stub pages |
-| Vehicle | `GET /obd/vehicle` | Cache / Saved Codes via provider |
-| Saved | `GET /obd/saved` | Lists `Documents/Saved Codes` |
-| Adapters | `GET /obd/adapters` | Reads `~/.config/obdscan/adapters.json` |
+| Connect | `/obd/health`, `/obd/connect`, `/obd/disconnect` | 1–3 |
+| Codes | `/obd/codes`, `/obd/codes/clear`, `/obd/lookup`, `/obd/save` | 4, 5, 13, 17 |
+| Live | `/obd/live`, `/obd/pids` | 6–8 |
+| Vehicle | `/obd/vehicle`, `/obd/vehicle/live`, `/obd/readiness`, `/obd/freeze` | 10–12 |
+| Profiles | `/obd/profiles*` | 9 |
+| DoIP | `/obd/doip/*` | 15 |
+| Libraries | `/obd/doip/packs` | 16 |
+| Raw | `/obd/raw`, `/obd/raw/help` | 14 |
+| Saved | `/obd/saved` | (Saved Codes browser) |
+| Adapters | `/obd/adapters` (+ default / upsert / USB+BT autosetup) | **c** |
+
+DoIP needs `doipclient` + `udsoncan` (+ `pyserial` for ELM). Flip the GT327 to **ENET / DoIP** for DoIP; ELM Bluetooth uses `session.lock`.
 
 **Handoff + lock contract:** [OBD_HANDOFF.md](OBD_HANDOFF.md).
 
@@ -148,6 +155,7 @@ Routes under `/scan/*` + engine under `/obd/*`:
 
 - Windows `.exe` + engine sidecar packaging  
 - Smaller Python-only Scanner GUI  
+- Live graph mode / ASCII charts (CLI graph display)
 
 Handoff + lock unit tests: `pytest` (see [OBD_HANDOFF.md](OBD_HANDOFF.md)).
 

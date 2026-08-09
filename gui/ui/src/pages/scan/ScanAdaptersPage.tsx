@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { ScaffoldNote } from "@/components/ScaffoldNote";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { obdApi, type ObdAdapter } from "@/lib/obdApi";
 
 export function ScanAdaptersPage() {
@@ -8,8 +10,15 @@ export function ScanAdaptersPage() {
   const [path, setPath] = useState("");
   const [note, setNote] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [id, setId] = useState("");
+  const [label, setLabel] = useState("");
+  const [port, setPort] = useState("");
+  const [baud, setBaud] = useState("38400");
+  const [busy, setBusy] = useState(false);
+  const [discoverNote, setDiscoverNote] = useState<string | null>(null);
 
-  useEffect(() => {
+  const refresh = () =>
     obdApi
       .adapters()
       .then((r) => {
@@ -19,45 +28,200 @@ export function ScanAdaptersPage() {
         setNote(r.note ?? null);
       })
       .catch((e: Error) => setErr(e.message));
+
+  useEffect(() => {
+    void refresh();
   }, []);
+
+  const runSetup = async (kind: "usb" | "bt") => {
+    setBusy(true);
+    setErr(null);
+    setMsg(null);
+    setDiscoverNote(null);
+    try {
+      if (kind === "usb") {
+        const r = await obdApi.autosetupUsb();
+        setMsg(r.message || `USB adapter ${r.adapter_id} ready`);
+      } else {
+        setDiscoverNote("Scanning Bluetooth (~8s) — keep the adapter on and in BT/ELM mode…");
+        const r = await obdApi.autosetupBluetooth({ scan_seconds: 8 });
+        setMsg(r.message || `Bluetooth adapter ${r.adapter_id} ready`);
+        if (r.warning) setDiscoverNote(r.warning);
+        if (!r.elm_ok && r.ok) {
+          setDiscoverNote(
+            (r.warning ? `${r.warning} · ` : "") +
+              "Profile saved; ELM hello not seen yet — try Connect from this page.",
+          );
+        }
+      }
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
       <ScaffoldNote>
-        Adapter wizard (USB vs Bluetooth / GT327) will mirror obdscan Config. Edit via CLI for now.
+        Adapter config (obdscan menu <strong className="text-fg">c</strong>). Edits{" "}
+        <code className="text-fg">adapters.json</code> shared with the CLI. Auto-setup scans
+        and probes like the CLI wizard.
       </ScaffoldNote>
       {path ? <p className="font-mono text-xs text-muted">{path}</p> : null}
       {note ? <p className="text-sm text-muted">{note}</p> : null}
+
+      <div className="rounded-xl border border-border bg-surface p-4">
+        <div className="text-xs font-medium uppercase tracking-wide text-muted">
+          Auto-setup
+        </div>
+        <p className="mt-1 text-xs text-muted">
+          USB probes serial ports (Linux: /dev/ttyUSB* · Windows: COMx). Bluetooth prefers
+          GT327 / ELM names — Linux binds rfcomm; Windows uses a paired Bluetooth COM port —
+          then probes ATZ.
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button disabled={busy} onClick={() => void runSetup("bt")}>
+            Auto-setup Bluetooth
+          </Button>
+          <Button disabled={busy} variant="ghost" onClick={() => void runSetup("usb")}>
+            Auto-setup USB
+          </Button>
+          <Button
+            disabled={busy}
+            variant="ghost"
+            onClick={() =>
+              void (async () => {
+                setBusy(true);
+                setErr(null);
+                try {
+                  const d = await obdApi.discoverAdapters();
+                  const usb = d.usb.map((u) => u.path).join(", ") || "(none)";
+                  const bt =
+                    d.bluetooth
+                      .slice(0, 8)
+                      .map((b) => `${b.name || "?"} ${b.addr}`)
+                      .join(" · ") || "(none)";
+                  setDiscoverNote(`USB: ${usb}\nBluetooth: ${bt}`);
+                } catch (e) {
+                  setErr(e instanceof Error ? e.message : String(e));
+                } finally {
+                  setBusy(false);
+                }
+              })()
+            }
+          >
+            Scan only
+          </Button>
+        </div>
+        {discoverNote ? (
+          <pre className="mt-3 whitespace-pre-wrap text-xs text-muted">{discoverNote}</pre>
+        ) : null}
+      </div>
+
       {err ? <p className="text-sm text-danger">{err}</p> : null}
+      {msg ? <p className="text-sm text-muted">{msg}</p> : null}
+
       {adapters.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center text-sm text-muted">
-          No adapters.json yet — run <code className="text-fg">obdscan</code> once to create it.
+          No adapters yet — add one below or run <code className="text-fg">obdscan</code> config.
         </div>
       ) : (
         <ul className="space-y-2">
           {adapters.map((a, i) => {
-            const id = String(a.id ?? i);
-            const label = String(a.label ?? a.name ?? id);
+            const aid = String(a.id ?? i);
+            const alabel = String(a.label ?? a.name ?? aid);
             return (
               <li
-                key={id}
+                key={aid}
                 className="rounded-xl border border-border bg-surface px-4 py-3 text-sm"
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium">{label}</span>
-                  {defaultId && id === defaultId ? (
-                    <span className="text-xs text-accent">default</span>
-                  ) : null}
-                </div>
-                <div className="mt-1 font-mono text-xs text-muted">
-                  {String(a.port ?? "—")} @ {String(a.baud ?? "—")}
-                  {a.transport ? ` · ${String(a.transport)}` : ""}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <span className="font-medium">{alabel}</span>
+                    {defaultId && aid === defaultId ? (
+                      <span className="ml-2 text-xs text-accent">default</span>
+                    ) : null}
+                    <div className="mt-1 font-mono text-xs text-muted">
+                      {String(a.port ?? "—")} @ {String(a.baud ?? "—")}
+                      {a.transport ? ` · ${String(a.transport)}` : ""}
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={aid === defaultId}
+                      onClick={() =>
+                        void obdApi
+                          .setDefaultAdapter(aid)
+                          .then(() => {
+                            setMsg(`Default → ${aid}`);
+                            return refresh();
+                          })
+                          .catch((e: Error) => setErr(e.message))
+                      }
+                    >
+                      Set default
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        void obdApi
+                          .connect({ adapter_id: aid })
+                          .then(() => setMsg(`Connected with ${aid}`))
+                          .catch((e: Error) => setErr(e.message))
+                      }
+                    >
+                      Connect
+                    </Button>
+                  </div>
                 </div>
               </li>
             );
           })}
         </ul>
       )}
+
+      <div className="rounded-xl border border-border bg-surface p-4">
+        <div className="text-xs font-medium uppercase tracking-wide text-muted">
+          Add / update adapter
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          <Input placeholder="id" value={id} onChange={(e) => setId(e.target.value)} />
+          <Input placeholder="label" value={label} onChange={(e) => setLabel(e.target.value)} />
+          <Input
+            placeholder="port (COM3 or /dev/rfcomm0)"
+            value={port}
+            onChange={(e) => setPort(e.target.value)}
+          />
+          <Input placeholder="baud" value={baud} onChange={(e) => setBaud(e.target.value)} />
+        </div>
+        <Button
+          className="mt-3"
+          onClick={() =>
+            void (async () => {
+              setErr(null);
+              try {
+                await obdApi.upsertAdapter({
+                  id,
+                  label: label || id,
+                  port,
+                  baud: Number(baud) || 38400,
+                  make_default: adapters.length === 0,
+                });
+                setMsg(`Saved ${id}`);
+                await refresh();
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : String(e));
+              }
+            })()
+          }
+        >
+          Save adapter
+        </Button>
+      </div>
     </div>
   );
 }

@@ -1,12 +1,27 @@
-import { Activity, Cable, FileText, Gauge, Info, ListTree } from "lucide-react";
+import {
+  Activity,
+  BookOpen,
+  Cable,
+  FileText,
+  Gauge,
+  Info,
+  ListTree,
+  Network,
+  Layers,
+  Terminal,
+} from "lucide-react";
 import { NavLink, Outlet } from "react-router-dom";
 import { cn } from "@/lib/utils";
 
 const tabs = [
   { to: "/scan", end: true, label: "Connect", icon: Cable },
   { to: "/scan/codes", label: "Codes", icon: ListTree },
-  { to: "/scan/live", label: "Live data", icon: Activity },
+  { to: "/scan/live", label: "Live", icon: Activity },
   { to: "/scan/info", label: "Vehicle", icon: Info },
+  { to: "/scan/profiles", label: "Profiles", icon: Layers },
+  { to: "/scan/doip", label: "DoIP", icon: Network },
+  { to: "/scan/libraries", label: "Libraries", icon: BookOpen },
+  { to: "/scan/raw", label: "Raw", icon: Terminal },
   { to: "/scan/saved", label: "Saved", icon: FileText },
   { to: "/scan/adapters", label: "Adapters", icon: Gauge },
 ];
@@ -19,7 +34,8 @@ export function ScanLayout() {
           Scanner
         </h1>
         <p className="mt-1 text-sm text-muted">
-          obdscan workspace — ELM327 / GT327 DoIP. CLI stays fully supported.
+          Full obdscan parity — ELM327 + GT327 DoIP. CLI and GUI share adapters, profiles, and
+          Saved Codes.
         </p>
       </div>
       <nav className="flex flex-wrap gap-1 border-b border-border pb-px">
