@@ -8,7 +8,7 @@ while [[ -L "$SOURCE" ]]; do
 done
 ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd)"
 
-export PYTHONPATH="$ROOT/cli:$ROOT/server${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$ROOT/cli:$ROOT/server:$ROOT/engine${PYTHONPATH:+:$PYTHONPATH}"
 PY="$ROOT/.venv/bin/python"
 if [[ ! -x "$PY" ]]; then
   echo "error: run ./scripts/install.sh first (need .venv)" >&2

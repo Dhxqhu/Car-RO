@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Fraunces", ui-serif, Georgia, serif;
+
+  --color-bg: var(--bg);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-surface: var(--surface);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-danger: var(--danger);
+}
+
+:root {
+  /* Cool shop-floor light — blue accent */
+  --bg: #f2f4f8;
+  --fg: #121820;
+  --muted: #5a6573;
+  --surface: #ffffff;
+  --border: #d4dae3;
+  --accent: #1a4f8c;
+  --accent-fg: #f4f8fc;
+  --danger: #b42318;
+}
+
+.dark {
+  --bg: #0c1016;
+  --fg: #e6ebf2;
+  --muted: #93a0b3;
+  --surface: #151b24;
+  --border: #2a3444;
+  --accent: #4d8fd6;
+  --accent-fg: #071018;
+  --danger: #f97066;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--fg);
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background:
+      radial-gradient(1200px 600px at 10% -10%, color-mix(in oklab, var(--accent) 12%, transparent), transparent),
+      var(--bg);
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+}

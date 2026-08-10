@@ -27,6 +27,11 @@ rsync -a --delete \
   --exclude '*.pyc' \
   "$SERVER_SRC/" "$INSTALL_DIR/"
 
+# Release identity for /health (opt-in updates — docs/UPDATING.md)
+if [[ -f "$ROOT/VERSION" ]]; then
+  cp -f "$ROOT/VERSION" "$INSTALL_DIR/VERSION"
+fi
+
 cd "$INSTALL_DIR"
 if [[ ! -d .venv ]]; then
   "$PY" -m venv .venv
@@ -152,3 +157,5 @@ echo
 echo "Local health check: curl -s http://127.0.0.1:$PORT/health"
 echo "Data dir: $DATA_DIR"
 echo "Env file: $ENV_FILE"
+echo "Add another photo drive later: ./scripts/add-server-volume.sh --help"
+echo "  (docs: docs/SERVER_SETUP.md → Adding another drive)"

@@ -237,6 +237,29 @@ def diff_ro_events(
                 )
                 break
 
+        if bool(before.get("waiter")) != bool(after.get("waiter")):
+            events.append(
+                {
+                    "type": "ro_waiter_flag",
+                    "ro_id": ro_id,
+                    "item_id": "",
+                    "actor": actor,
+                    "at": at,
+                    "summary": "Waiter on" if after.get("waiter") else "Waiter off",
+                }
+            )
+        if bool(before.get("urgent")) != bool(after.get("urgent")):
+            events.append(
+                {
+                    "type": "ro_urgent_flag",
+                    "ro_id": ro_id,
+                    "item_id": "",
+                    "actor": actor,
+                    "at": at,
+                    "summary": "Urgent on" if after.get("urgent") else "Urgent off",
+                }
+            )
+
     b_items = {
         str(it.get("id")): it
         for it in (before or {}).get("work_items") or []
@@ -307,6 +330,57 @@ def diff_ro_events(
                     "actor": actor,
                     "at": at,
                     "summary": who,
+                }
+            )
+        old_req = old.get("next_day_request") if isinstance(old.get("next_day_request"), dict) else {}
+        new_req = w.get("next_day_request") if isinstance(w.get("next_day_request"), dict) else {}
+        old_req_st = str(old_req.get("status") or "")
+        new_req_st = str(new_req.get("status") or "")
+        if old_req_st != new_req_st and new_req_st == "pending":
+            who = str(new_req.get("by") or actor or "").strip()
+            events.append(
+                {
+                    "type": "next_day_requested",
+                    "ro_id": ro_id,
+                    "item_id": wid,
+                    "actor": actor,
+                    "at": at,
+                    "summary": f"{who or 'Tech'} requested next day · {str(w.get('concern') or wid)[:80]}",
+                }
+            )
+        elif old_req_st != new_req_st and new_req_st == "approved":
+            events.append(
+                {
+                    "type": "next_day_approved",
+                    "ro_id": ro_id,
+                    "item_id": wid,
+                    "actor": actor,
+                    "at": at,
+                    "summary": f"Next day approved · {str(w.get('concern') or wid)[:80]}",
+                }
+            )
+        elif old_req_st != new_req_st and new_req_st == "declined":
+            events.append(
+                {
+                    "type": "next_day_declined",
+                    "ro_id": ro_id,
+                    "item_id": wid,
+                    "actor": actor,
+                    "at": at,
+                    "summary": f"Next day declined · {str(w.get('concern') or wid)[:80]}",
+                }
+            )
+        old_lane = str(old.get("queue_lane") or "daily")
+        new_lane = str(w.get("queue_lane") or "daily")
+        if old_lane != new_lane:
+            events.append(
+                {
+                    "type": "item_queue_lane",
+                    "ro_id": ro_id,
+                    "item_id": wid,
+                    "actor": actor,
+                    "at": at,
+                    "summary": f"{old_lane} → {new_lane}",
                 }
             )
     for wid in b_items:

@@ -171,8 +171,8 @@ These are the likely hiccups — fix or expect them before relying on an MSI/NSI
 | Serial / BT adapters | Ready | COM ports via shared `platform_ports` (see above) |
 | PDF open | Ready | Uses `os.startfile` on Windows |
 | Tauri targets | Configured | `msi` + `nsis` in `gui/src-tauri/tauri.conf.json`; WebView2 bootstrapper download |
-| Engine beside GUI | **Gap** | Packaged app only auto-starts the engine if `CARRO_ROOT` / `CARRO_ENGINE_CMD` is set. Dev script is bash-only (`run-gui-tauri.sh`). Need a `.ps1` launcher and/or a real sidecar before “double-click .exe” works offline. |
-| Engine spawn paths | **Gap** | `gui/src-tauri/src/lib.rs` tries `python3` and joins `PYTHONPATH` with `:` — on Windows prefer `python` / `.venv\Scripts\python.exe` and `;` path separators. |
+| Engine beside GUI | Dev ready | `Run-Tech-GUI.bat` / `scripts\run-gui-dev.ps1`, `Run-Advisor-GUI.bat` / `scripts\run-advisor-ui.ps1`, `Run-Tech-GUI-Tauri.bat` / `scripts\run-gui-tauri.ps1` start engine + UI. Packaged `.exe` still needs a sidecar / `CARRO_ENGINE_CMD` for offline double-click. |
+| Engine spawn paths | Ready | Tauri shells try `CARRO_ENGINE_CMD`, then `.venv` python, then `python`/`py` (Windows) or `python3` (Linux); `PYTHONPATH` uses `;` on Windows and `:` elsewhere. |
 | Config / data dirs | Works, atypical | Still `~/.config/carro` and `~/.local/share/carro` (fine under the user profile, but not `%APPDATA%`). Photos use `Documents\Car-RO\…`. |
 | Shop server | Redeploy | Tech notifications + Assigned board need a server that has `/events` and `/assigned`. Older servers soft-fail events (no crash) but won’t show live team updates. |
 
@@ -187,6 +187,24 @@ Tech app emits shop-server events the future advisor app will consume:
 | Mark done | `done` | `ro_ready_to_bill` |
 | Mark billed out | `billed_out` | `ro_billed_out` |
 
-Advisor workflow (planned): parts order + approval notifications → billing queue (`done`) → enter accounting → **billed out** closes the RO.
+Advisor desk (separate app on `:1422`): parts / approvals / bill-out from the desk pool, **Efficiency** (worked vs clocked, downtime vs utilized, 40h baseline), **Reports**, punches (**Set time** when clocking a tech in), Admin (staff PINs + shop admin PIN). Tech app: **Edit punch** on your own day start/end requires the shop admin PIN.
 
-Day-one Windows testing can stay on **CLI + `Install-Car-RO.bat`** until the engine sidecar / PowerShell Tauri launcher is wired.
+Day-one Windows GUI testing (after `Install-Car-RO.bat`):
+
+- Tech Vite UI: double-click **`Run-Tech-GUI.bat`** (or `.\scripts\run-gui-dev.ps1`) → http://127.0.0.1:1420
+- Advisor desk: double-click **`Run-Advisor-GUI.bat`** (or `.\scripts\run-advisor-ui.ps1`) → http://127.0.0.1:1422
+- Tech Tauri: **`Run-Tech-GUI-Tauri.bat`** (needs Rust/WebView2 toolchain)
+
+Join shop server: **`Join-Server.bat`** / `.\scripts\join-server.ps1`.
+
+### Updating this PC later (opt-in)
+
+Working shops do **not** need to update. When you want new features:
+
+1. Update **carro-server on Linux first** (`./scripts/update-server.sh`) — see [UPDATING.md](UPDATING.md).
+2. On this Windows PC: double-click **`Update-Car-RO.bat`** (or `.\scripts\update-client.ps1`).
+3. Restart **`Run-Tech-GUI.bat`** / **`Run-Advisor-GUI.bat`**.
+
+No auto-update prompts. Config and shop token stay in `%USERPROFILE%\.config\carro\config.toml`.
+
+Packaged `.exe` sidecar install is still a later step; use the launchers above for desk/bay smoke tests.

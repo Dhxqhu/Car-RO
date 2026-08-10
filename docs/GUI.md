@@ -1,13 +1,20 @@
-# Car-RO desktop GUI (Orders + Scanner)
+# Car-RO desktop GUIs
 
-One **Tauri 2** desktop app for Windows and Linux with two workspaces:
+Two **Tauri 2** / Vite apps for Windows and Linux:
+
+| App | Purpose |
+| --- | --- |
+| **Tech** (`gui/ui`, `:1420`) | Orders + Scanner workspaces (tech PIN, RO editor, PDF, sync, OBD) |
+| **Advisor desk** (`advisor/ui`, `:1422`) | Desk pool, parts, messages, Efficiency, Reports, People, Admin |
+
+## Tech app (Orders + Scanner)
 
 | Workspace | Purpose |
 | --- | --- |
 | **Orders** | Car-RO repair-order notes (tech PIN, RO editor, PDF, sync) |
 | **Scanner** | obdscan GUI (connect, codes, live, saved, adapters) — **no PIN required** |
 
-Same visual system (React + Tailwind, dark/light). One local Python engine serves both.
+Same visual system (React + Tailwind, dark/light). One local Python engine serves both apps.
 
 ```
 gui/ui                → Vite + React + TypeScript
@@ -70,6 +77,15 @@ Easiest while iterating on UI:
 ```
 
 Opens Vite at http://127.0.0.1:1420 and proxies `/api` → engine `:8788`.
+
+**Advisor desk:**
+
+```bash
+./scripts/run-advisor-ui.sh
+# Windows: Run-Advisor-GUI.bat / .\scripts\run-advisor-ui.ps1
+```
+
+Opens http://127.0.0.1:1422 (same engine on `:8788`).
 
 Or separately:
 

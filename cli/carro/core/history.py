@@ -122,14 +122,14 @@ def _collect(
                         o = RepairOrder.from_dict(r)
                         if _vin_match(o.vin, vin, vin_mode):
                             if o.id not in by_id:
-                                store.save(o)
+                                store.save(o, mark_pending_sync=False)
                             by_id[o.id] = store.get(o.id) or o
                 elif name:
                     raw = client.search_ros(name=name)
                     for r in raw:
                         o = RepairOrder.from_dict(r)
                         if o.id not in by_id:
-                            store.save(o)
+                            store.save(o, mark_pending_sync=False)
                         by_id[o.id] = store.get(o.id) or o
             except Exception:
                 pass

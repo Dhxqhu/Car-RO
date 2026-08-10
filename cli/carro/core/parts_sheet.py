@@ -40,6 +40,7 @@ def run_parts_sheet_menu(store: LocalStore) -> None:
         table.add_column("RO")
         table.add_column("Item")
         table.add_column("Status")
+        table.add_column("Brand")
         table.add_column("Mfr")
         table.add_column("PN")
         table.add_column("Description")
@@ -50,6 +51,7 @@ def run_parts_sheet_menu(store: LocalStore) -> None:
                 str(r.get("ro_id") or ""),
                 str(r.get("work_item_id") or ""),
                 part_status_label(r.get("status")),
+                str(r.get("brand") or "")[:14] or "—",
                 str(r.get("manufacturer") or "")[:16],
                 str(r.get("part_number") or "")[:18] or "—",
                 str(r.get("description") or "")[:36],
@@ -162,4 +164,10 @@ def _set_row_status(store: LocalStore, rows: list[dict]) -> None:
         actor_id=(tech.id if tech else "") or "",
     )
     store.save(order)
+    try:
+        from carro.core.sync_ops import try_push_ro
+
+        try_push_ro(store, order)
+    except Exception:
+        pass
     CONSOLE.print(f"[green]Updated {row.get('part_id')} → {part_status_label(st)}[/]")

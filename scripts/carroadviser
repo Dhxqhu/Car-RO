@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Launcher for Car-RO Advisor desk CLI (symlink into ~/.local/bin as carroadviser).
+# Equivalent to: carro advisor …
+set -euo pipefail
+SOURCE="${BASH_SOURCE[0]:-$0}"
+while [[ -L "$SOURCE" ]]; do
+  SOURCE="$(readlink -f "$SOURCE")"
+done
+ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd)"
+export PYTHONPATH="${ROOT}/cli:${ROOT}/server:${ROOT}/engine${PYTHONPATH:+:$PYTHONPATH}"
+for candidate in "${ROOT}/.venv/bin/python3" "${ROOT}/.venv/bin/python"; do
+  if [[ -x "$candidate" ]]; then
+    exec "$candidate" -m carro advisor "$@"
+  fi
+done
+if [[ -x /usr/bin/python3 ]]; then
+  exec /usr/bin/python3 -m carro advisor "$@"
+fi
+exec python3 -m carro advisor "$@"

@@ -66,6 +66,31 @@ def _body_html(text: str) -> str:
     return _xml_escape(text or "—").replace("\n", "<br/>")
 
 
+def _format_parts_for_pdf(
+    parts: list[dict] | None,
+    *,
+    default_make: str = "",
+) -> list[str]:
+    """Customer-facing part lines: description, brand/cross, manufacturer, PN."""
+    lines: list[str] = []
+    for p in parts or []:
+        if not isinstance(p, dict):
+            continue
+        desc = str(p.get("description") or "").strip() or "—"
+        brand = str(p.get("brand") or "").strip()
+        mfr = str(p.get("manufacturer") or default_make or "").strip()
+        pn = str(p.get("part_number") or "").strip()
+        bits = [desc]
+        if brand:
+            bits.append(brand)
+        if mfr and mfr.lower() != brand.lower():
+            bits.append(mfr)
+        if pn:
+            bits.append(f"PN {pn}")
+        lines.append("• " + " · ".join(bits))
+    return lines
+
+
 def _section_box(heading: str, text: str, *, head_style, body_style) -> Table:
     """Bordered block that grows with content."""
     cell = [
@@ -362,13 +387,19 @@ def export_pdf(
         for i, w in enumerate(items, 1):
             concern = (w.concern or "—").strip() or "—"
             notes = (w.notes or "").strip()
-            # Customer PDF: concern + diagnosis only — no waiting/status stamps,
-            # private tech notes, or shop parts-order data.
+            # Customer PDF: concern, diagnosis, and parts used — no waiting/status
+            # stamps or private tech notes.
             type_bit = item_type_label(getattr(w, "item_type", "") or "other")
+            chunks = [concern]
             if notes:
-                body_txt = f"{concern}\n\nDiagnosis / notes:\n{notes}"
-            else:
-                body_txt = concern
+                chunks.append(f"Diagnosis / notes:\n{notes}")
+            part_lines = _format_parts_for_pdf(
+                getattr(w, "parts", None) or [],
+                default_make=(order.make or "").strip(),
+            )
+            if part_lines:
+                chunks.append("Parts:\n" + "\n".join(part_lines))
+            body_txt = "\n\n".join(chunks)
             box = _section_box(
                 f"WORK ITEM {i} · {w.id} · {type_bit}",
                 body_txt,
@@ -430,7 +461,20 @@ def export_pdf(
     if include_photos:
         photo_paths = []
         ensure_local_photos(order)
+        fi_status_by_id = {
+            str(fi.get("id") or ""): str(fi.get("status") or "")
+            for fi in normalize_found_issues(getattr(order, "found_issues", None))
+        }
         for meta in order.photos:
+            # Keep pending/declined found-issue shop pics off the customer PDF
+            fi_id = str(meta.get("found_issue_id") or "").strip()
+            tag = str(meta.get("tag") or "").strip().lower()
+            if fi_id:
+                st = fi_status_by_id.get(fi_id, "")
+                if st in ("pending", "declined"):
+                    continue
+            elif tag == "found_issue":
+                continue
             rel = meta.get("relpath") or meta.get("filename")
             if not rel:
                 continue

@@ -1,3 +1,3 @@
 """Car-RO — technician repair order CLI."""
 
-__version__ = "0.1.0"
+from carro.version import APP_VERSION as __version__

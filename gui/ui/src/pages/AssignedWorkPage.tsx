@@ -85,10 +85,38 @@ function JobCard({
   const timing = jobTiming(j);
   const waitAge = jobWaitAge(j);
   const worked = Number(j.worked_minutes) || 0;
+  const req = j.next_day_request;
   return (
     <li className="rounded-xl border border-border bg-surface px-4 py-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
+          <div className="mb-1 flex flex-wrap gap-1.5">
+            {j.waiter ? (
+              <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
+                Waiter
+              </span>
+            ) : null}
+            {j.urgent ? (
+              <span className="rounded bg-danger/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-danger">
+                Urgent
+              </span>
+            ) : null}
+            {j.queue_lane && j.queue_lane !== "daily" ? (
+              <span className="rounded bg-border/80 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+                {j.queue_lane === "next_day" ? "Next day" : "Long-term"}
+              </span>
+            ) : null}
+            {j.pending_queue_lane ? (
+              <span className="rounded bg-border/80 px-1.5 py-0.5 text-[10px] font-medium text-muted">
+                Push {j.pending_queue_lane === "next_day" ? "next day" : j.pending_queue_lane} on clock-out
+              </span>
+            ) : null}
+            {req?.status === "pending" ? (
+              <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                Next-day requested{req.read_at ? "" : " · unread"}
+              </span>
+            ) : null}
+          </div>
           <Link
             to={`/ro/${j.ro_id}`}
             className="font-medium text-accent hover:underline"
@@ -254,11 +282,28 @@ export function AssignedWorkPage() {
 
   function mineActions(j: AssignedJobSummary) {
     const isCurrent = j.is_current || j.item_id === myCurrentId;
+    const reqPending = j.next_day_request?.status === "pending";
     return (
       <>
         {!isCurrent
           ? btn(j.item_id, "Start work", () => void runCurrent(j.ro_id, j.item_id, true))
           : currentItemActions(j.ro_id, j.item_id)}
+        {!isCurrent && !reqPending && j.queue_lane !== "next_day"
+          ? btn(j.item_id, "Request next day", () =>
+              void (async () => {
+                setActingId(j.item_id);
+                setErr("");
+                try {
+                  await api.requestNextDay(j.ro_id, j.item_id);
+                  await refresh();
+                } catch (e) {
+                  setErr(e instanceof Error ? e.message : "Request failed");
+                } finally {
+                  setActingId(null);
+                }
+              })(),
+            "ghost")
+          : null}
         {!isCurrent
           ? btn(j.item_id, "Remove from queue", () =>
               void runQueue(j.ro_id, "remove", j.item_id),
@@ -445,10 +490,25 @@ export function AssignedWorkPage() {
       </section>
 
       {jobSection(
-        "My queue (work items)",
-        board?.mine,
-        "Nothing in your queue. Add an itemized concern from Unassigned or a repair order.",
+        "Today (my daily queue)",
+        board?.mine_daily ?? board?.mine,
+        "Nothing in today's queue. Add from Unassigned or ask an advisor to assign.",
         loggedIn ? mineActions : undefined,
+      )}
+
+      {jobSection(
+        "Next day (mine)",
+        board?.mine_next_day,
+        "No jobs parked for tomorrow.",
+        loggedIn ? mineActions : undefined,
+      )}
+
+      {jobSection(
+        "Long-term (mine)",
+        board?.mine_long_term,
+        "No long-term pool jobs on your queue.",
+        loggedIn ? mineActions : undefined,
+        false,
       )}
 
       {jobSection(
@@ -494,6 +554,9 @@ export function AssignedWorkPage() {
                     <div className="text-sm text-muted">
                       {fi.vehicle} · {fi.customer}
                       {fi.found_by ? ` · found by ${fi.found_by}` : ""}
+                      {(fi.photo_count || 0) > 0
+                        ? ` · ${fi.photo_count} photo${fi.photo_count === 1 ? "" : "s"}`
+                        : ""}
                     </div>
                   </div>
                   {loggedIn ? (

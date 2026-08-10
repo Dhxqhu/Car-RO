@@ -25,11 +25,14 @@ def attach_photos(
     notes: str = "",
     notes_by_path: dict[str, str] | None = None,
     sync_remote: bool = True,
+    found_issue_id: str = "",
 ) -> RepairOrder:
     dest_dir = photos_dir() / order.id
     dest_dir.mkdir(parents=True, exist_ok=True)
     remote = RemoteClient()
     notes_by_path = notes_by_path or {}
+    fi_id = (found_issue_id or "").strip()
+    new_metas: list[dict] = []
     for src in paths:
         src = Path(src)
         if not src.is_file():
@@ -48,7 +51,10 @@ def attach_photos(
             "relpath": dest_name,
             "created": now_iso(),
         }
+        if fi_id:
+            meta["found_issue_id"] = fi_id
         order.photos.append(meta)
+        new_metas.append(meta)
         if sync_remote and remote.enabled:
             try:
                 remote_meta = remote.upload_photo(
@@ -63,7 +69,13 @@ def attach_photos(
                     meta["remote"] = True
             except Exception:
                 meta["remote"] = False
-    return store.save(order)
+    order = store.save(order)
+    if fi_id and new_metas:
+        from carro.core.found_issues import link_photos_to_found_issue
+
+        link_photos_to_found_issue(order, fi_id, new_metas)
+        order = store.save(order)
+    return order
 
 
 def ensure_local_photos(order: RepairOrder) -> list[Path]:

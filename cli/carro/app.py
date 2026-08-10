@@ -44,6 +44,7 @@ from carro.photos.base import get_provider
 from carro.photos.providers.local import LocalPhotoIngress
 from carro.storage.photos import attach_photos
 from carro.storage.remote import RemoteClient
+from carro.version import APP_VERSION
 
 CONSOLE = Console()
 
@@ -56,8 +57,7 @@ def main(argv: list[str] | None = None) -> None:
     if not args.cmd or args.cmd == "menu":
         interactive_menu(store)
         return
-    handlers = {
-        "new": lambda: cmd_new(store, from_obd=args.from_obd),
+    handlers = {        "new": lambda: cmd_new(store, from_obd=args.from_obd),
         "list": lambda: cmd_list(store),
         "open": lambda: cmd_open(store, args.id),
         "edit": lambda: cmd_edit(store, args.id),
@@ -72,6 +72,9 @@ def main(argv: list[str] | None = None) -> None:
         "logo": lambda: run_logo_setup(),
         "config": lambda: cmd_config(args),
         "tech": lambda: cmd_tech(args),
+        "advisor": lambda: cmd_advisor(args),
+        "messages": lambda: cmd_messages(),
+        "shift": lambda: cmd_shift(args),
         "photo": lambda: cmd_photo(store, args),
         "history": lambda: cmd_history(
             store,
@@ -106,6 +109,11 @@ def main(argv: list[str] | None = None) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="carro", description="Car repair order CLI")
+    p.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {APP_VERSION}",
+    )
     sub = p.add_subparsers(dest="cmd")
     sub.add_parser("menu", help="Interactive menu (default)")
     s = sub.add_parser("new", help="Create repair order")
@@ -138,6 +146,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="login | logout | whoami | add",
     )
     s.add_argument("--name", default="", help="Name for tech add")
+    s = sub.add_parser(
+        "advisor",
+        help="Advisor desk: menu / login / logout / whoami / pool / people / messages",
+    )
+    s.add_argument(
+        "advisor_action",
+        nargs="?",
+        default="menu",
+        choices=["menu", "login", "logout", "whoami", "pool", "people", "messages"],
+        help="menu | login | logout | whoami | pool | people | messages",
+    )
+    sub.add_parser("messages", help="Shop person-to-person messages (inbox / send)")
+    s = sub.add_parser("shift", help="Day start / day end (shop presence)")
+    s.add_argument(
+        "shift_action",
+        nargs="?",
+        default="status",
+        choices=["start", "end", "status", "active"],
+        help="start | end | status | active",
+    )
     s = sub.add_parser("config", help="Show or set config")
     s.add_argument(
         "action",
@@ -156,8 +184,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("paths", nargs="*")
     s.add_argument("--id", dest="ro_id")
-    s.add_argument("--tag", default="intake", choices=["intake", "diag", "other"])
+    s.add_argument(
+        "--tag",
+        default="intake",
+        choices=["intake", "diag", "found_issue", "other"],
+    )
     s.add_argument("--note", default=None, help="Optional note stored with attached photo(s)")
+    s.add_argument(
+        "--found-issue",
+        dest="found_issue_id",
+        default="",
+        help="Link photos onto a found-issue request (e.g. FI-001); sets tag to found_issue",
+    )
     s = sub.add_parser("search", help="Search ROs by make/model/year/name/VIN/…")
     s.add_argument("query", nargs="*", help="Free-text query")
     s.add_argument("--make", default="")
@@ -221,9 +259,11 @@ def _interactive_menu_loop(store: LocalStore, current: str | None) -> None:
         table.add_row("[bold cyan]8[/]", "Add photos (file / inbox / iPhone / Shortcut)")
         table.add_row("[bold cyan]9[/]", "Export customer PDF (with / without photos)")
         table.add_row("[bold cyan]p[/]", "Parts order sheet")
+        table.add_row("[bold cyan]m[/]", "Messages (person-to-person)")
         table.add_row("[bold cyan]d[/]", "Delete repair order (mistakes)")
         table.add_row("[bold cyan]s[/]", "Sync to server + prune local cache")
         table.add_row("[bold cyan]t[/]", "Technician (switch / add techs / logout)")
+        table.add_row("[bold cyan]a[/]", "Advisor desk (pool / people / logout)")
         table.add_row("[bold cyan]c[/]", "Config (edit settings)")
         table.add_row("[bold cyan]q[/]", "Quit")
         subtitle = f"Logged in as {tech.name}" if tech else "Not logged in"
@@ -252,7 +292,7 @@ def _interactive_menu_loop(store: LocalStore, current: str | None) -> None:
         choice = Prompt.ask("Select", default="2").strip().lower()
         if choice in {"q", "quit", "b"}:
             return
-        nested = choice in {"c", "t", "p"}
+        nested = choice in {"c", "t", "a", "p", "m"}
         try:
             if choice == "1":
                 order = cmd_new(
@@ -284,6 +324,10 @@ def _interactive_menu_loop(store: LocalStore, current: str | None) -> None:
                 from carro.core.parts_sheet import run_parts_sheet_menu
 
                 run_parts_sheet_menu(store)
+            elif choice == "m":
+                from carro.core.messages_ui import run_messages_menu
+
+                run_messages_menu()
             elif choice == "d":
                 deleted = cmd_delete(store, current)
                 if deleted and current == deleted:
@@ -292,6 +336,10 @@ def _interactive_menu_loop(store: LocalStore, current: str | None) -> None:
                 cmd_sync(store)
             elif choice == "t":
                 switch_technician()
+            elif choice == "a":
+                from carro.core.advisor_ui import interactive_advisor_menu
+
+                interactive_advisor_menu(store)
             elif choice == "c":
                 run_config_menu()
             else:
@@ -542,7 +590,7 @@ def cmd_search(
                 only_remote = [o for o in remote_orders if o.id not in local_ids]
                 for o in remote_orders:
                     if o.id not in local_ids:
-                        store.save(o)
+                        store.save(o, mark_pending_sync=False)
                 # Rebuild combined list preserving search order preference:
                 # local hits first, then server-only
                 local_hits = local_hits + only_remote
@@ -924,21 +972,21 @@ def cmd_delete(store: LocalStore, ro_id: str | None) -> str | None:
         return None
 
     photo_dir = photos_dir() / order.id
-    if not store.delete(order.id):
+    remote = RemoteClient()
+    if not store.delete(order.id, queue_remote=remote.enabled):
         raise ValueError(f"Could not delete local RO: {order.id}")
     if photo_dir.is_dir():
         shutil.rmtree(photo_dir, ignore_errors=True)
         CONSOLE.print(f"[dim]Removed photos[/] {photo_dir}")
 
-    remote = RemoteClient()
     if remote.enabled:
         try:
             remote.delete_ro(order.id)
+            store.clear_pending_delete(order.id)
             CONSOLE.print("[dim]Removed from server[/]")
         except Exception as exc:
             CONSOLE.print(
-                f"[yellow]Local delete OK, but server delete failed:[/] {exc}\n"
-                "[dim]Fix the server (restart after update) or the RO may come back on sync.[/]"
+                f"[yellow]Local delete OK; server unreachable — will retry delete on next sync:[/] {exc}"
             )
     CONSOLE.print(f"[green]Deleted[/] {order.id}")
     return order.id
@@ -957,38 +1005,56 @@ def _open_pdf(path: Path) -> None:
 def cmd_sync(store: LocalStore) -> None:
     from carro.core.sync_ops import perform_sync
 
-    remote = RemoteClient()
-    if not remote.enabled:
-        CONSOLE.print("[yellow]No server_url configured — local only.[/]")
-        CONSOLE.print("[dim]Set with: carro config set server_url http://YOUR_SERVER:8787[/]")
-        store.prune()
-        return
-    try:
-        health = remote.health()
-        CONSOLE.print(f"[green]Server OK[/] default volume={health.get('default_volume')}")
-    except Exception as exc:
-        CONSOLE.print(f"[red]Server unreachable:[/] {exc}")
-        return
+    pending_before = store.sync_status()
+    if pending_before.get("pending_total"):
+        CONSOLE.print(
+            f"[dim]Pending local changes:[/] {pending_before['pending_total']} "
+            f"({pending_before.get('pending_ros', 0)} RO(s), "
+            f"{pending_before.get('pending_deletes', 0)} delete(s))"
+        )
     try:
         result = perform_sync(store)
     except Exception as exc:
-        CONSOLE.print(f"[red]Sync failed:[/] {exc}")
+        CONSOLE.print(
+            f"[red]Sync failed:[/] {exc}\n"
+            "[yellow]Local data is still on this PC — try again when the server is up.[/]"
+        )
         return
+    if result.get("skipped") and result.get("reason") == "no_server":
+        CONSOLE.print("[yellow]No server_url configured — local only.[/]")
+        CONSOLE.print("[dim]Set with: carro config set server_url http://YOUR_SERVER:8787[/]")
+        return
+    if result.get("reason") == "unreachable" or not result.get("ok"):
+        style = "yellow" if result.get("pushed") else "red"
+        CONSOLE.print(f"[{style}]{result.get('message') or 'Sync incomplete'}[/]")
+        for err in result.get("errors") or []:
+            CONSOLE.print(f"  [dim]{err}[/]")
+        pending = result.get("pending") or store.sync_status()
+        if pending.get("pending_total"):
+            CONSOLE.print(
+                f"[dim]Will retry {pending['pending_total']} pending item(s) "
+                "on next sync / autosync.[/]"
+            )
+        if result.get("reason") == "unreachable":
+            return
+    else:
+        CONSOLE.print(f"[green]{result.get('message') or 'Synced'}[/]")
+
     roster_status = str(result.get("roster") or "")
-    if roster_status == "pulled":
-        CONSOLE.print("[dim]Technician roster:[/] pulled from server")
-    elif roster_status == "pushed":
-        CONSOLE.print("[dim]Technician roster:[/] pushed to server")
+    if "techs=pulled" in roster_status or roster_status == "pulled":
+        CONSOLE.print("[dim]Roster:[/] pulled from server")
+    elif "pushed" in roster_status:
+        CONSOLE.print("[dim]Roster:[/] pushed / synced")
     elif roster_status.startswith("error:"):
-        CONSOLE.print(f"[yellow]Technician roster sync skipped:[/] {roster_status[7:]}")
-    CONSOLE.print(f"[green]Pushed {result.get('pushed', 0)} RO(s)[/]")
+        CONSOLE.print(f"[yellow]Roster sync skipped:[/] {roster_status[7:]}")
+
     removed = result.get("pruned") or []
     keep_n = result.get("local_keep")
     photo_n = result.get("local_photo_keep")
     billed_n = result.get("local_billed_keep")
     if removed:
         CONSOLE.print(f"[dim]Pruned local cache:[/] {', '.join(removed)}")
-    else:
+    elif keep_n is not None:
         CONSOLE.print(
             f"[dim]Local cache within limits "
             f"(keep {keep_n} active, {billed_n} billed-out, {photo_n} with photos).[/]"
@@ -1002,6 +1068,12 @@ def cmd_tech(args: argparse.Namespace) -> None:
         return
     if action == "logout":
         techmod.clear_session()
+        try:
+            from carro.core import advisors as advmod
+
+            advmod.clear_session()
+        except Exception:
+            pass
         CONSOLE.print("[dim]Logged out.[/]")
         return
     if action == "whoami":
@@ -1036,6 +1108,109 @@ def cmd_tech(args: argparse.Namespace) -> None:
             _add_tech()
         return
     raise ValueError(f"Unknown tech action: {action}")
+
+
+def cmd_advisor(args: argparse.Namespace) -> None:
+    from carro.core import advisors as advmod
+    from carro.core.advisor_ui import (
+        ensure_advisor_session,
+        interactive_advisor_menu,
+        prompt_advisor_login,
+        run_desk_pool_menu,
+        run_people_menu,
+    )
+
+    action = getattr(args, "advisor_action", None) or "menu"
+    if action == "menu":
+        interactive_advisor_menu(LocalStore())
+        return
+    if action == "login":
+        if not advmod.has_advisors():
+            ensure_advisor_session()
+        else:
+            prompt_advisor_login()
+        return
+    if action == "logout":
+        advmod.clear_session()
+        CONSOLE.print("[dim]Advisor logged out.[/]")
+        return
+    if action == "whoami":
+        advisor = advmod.current_advisor()
+        if advisor:
+            CONSOLE.print(f"[cyan]{advisor.name}[/] ({advisor.id}) · advisor")
+        else:
+            CONSOLE.print("[dim]No advisor logged in.[/] Use: carroadviser login")
+        return
+    if action == "pool":
+        ensure_advisor_session()
+        run_desk_pool_menu(LocalStore())
+        return
+    if action == "people":
+        ensure_advisor_session()
+        run_people_menu()
+        return
+    if action == "messages":
+        ensure_advisor_session()
+        from carro.core.messages_ui import run_messages_menu
+
+        run_messages_menu()
+        return
+    raise ValueError(f"Unknown advisor action: {action}")
+
+
+def cmd_messages() -> None:
+    from carro.core import advisors as advmod
+    from carro.core.messages_ui import run_messages_menu
+
+    # Prefer existing session; otherwise ask tech then advisor
+    if not advmod.current_advisor() and not techmod.current_technician():
+        try:
+            ensure_technician_session()
+        except RuntimeError:
+            from carro.core.advisor_ui import ensure_advisor_session
+
+            ensure_advisor_session()
+    run_messages_menu()
+
+
+def cmd_shift(args: argparse.Namespace) -> None:
+    """Day start / day end presence on the shop server."""
+    action = getattr(args, "shift_action", None) or "status"
+    remote = RemoteClient()
+    if not remote.enabled:
+        raise RuntimeError("Configure server_url first — shifts are shop-wide")
+    if action == "active":
+        data = remote.list_active_shifts()
+        rows = list(data.get("shifts") or [])
+        if not rows:
+            CONSOLE.print("[dim]No techs on the clock.[/]")
+            return
+        for s in rows:
+            CONSOLE.print(
+                f"[cyan]{s.get('tech_name') or s.get('tech_id')}[/] "
+                f"since {str(s.get('started_at') or '')[:19]}"
+            )
+        return
+    tech = ensure_technician_session()
+    if not tech:
+        raise RuntimeError("Log in as a technician first")
+    if action == "start":
+        remote.start_shift(tech_id=tech.id, tech_name=tech.name)
+        CONSOLE.print(f"[green]Day start[/] · {tech.name}")
+        return
+    if action == "end":
+        remote.end_shift(tech_id=tech.id)
+        CONSOLE.print(f"[green]Day end[/] · {tech.name}")
+        return
+    # status
+    data = remote.get_open_shift(tech.id)
+    shift = data.get("shift")
+    if shift and not shift.get("ended_at"):
+        CONSOLE.print(
+            f"[cyan]On the clock[/] since {str(shift.get('started_at') or '')[:19]}"
+        )
+    else:
+        CONSOLE.print("[dim]Not on the clock.[/] Use: carro shift start")
 
 
 def cmd_config(args: argparse.Namespace) -> None:
@@ -1121,12 +1296,17 @@ def cmd_photo(store: LocalStore, args: argparse.Namespace) -> None:
         CONSOLE.print("[yellow]No images found.[/]")
         return
     notes_by_path = _collect_photo_notes(found, preset=getattr(args, "note", None))
+    fi_id = (getattr(args, "found_issue_id", None) or "").strip()
+    tag = args.tag
+    if fi_id:
+        tag = "found_issue"
     order = attach_photos(
         store,
         order,
         found,
-        tag=args.tag,
+        tag=tag,
         notes_by_path=notes_by_path,
+        found_issue_id=fi_id,
     )
     if args.action == "ingest":
         for p in found:
@@ -1135,6 +1315,8 @@ def cmd_photo(store: LocalStore, args: argparse.Namespace) -> None:
             except OSError:
                 pass
     CONSOLE.print(f"[green]Attached[/] {len(found)} photo(s) → {order.id}")
+    if fi_id:
+        CONSOLE.print(f"[dim]Linked to found issue[/] {fi_id}")
     _maybe_push(order)
 
 
@@ -1199,7 +1381,7 @@ def _phone_upload_flow(
             # Prefer full server photo list if richer
             if len(updated.photos) > len(local.photos):
                 local.photos = list(updated.photos)
-            store.save(local)
+            store.save(local, mark_pending_sync=False)
             paths = ensure_local_photos(local)
             CONSOLE.print(
                 f"[green]RO now has {len(local.photos)} photo(s)[/] "
@@ -1229,14 +1411,18 @@ def _menu_photos(store: LocalStore, ro_id: str) -> None:
 
 
 def _maybe_push(order: RepairOrder) -> None:
-    remote = RemoteClient()
-    if not remote.enabled:
+    from carro.core.sync_ops import try_push_ro
+
+    result = try_push_ro(LocalStore(), order)
+    if result.get("skipped"):
         return
-    try:
-        remote.upsert_ro(order)
-        CONSOLE.print(f"[dim]Synced to server[/]")
-    except Exception as exc:
-        CONSOLE.print(f"[yellow]Server sync skipped:[/] {exc}")
+    if result.get("ok"):
+        CONSOLE.print("[dim]Synced to server[/]")
+    else:
+        CONSOLE.print(
+            f"[yellow]Server sync deferred (saved locally, will retry):[/] "
+            f"{result.get('error') or 'unreachable'}"
+        )
 
 
 if __name__ == "__main__":

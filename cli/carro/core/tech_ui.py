@@ -69,17 +69,28 @@ def ensure_technician_session(*, allow_skip: bool = False) -> Technician | None:
 
 
 def run_first_tech_setup() -> Technician:
+    """Create first technician; set or verify global admin PIN."""
+    set_admin = not techmod.has_admin_pin()
     while True:
-        admin = _ask_pin("Admin PIN (4 digits — for adding/editing techs)")
-        admin2 = _ask_pin("Confirm admin PIN")
-        if admin != admin2:
-            CONSOLE.print("[red]Admin PINs did not match.[/]")
-            continue
-        try:
-            techmod.validate_pin(admin)
-        except ValueError as exc:
-            CONSOLE.print(f"[red]{exc}[/]")
-            continue
+        if set_admin:
+            admin = _ask_pin("Admin PIN (4 digits — for adding/editing techs)")
+            admin2 = _ask_pin("Confirm admin PIN")
+            if admin != admin2:
+                CONSOLE.print("[red]Admin PINs did not match.[/]")
+                continue
+            try:
+                techmod.validate_pin(admin)
+            except ValueError as exc:
+                CONSOLE.print(f"[red]{exc}[/]")
+                continue
+        else:
+            CONSOLE.print(
+                "[dim]Shop admin PIN already set (e.g. from Advisor app). Enter it to continue.[/]"
+            )
+            admin = _ask_pin("Shop admin PIN")
+            if not techmod.verify_admin_pin(admin):
+                CONSOLE.print("[red]Incorrect admin PIN.[/]")
+                continue
         break
 
     name = Prompt.ask("Your name (as it should appear on ROs)").strip()
@@ -99,9 +110,12 @@ def run_first_tech_setup() -> Technician:
             continue
         break
 
-    roster = techmod.empty_roster()
-    techmod.set_admin_pin(admin, roster=roster)
-    tech = techmod.add_technician(name, pin)
+    if set_admin:
+        roster = techmod.empty_roster()
+        techmod.set_admin_pin(admin, roster=roster)
+        tech = techmod.add_technician(name, pin)
+    else:
+        tech = techmod.add_technician(name, pin, admin_pin_plain=admin)
     techmod.save_session(tech)
     _try_push_roster()
     CONSOLE.print(f"[green]Saved[/] technician [cyan]{tech.name}[/] · {techmod.TECHNICIANS_FILE}")
@@ -157,7 +171,25 @@ def prompt_login(*, retries: int = 3) -> Technician:
     for attempt in range(retries):
         pin = _ask_pin("PIN")
         try:
+            from carro.core import advisors as advmod
+
+            for adv in advmod.list_advisors():
+                if techmod.verify_pin(pin, adv.pin_hash):
+                    raise ValueError("Advisor PINs cannot log into the technician CLI")
+        except ValueError as exc:
+            last_err = str(exc)
+            left = retries - attempt - 1
+            if left:
+                CONSOLE.print(f"[red]{last_err}[/] ([dim]{left} tries left[/])")
+            continue
+        try:
             logged = techmod.login_technician(tech.id, pin)
+            try:
+                from carro.core import advisors as advmod
+
+                advmod.clear_session()
+            except Exception:
+                pass
             CONSOLE.print(f"[green]Welcome[/] [cyan]{logged.name}[/]")
             return logged
         except ValueError as exc:
@@ -322,13 +354,28 @@ def run_technicians_config_menu() -> None:
             elif choice == "7":
                 change_my_pin()
             elif choice == "8":
-                if _try_pull_roster(force=True):
-                    CONSOLE.print("[green]Pulled[/] technician roster from server")
-                else:
-                    CONSOLE.print("[yellow]No update from server (or server not configured).[/]")
+                status = sync_roster_with_server()
+                CONSOLE.print(f"[green]Roster sync[/] {status}")
             elif choice == "9":
-                if _try_push_roster():
-                    CONSOLE.print("[green]Pushed[/] technician roster to server")
+                ok_tech = _try_push_roster()
+                ok_adv = False
+                try:
+                    from carro.core import advisors as advmod
+                    from carro.storage.remote import RemoteClient
+
+                    remote = RemoteClient()
+                    if remote.enabled and advmod.has_advisors():
+                        remote.put_advisors(advmod.roster_for_sync())
+                        ok_adv = True
+                except Exception:
+                    pass
+                if ok_tech or ok_adv:
+                    parts = []
+                    if ok_tech:
+                        parts.append("technicians")
+                    if ok_adv:
+                        parts.append("advisors")
+                    CONSOLE.print(f"[green]Pushed[/] {', '.join(parts)} to server")
                 else:
                     CONSOLE.print("[yellow]Push skipped (server not configured or failed).[/]")
             else:
@@ -490,40 +537,69 @@ def _try_push_roster() -> bool:
 def sync_roster_with_server() -> str:
     """
     Pull if server roster is newer; push if local is newer / server empty.
-    Returns: pulled | pushed | ok | skipped | error:…
+    Syncs technicians and advisors. Returns combined status string.
     """
     try:
+        from carro.core import advisors as advmod
         from carro.storage.remote import RemoteClient
 
         remote = RemoteClient()
         if not remote.enabled:
             return "skipped"
-        data = remote.get_technicians()
-        if not isinstance(data, dict):
-            return "error: bad server response"
-        local = techmod.load_roster()
-        remote_updated = str(data.get("updated") or "")
-        local_updated = str(local.get("updated") or "")
-        remote_techs = [t for t in (data.get("technicians") or []) if isinstance(t, dict)]
-        local_techs = list(local.get("technicians") or [])
 
-        remote_newer = bool(remote_techs) and (
-            not local_techs
-            or (remote_updated and not local_updated)
-            or (remote_updated and local_updated and remote_updated > local_updated)
-        )
-        if remote_newer:
-            techmod.apply_remote_roster(data)
-            return "pulled"
+        def _sync_one(
+            *,
+            get_remote,
+            put_remote,
+            load_local,
+            apply_remote,
+            roster_for_sync,
+            list_key: str,
+        ) -> str:
+            data = get_remote()
+            if not isinstance(data, dict):
+                return "error: bad server response"
+            local = load_local()
+            remote_updated = str(data.get("updated") or "")
+            local_updated = str(local.get("updated") or "")
+            remote_items = [t for t in (data.get(list_key) or []) if isinstance(t, dict)]
+            local_items = list(local.get(list_key) or [])
 
-        local_newer = bool(local_techs) and (
-            not remote_techs
-            or (local_updated and not remote_updated)
-            or (local_updated and remote_updated and local_updated > remote_updated)
+            remote_newer = bool(remote_items) and (
+                not local_items
+                or (remote_updated and not local_updated)
+                or (remote_updated and local_updated and remote_updated > local_updated)
+            )
+            if remote_newer:
+                apply_remote(data)
+                return "pulled"
+
+            local_newer = bool(local_items) and (
+                not remote_items
+                or (local_updated and not remote_updated)
+                or (local_updated and remote_updated and local_updated > remote_updated)
+            )
+            if local_newer:
+                put_remote(roster_for_sync())
+                return "pushed"
+            return "ok"
+
+        tech_status = _sync_one(
+            get_remote=remote.get_technicians,
+            put_remote=remote.put_technicians,
+            load_local=techmod.load_roster,
+            apply_remote=techmod.apply_remote_roster,
+            roster_for_sync=techmod.roster_for_sync,
+            list_key="technicians",
         )
-        if local_newer:
-            remote.put_technicians(techmod.roster_for_sync())
-            return "pushed"
-        return "ok"
+        adv_status = _sync_one(
+            get_remote=remote.get_advisors,
+            put_remote=remote.put_advisors,
+            load_local=advmod.load_roster,
+            apply_remote=advmod.apply_remote_roster,
+            roster_for_sync=advmod.roster_for_sync,
+            list_key="advisors",
+        )
+        return f"techs={tech_status};advisors={adv_status}"
     except Exception as exc:
         return f"error: {exc}"

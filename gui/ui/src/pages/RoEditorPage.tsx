@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { MessageComposeDialog } from "@/components/MessageComposeDialog";
 import { formatDurationMinutes, formatPhotoTag, formatShopTime, formatStatus, formatUploadMode, formatWorkedHours, formatWorkedMinutes } from "@/lib/utils";
 
 const empty: RepairOrder = {
@@ -115,6 +116,7 @@ const emptyPartDraft = (make = ""): WorkItemPart => ({
   description: "",
   part_number: "",
   manufacturer: make,
+  brand: "",
   status: "new_request",
 });
 
@@ -126,6 +128,15 @@ function itemTypeLabel(t?: string): string {
 function partStatusLabel(s?: string): string {
   const hit = PART_STATUSES.find((x) => x.value === s);
   return hit?.label || formatStatus(s);
+}
+
+function formatPartLine(p: WorkItemPart, fallbackMake = ""): string {
+  const bits = [p.description || "—", partStatusLabel(p.status)];
+  if (p.brand) bits.push(p.brand);
+  if (p.manufacturer) bits.push(p.manufacturer);
+  else if (fallbackMake) bits.push(fallbackMake);
+  if (p.part_number) bits.push(`PN ${p.part_number}`);
+  return bits.join(" · ");
 }
 
 function roleLabel(role?: string): string {
@@ -232,15 +243,30 @@ export function RoEditorPage() {
   const [itemEditorOpen, setItemEditorOpen] = useState(false);
   const [draftPart, setDraftPart] = useState<WorkItemPart>(emptyPartDraft());
   const [fiEditorOpen, setFiEditorOpen] = useState(false);
-  const [draftFi, setDraftFi] = useState({ description: "", notes: "" });
+  const [draftFi, setDraftFi] = useState<{
+    description: string;
+    notes: string;
+    files: File[];
+  }>({ description: "", notes: "", files: [] });
   const [fiBusy, setFiBusy] = useState(false);
   const [itemBusy, setItemBusy] = useState(false);
   const [roDetailsEditing, setRoDetailsEditing] = useState(false);
   const [bayItemId, setBayItemId] = useState("");
   const [bayFocus, setBayFocus] = useState<"notes" | "parts">("notes");
+  const [bayMessageOpen, setBayMessageOpen] = useState(false);
   const [bayNotes, setBayNotes] = useState("");
   const [bayPrivateNotes, setBayPrivateNotes] = useState("");
   const [bayPart, setBayPart] = useState<WorkItemPart>(emptyPartDraft());
+  const [partLookup, setPartLookup] = useState("");
+  const [partSuggestions, setPartSuggestions] = useState<
+    Array<{
+      part_number: string;
+      manufacturer: string;
+      brand?: string;
+      description: string;
+      use_count?: number;
+    }>
+  >([]);
   const [addMinutes, setAddMinutes] = useState("30");
   const [lastPdf, setLastPdf] = useState<{
     path: string;
@@ -249,9 +275,10 @@ export function RoEditorPage() {
   const [techs, setTechs] = useState<Technician[]>([]);
   const [me, setMe] = useState<Technician | null>(null);
   const [currentBusy, setCurrentBusy] = useState(false);
-  const [adminActive, setAdminActive] = useState(false);
-  const [adminSetMinutes, setAdminSetMinutes] = useState("");
-  const [adminNote, setAdminNote] = useState("");
+  const [editTimeOpen, setEditTimeOpen] = useState(false);
+  const [editTimeMinutes, setEditTimeMinutes] = useState("");
+  const [editTimeNote, setEditTimeNote] = useState("");
+  const [editTimeAdminPin, setEditTimeAdminPin] = useState("");
 
   useEffect(() => {
     void api
@@ -261,10 +288,6 @@ export function RoEditorPage() {
     void api
       .whoami()
       .then((r) => setMe(r.technician))
-      .catch(() => undefined);
-    void api
-      .adminSession()
-      .then((s) => setAdminActive(s.active))
       .catch(() => undefined);
   }, []);
 
@@ -652,28 +675,35 @@ export function RoEditorPage() {
     }
   }
 
-  async function adminCorrectTime(action: "set" | "add" | "clear", minutes?: number) {
-    if (!order.id || !draftItem.id || !adminActive) return;
+  async function editWorkedTime(action: "set" | "clear", minutes?: number) {
+    if (!order.id || !draftItem.id) return;
+    if (editTimeAdminPin.length !== 4) {
+      setErr("Enter the shop admin PIN to edit time");
+      return;
+    }
     setItemBusy(true);
     setErr("");
     try {
       const next = await api.adminWorkItemTime(order.id, draftItem.id, {
         action,
         minutes,
-        note: adminNote || undefined,
+        note: editTimeNote || undefined,
+        admin_pin: editTimeAdminPin,
       });
       setOrder(next);
       const updated = (next.work_items || []).find((w) => w.id === draftItem.id);
       if (updated) setDraftItem({ ...updated });
       setMsg(
         action === "clear"
-          ? `Admin cleared time on ${draftItem.id}`
-          : `Admin corrected time on ${draftItem.id}`,
+          ? `Cleared time on ${draftItem.id}`
+          : `Updated time on ${draftItem.id}`,
       );
-      setAdminNote("");
-      setAdminSetMinutes("");
+      setEditTimeNote("");
+      setEditTimeMinutes("");
+      setEditTimeAdminPin("");
+      setEditTimeOpen(false);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Admin time correction failed");
+      setErr(e instanceof Error ? e.message : "Time correction failed");
     } finally {
       setItemBusy(false);
     }
@@ -1258,11 +1288,7 @@ export function RoEditorPage() {
                   {(item.parts || []).length ? (
                     <ul className="mt-2 space-y-1 text-xs text-muted">
                       {(item.parts || []).map((p) => (
-                        <li key={p.id}>
-                          {p.description || "—"} · {partStatusLabel(p.status)}
-                          {p.part_number ? ` · PN ${p.part_number}` : ""}
-                          {p.manufacturer ? ` · ${p.manufacturer}` : ""}
-                        </li>
+                        <li key={p.id}>{formatPartLine(p, order.make)}</li>
                       ))}
                     </ul>
                   ) : null}
@@ -1304,6 +1330,14 @@ export function RoEditorPage() {
                         onClick={() => setBayFocus("parts")}
                       >
                         Parts
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => setBayMessageOpen(true)}
+                      >
+                        Message
                       </Button>
                       <Button
                         type="button"
@@ -1364,18 +1398,135 @@ export function RoEditorPage() {
                   ) : (
                     <div className="space-y-3">
                       {(bayItem.parts || []).length ? (
-                        <ul className="space-y-1 text-xs text-muted">
+                        <ul className="space-y-2 text-xs">
                           {(bayItem.parts || []).map((p) => (
-                            <li key={p.id}>
-                              {p.description || "—"} · {partStatusLabel(p.status)}
-                              {p.part_number ? ` · PN ${p.part_number}` : ""}
+                            <li
+                              key={p.id}
+                              className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-2 text-muted"
+                            >
+                              <span>{formatPartLine(p, order.make)}</span>
+                              <span className="flex flex-wrap gap-1">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={itemBusy}
+                                  onClick={() => setBayPart({ ...p })}
+                                >
+                                  Edit
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="danger"
+                                  disabled={itemBusy}
+                                  onClick={() =>
+                                    void (async () => {
+                                      setItemBusy(true);
+                                      setErr("");
+                                      try {
+                                        const next = await api.deletePart(
+                                          order.id,
+                                          bayItem.id,
+                                          p.id,
+                                        );
+                                        setOrder(next);
+                                        if (bayPart.id === p.id) {
+                                          setBayPart(emptyPartDraft(order.make));
+                                        }
+                                        setMsg(`Removed ${p.id}`);
+                                      } catch (e) {
+                                        setErr(
+                                          e instanceof Error ? e.message : "Delete failed",
+                                        );
+                                      } finally {
+                                        setItemBusy(false);
+                                      }
+                                    })()
+                                  }
+                                >
+                                  Delete
+                                </Button>
+                              </span>
                             </li>
                           ))}
                         </ul>
                       ) : (
                         <p className="text-xs text-muted">No parts yet.</p>
                       )}
-                      <Field label="Add part">
+                      {!bayPart.id ? (
+                        <Field label="Lookup past part">
+                          <div className="flex flex-wrap gap-2">
+                            <Input
+                              value={partLookup}
+                              onChange={(e) => setPartLookup(e.target.value)}
+                              placeholder="Part number, brand, or description"
+                            />
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              disabled={itemBusy}
+                              onClick={() =>
+                                void (async () => {
+                                  setItemBusy(true);
+                                  try {
+                                    const r = await api.partsSuggest(partLookup, 12);
+                                    setPartSuggestions(r.suggestions || []);
+                                    if (!(r.suggestions || []).length) {
+                                      setMsg("No matching documented parts");
+                                    }
+                                  } catch (e) {
+                                    setErr(
+                                      e instanceof Error ? e.message : "Part lookup failed",
+                                    );
+                                  } finally {
+                                    setItemBusy(false);
+                                  }
+                                })()
+                              }
+                            >
+                              Search
+                            </Button>
+                          </div>
+                          {partSuggestions.length ? (
+                            <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto text-xs">
+                              {partSuggestions.map((s) => (
+                                <li
+                                  key={`${s.part_number}|${s.manufacturer}|${s.brand || ""}|${s.description}`}
+                                >
+                                  <button
+                                    type="button"
+                                    className="w-full rounded-lg border border-border bg-surface px-2 py-1.5 text-left hover:bg-border/40"
+                                    onClick={() => {
+                                      setBayPart({
+                                        id: "",
+                                        description: s.description || "",
+                                        part_number: s.part_number || "",
+                                        manufacturer: s.manufacturer || order.make || "",
+                                        brand: s.brand || "",
+                                        status: "new_request",
+                                      });
+                                      setPartSuggestions([]);
+                                      setPartLookup("");
+                                      setMsg("Part fields filled from archive — add to confirm");
+                                    }}
+                                  >
+                                    <span className="font-medium">{s.description || "—"}</span>
+                                    <span className="text-muted">
+                                      {s.brand ? ` · ${s.brand}` : ""}
+                                      {s.manufacturer ? ` · ${s.manufacturer}` : ""}
+                                      {s.part_number ? ` · PN ${s.part_number}` : ""}
+                                      {s.use_count ? ` · used ${s.use_count}×` : ""}
+                                    </span>
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          ) : null}
+                        </Field>
+                      ) : null}
+                      <Field label={bayPart.id ? `Edit ${bayPart.id}` : "Add part"}>
                         <Input
                           value={bayPart.description}
                           onChange={(e) =>
@@ -1393,42 +1544,81 @@ export function RoEditorPage() {
                             }
                           />
                         </Field>
+                        <Field label="Brand / cross">
+                          <Input
+                            value={bayPart.brand || ""}
+                            onChange={(e) =>
+                              setBayPart((d) => ({ ...d, brand: e.target.value }))
+                            }
+                            placeholder="Denso, Motorcraft…"
+                          />
+                        </Field>
                         <Field label="Manufacturer">
                           <Input
                             value={bayPart.manufacturer || ""}
                             onChange={(e) =>
                               setBayPart((d) => ({ ...d, manufacturer: e.target.value }))
                             }
-                            placeholder={order.make || ""}
+                            placeholder={order.make || "OEM / make"}
                           />
                         </Field>
                       </div>
-                      <Button
-                        type="button"
-                        disabled={itemBusy || !bayPart.description.trim()}
-                        onClick={() =>
-                          void (async () => {
-                            setItemBusy(true);
-                            setErr("");
-                            try {
-                              const next = await api.addPart(order.id, bayItem.id, {
-                                description: bayPart.description,
-                                part_number: bayPart.part_number || "",
-                                manufacturer: bayPart.manufacturer || order.make || "",
-                              });
-                              setOrder(next);
-                              setBayPart(emptyPartDraft(order.make));
-                              setMsg(`Part added to ${bayItem.id}`);
-                            } catch (e) {
-                              setErr(e instanceof Error ? e.message : "Add part failed");
-                            } finally {
-                              setItemBusy(false);
-                            }
-                          })()
-                        }
-                      >
-                        Add part
-                      </Button>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          disabled={itemBusy || !bayPart.description.trim()}
+                          onClick={() =>
+                            void (async () => {
+                              setItemBusy(true);
+                              setErr("");
+                              try {
+                                let next: RepairOrder;
+                                if (bayPart.id) {
+                                  next = await api.patchPart(order.id, bayItem.id, bayPart.id, {
+                                    description: bayPart.description,
+                                    part_number: bayPart.part_number || "",
+                                    manufacturer: bayPart.manufacturer || order.make || "",
+                                    brand: bayPart.brand || "",
+                                  });
+                                  setMsg(`Updated ${bayPart.id}`);
+                                } else {
+                                  next = await api.addPart(order.id, bayItem.id, {
+                                    description: bayPart.description,
+                                    part_number: bayPart.part_number || "",
+                                    manufacturer: bayPart.manufacturer || order.make || "",
+                                    brand: bayPart.brand || "",
+                                  });
+                                  setMsg(`Part added to ${bayItem.id}`);
+                                }
+                                setOrder(next);
+                                setBayPart(emptyPartDraft(order.make));
+                              } catch (e) {
+                                setErr(
+                                  e instanceof Error
+                                    ? e.message
+                                    : bayPart.id
+                                      ? "Update part failed"
+                                      : "Add part failed",
+                                );
+                              } finally {
+                                setItemBusy(false);
+                              }
+                            })()
+                          }
+                        >
+                          {bayPart.id ? "Update part" : "Add part"}
+                        </Button>
+                        {bayPart.id ? (
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            disabled={itemBusy}
+                            onClick={() => setBayPart(emptyPartDraft(order.make))}
+                          >
+                            Cancel edit
+                          </Button>
+                        ) : null}
+                      </div>
                     </div>
                   )}
                 </>
@@ -1567,68 +1757,94 @@ export function RoEditorPage() {
                   Add minutes
                 </Button>
               </div>
-              {adminActive ? (
-                <div className="mt-3 space-y-2 border-t border-border/60 pt-3">
-                  <div className="text-xs font-medium uppercase tracking-wide text-accent">
-                    Admin correction
-                  </div>
-                  <p className="text-xs text-muted">
-                    Unlocked admin session — set total, clear, or open{" "}
-                    <Link to="/admin" className="text-accent hover:underline">
-                      Admin
-                    </Link>
-                    .
-                  </p>
-                  <Input
-                    className="h-8"
-                    value={adminNote}
-                    onChange={(e) => setAdminNote(e.target.value)}
-                    placeholder="Correction note (optional)"
-                  />
-                  <div className="flex flex-wrap items-center gap-2">
+              <div className="mt-3 border-t border-border/60 pt-3">
+                {!editTimeOpen ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={itemBusy}
+                    onClick={() => {
+                      setEditTimeMinutes(String(draftItem.worked_minutes || 0));
+                      setEditTimeOpen(true);
+                    }}
+                  >
+                    Edit time
+                  </Button>
+                ) : (
+                  <div className="space-y-2">
+                    <p className="text-xs text-muted">
+                      Correct a mistaken total. Requires the shop admin PIN.
+                    </p>
                     <Input
-                      className="h-8 w-24"
+                      className="h-8 w-28"
+                      type="password"
                       inputMode="numeric"
-                      value={adminSetMinutes}
-                      onChange={(e) => setAdminSetMinutes(e.target.value)}
-                      placeholder="Total min"
-                      aria-label="Set total minutes"
-                    />
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      disabled={itemBusy || !(Number(adminSetMinutes) >= 0) || adminSetMinutes === ""}
-                      onClick={() =>
-                        void adminCorrectTime("set", Math.floor(Number(adminSetMinutes)))
+                      maxLength={4}
+                      value={editTimeAdminPin}
+                      onChange={(e) =>
+                        setEditTimeAdminPin(e.target.value.replace(/\D/g, "").slice(0, 4))
                       }
-                    >
-                      Set total
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="danger"
-                      disabled={itemBusy}
-                      onClick={() => {
-                        if (confirm(`Clear all worked time on ${draftItem.id}?`)) {
-                          void adminCorrectTime("clear");
+                      placeholder="Admin PIN"
+                      aria-label="Admin PIN"
+                    />
+                    <Input
+                      className="h-8"
+                      value={editTimeNote}
+                      onChange={(e) => setEditTimeNote(e.target.value)}
+                      placeholder="Note (optional)"
+                    />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Input
+                        className="h-8 w-24"
+                        inputMode="numeric"
+                        value={editTimeMinutes}
+                        onChange={(e) => setEditTimeMinutes(e.target.value)}
+                        placeholder="Total min"
+                        aria-label="Set total minutes"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={
+                          itemBusy ||
+                          editTimeAdminPin.length !== 4 ||
+                          editTimeMinutes === "" ||
+                          !(Number(editTimeMinutes) >= 0)
                         }
-                      }}
-                    >
-                      Clear time
-                    </Button>
+                        onClick={() =>
+                          void editWorkedTime("set", Math.floor(Number(editTimeMinutes)))
+                        }
+                      >
+                        Set total
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="danger"
+                        disabled={itemBusy || editTimeAdminPin.length !== 4}
+                        onClick={() => {
+                          if (confirm(`Clear all worked time on ${draftItem.id}?`)) {
+                            void editWorkedTime("clear");
+                          }
+                        }}
+                      >
+                        Clear
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={itemBusy}
+                        onClick={() => setEditTimeOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <p className="mt-2 text-xs text-muted">
-                  Mistaken clocks? Unlock{" "}
-                  <Link to="/admin" className="text-accent hover:underline">
-                    Admin
-                  </Link>{" "}
-                  with the shop admin PIN.
-                </p>
-              )}
+                )}
+              </div>
             </div>
           ) : null}
           {draftItem.id && (draftItem.created_by || draftItem.notes_by) ? (
@@ -1663,6 +1879,7 @@ export function RoEditorPage() {
                           {p.id} · {partStatusLabel(p.status)}
                         </span>
                         <div className="text-xs text-muted">
+                          {p.brand ? `${p.brand} · ` : ""}
                           {p.manufacturer || order.make || "—"}
                           {p.part_number ? ` · PN ${p.part_number}` : ""}
                         </div>
@@ -1716,6 +1933,78 @@ export function RoEditorPage() {
               ) : (
                 <p className="text-xs text-muted">No parts yet.</p>
               )}
+              {!draftPart.id ? (
+                <Field label="Lookup past part">
+                  <div className="flex flex-wrap gap-2">
+                    <Input
+                      value={partLookup}
+                      onChange={(e) => setPartLookup(e.target.value)}
+                      placeholder="Part number, brand, or description"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      disabled={itemBusy}
+                      onClick={() =>
+                        void (async () => {
+                          setItemBusy(true);
+                          try {
+                            const r = await api.partsSuggest(partLookup, 12);
+                            setPartSuggestions(r.suggestions || []);
+                            if (!(r.suggestions || []).length) {
+                              setMsg("No matching documented parts");
+                            }
+                          } catch (e) {
+                            setErr(
+                              e instanceof Error ? e.message : "Part lookup failed",
+                            );
+                          } finally {
+                            setItemBusy(false);
+                          }
+                        })()
+                      }
+                    >
+                      Search
+                    </Button>
+                  </div>
+                  {partSuggestions.length ? (
+                    <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto text-xs">
+                      {partSuggestions.map((s) => (
+                        <li
+                          key={`${s.part_number}|${s.manufacturer}|${s.brand || ""}|${s.description}`}
+                        >
+                          <button
+                            type="button"
+                            className="w-full rounded-lg border border-border bg-surface px-2 py-1.5 text-left hover:bg-border/40"
+                            onClick={() => {
+                              setDraftPart({
+                                id: "",
+                                description: s.description || "",
+                                part_number: s.part_number || "",
+                                manufacturer: s.manufacturer || order.make || "",
+                                brand: s.brand || "",
+                                status: "new_request",
+                              });
+                              setPartSuggestions([]);
+                              setPartLookup("");
+                              setMsg("Part fields filled from archive — add to confirm");
+                            }}
+                          >
+                            <span className="font-medium">{s.description || "—"}</span>
+                            <span className="text-muted">
+                              {s.brand ? ` · ${s.brand}` : ""}
+                              {s.manufacturer ? ` · ${s.manufacturer}` : ""}
+                              {s.part_number ? ` · PN ${s.part_number}` : ""}
+                              {s.use_count ? ` · used ${s.use_count}×` : ""}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </Field>
+              ) : null}
               <Field label={draftPart.id ? `Edit ${draftPart.id}` : "Add part"}>
                 <Input
                   value={draftPart.description}
@@ -1734,13 +2023,22 @@ export function RoEditorPage() {
                     }
                   />
                 </Field>
+                <Field label="Brand / cross">
+                  <Input
+                    value={draftPart.brand || ""}
+                    onChange={(e) =>
+                      setDraftPart((d) => ({ ...d, brand: e.target.value }))
+                    }
+                    placeholder="Denso, Motorcraft…"
+                  />
+                </Field>
                 <Field label="Manufacturer">
                   <Input
                     value={draftPart.manufacturer || ""}
                     onChange={(e) =>
                       setDraftPart((d) => ({ ...d, manufacturer: e.target.value }))
                     }
-                    placeholder={order.make || "Vehicle make"}
+                    placeholder={order.make || "OEM / make"}
                   />
                 </Field>
               </div>
@@ -1775,6 +2073,7 @@ export function RoEditorPage() {
                             description: draftPart.description,
                             part_number: draftPart.part_number || "",
                             manufacturer: draftPart.manufacturer || order.make || "",
+                            brand: draftPart.brand || "",
                           });
                           const added = (next.work_items || [])
                             .find((w) => w.id === draftItem.id)
@@ -1800,6 +2099,7 @@ export function RoEditorPage() {
                               description: draftPart.description,
                               part_number: draftPart.part_number || "",
                               manufacturer: draftPart.manufacturer || order.make || "",
+                              brand: draftPart.brand || "",
                               status: draftPart.status,
                               wrong_note:
                                 draftPart.status === "received_wrong"
@@ -1918,7 +2218,7 @@ export function RoEditorPage() {
                     order.current_item_id || undefined,
                   );
                   setOrder(next);
-                  setDraftFi({ description: "", notes: "" });
+                  setDraftFi({ description: "", notes: "", files: [] });
                   setFiEditorOpen(true);
                   const cur = next.current_item_id || "";
                   if (cur) {
@@ -1952,64 +2252,84 @@ export function RoEditorPage() {
                 className="rounded-xl border border-border bg-bg/40 px-4 py-3 text-sm"
               >
                 <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div>
+                  <div className="min-w-0 flex-1">
                     <div className="font-mono text-xs text-muted">
                       {fi.id} · {formatStatus(fi.status)}
                       {fi.found_by ? ` · ${fi.found_by}` : ""}
                       {fi.work_item_id ? ` → ${fi.work_item_id}` : ""}
+                      {(fi.photos || []).length
+                        ? ` · ${(fi.photos || []).length} photo(s)`
+                        : ""}
                     </div>
                     <p className="mt-1 whitespace-pre-wrap">{fi.description}</p>
                     {(fi.notes || "").trim() ? (
                       <p className="mt-1 text-xs text-muted">{fi.notes}</p>
                     ) : null}
+                    {(fi.photos || []).length ? (
+                      <ul className="mt-2 flex flex-wrap gap-2">
+                        {(fi.photos || []).map((p) => {
+                          const rel = String(p.relpath || p.filename || "");
+                          if (!rel) return null;
+                          return (
+                            <li key={String(p.id || rel)} className="overflow-hidden rounded-lg border border-border">
+                              <a
+                                href={photoUrl(order.id, rel)}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="block"
+                              >
+                                <img
+                                  src={photoUrl(order.id, rel)}
+                                  alt={String(p.filename || "photo")}
+                                  className="h-20 w-20 object-cover"
+                                />
+                              </a>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : null}
                   </div>
                   {me && fi.status === "pending" ? (
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        disabled={fiBusy}
-                        onClick={() =>
-                          void (async () => {
-                            setFiBusy(true);
-                            setErr("");
-                            try {
-                              const next = await api.approveFoundIssue(order.id, fi.id, "repair");
-                              setOrder(next);
-                              setMsg(`Approved ${fi.id} → new work item`);
-                            } catch (e) {
-                              setErr(e instanceof Error ? e.message : "Approve failed");
-                            } finally {
-                              setFiBusy(false);
-                            }
-                          })()
-                        }
-                      >
-                        Approve → work item
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        disabled={fiBusy}
-                        onClick={() =>
-                          void (async () => {
-                            setFiBusy(true);
-                            setErr("");
-                            try {
-                              const next = await api.declineFoundIssue(order.id, fi.id);
-                              setOrder(next);
-                              setMsg(`Declined ${fi.id}`);
-                            } catch (e) {
-                              setErr(e instanceof Error ? e.message : "Decline failed");
-                            } finally {
-                              setFiBusy(false);
-                            }
-                          })()
-                        }
-                      >
-                        Decline
-                      </Button>
+                    <div className="flex max-w-xs flex-col items-end gap-2">
+                      <p className="text-xs text-muted">
+                        Pending advisor desk pool — approve or decline from the Advisor app.
+                      </p>
+                      <label className="cursor-pointer text-xs font-medium text-accent hover:underline">
+                        Add photos
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          className="hidden"
+                          onChange={(e) => {
+                            const files = Array.from(e.target.files || []);
+                            e.target.value = "";
+                            if (!files.length) return;
+                            void (async () => {
+                              setFiBusy(true);
+                              setErr("");
+                              try {
+                                const next = await api.uploadPhotos(
+                                  order.id,
+                                  files,
+                                  "found_issue",
+                                  fi.description.slice(0, 80),
+                                  fi.id,
+                                );
+                                setOrder(next);
+                                setMsg(`Photos added to ${fi.id}`);
+                              } catch (err) {
+                                setErr(
+                                  err instanceof Error ? err.message : "Photo upload failed",
+                                );
+                              } finally {
+                                setFiBusy(false);
+                              }
+                            })();
+                          }}
+                        />
+                      </label>
                     </div>
                   ) : null}
                 </div>
@@ -2040,7 +2360,7 @@ export function RoEditorPage() {
                       );
                       setOrder(next);
                       setFiEditorOpen(false);
-                      setDraftFi({ description: "", notes: "" });
+                      setDraftFi({ description: "", notes: "", files: [] });
                       setMsg("Cancelled — work timer resumed");
                     } catch (e) {
                       setErr(e instanceof Error ? e.message : "Cancel failed");
@@ -2067,6 +2387,29 @@ export function RoEditorPage() {
                 placeholder="Context for the advisor — not customer-facing until approved"
               />
             </Field>
+            <Field label="Photos (optional)">
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                className="block w-full text-sm text-muted file:mr-3 file:rounded-lg file:border-0 file:bg-accent/15 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-accent"
+                onChange={(e) =>
+                  setDraftFi((d) => ({
+                    ...d,
+                    files: Array.from(e.target.files || []),
+                  }))
+                }
+              />
+              {draftFi.files.length ? (
+                <p className="mt-1 text-xs text-muted">
+                  {draftFi.files.length} file{draftFi.files.length === 1 ? "" : "s"} selected
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-muted">
+                  Attach pics of the issue for the advisor desk.
+                </p>
+              )}
+            </Field>
             <Button
               type="button"
               disabled={fiBusy || !draftFi.description.trim()}
@@ -2074,17 +2417,43 @@ export function RoEditorPage() {
                 void (async () => {
                   setFiBusy(true);
                   setErr("");
+                  const pendingFiles = draftFi.files;
                   try {
-                    const next = await api.createFoundIssue(order.id, {
+                    let next = await api.createFoundIssue(order.id, {
                       description: draftFi.description,
                       notes: draftFi.notes,
                       source_work_item_id: order.current_item_id || undefined,
                       finish_compose: true,
                     });
+                    const createdId =
+                      next.created_found_issue_id ||
+                      [...(next.found_issues || [])]
+                        .filter(
+                          (f) =>
+                            f.status === "pending" &&
+                            (f.description || "").trim() ===
+                              draftFi.description.trim(),
+                        )
+                        .sort((a, b) =>
+                          (b.found_at || "").localeCompare(a.found_at || ""),
+                        )[0]?.id;
+                    if (pendingFiles.length && createdId) {
+                      next = await api.uploadPhotos(
+                        order.id,
+                        pendingFiles,
+                        "found_issue",
+                        draftFi.description.slice(0, 80),
+                        createdId,
+                      );
+                    }
                     setOrder(next);
                     setFiEditorOpen(false);
-                    setDraftFi({ description: "", notes: "" });
-                    setMsg("Found issue sent to advisor — work timer resumed");
+                    setDraftFi({ description: "", notes: "", files: [] });
+                    setMsg(
+                      pendingFiles.length
+                        ? "Found issue + photos sent to advisor — work timer resumed"
+                        : "Found issue sent to advisor — work timer resumed",
+                    );
                   } catch (e) {
                     setErr(e instanceof Error ? e.message : "Could not send found issue");
                   } finally {
@@ -2267,6 +2636,15 @@ export function RoEditorPage() {
           Back to list
         </Link>
       </p>
+
+      <MessageComposeDialog
+        open={bayMessageOpen}
+        onClose={() => setBayMessageOpen(false)}
+        defaultRoId={order.id}
+        defaultWorkItemId={bayItemId || order.current_item_id || ""}
+        lockRefs
+        onSent={() => setMsg("Message sent")}
+      />
     </div>
   );
 }

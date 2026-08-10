@@ -33,8 +33,28 @@ class LocalStore:
                 )
                 """
             )
+            cols = {
+                r["name"]
+                for r in conn.execute("PRAGMA table_info(repair_orders)").fetchall()
+            }
+            if "needs_sync" not in cols:
+                # Existing rows start clean; local edits flip this on.
+                conn.execute(
+                    "ALTER TABLE repair_orders ADD COLUMN needs_sync INTEGER NOT NULL DEFAULT 0"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ro_updated ON repair_orders(updated DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ro_needs_sync ON repair_orders(needs_sync)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_deletes (
+                    id TEXT PRIMARY KEY,
+                    deleted_at TEXT NOT NULL
+                )
+                """
             )
 
     def list_ids(self) -> list[str]:
@@ -59,7 +79,17 @@ class LocalStore:
             return None
         return RepairOrder.from_dict(json.loads(row["data"]))
 
-    def save(self, order: RepairOrder) -> RepairOrder:
+    def save(
+        self,
+        order: RepairOrder,
+        *,
+        mark_pending_sync: bool = True,
+    ) -> RepairOrder:
+        """
+        Persist RO locally. By default marks needs_sync so a later push retries
+        if the shop server was unreachable at edit time.
+        Pass mark_pending_sync=False when caching a copy that already came from the server.
+        """
         from carro.core.work_items import apply_rollups
 
         apply_rollups(order)
@@ -67,18 +97,29 @@ class LocalStore:
         if not order.created:
             order.created = order.updated
         payload = json.dumps(order.to_dict())
+        needs = 1 if mark_pending_sync else 0
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO repair_orders (id, data, updated, status)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO repair_orders (id, data, updated, status, needs_sync)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     data = excluded.data,
                     updated = excluded.updated,
-                    status = excluded.status
+                    status = excluded.status,
+                    needs_sync = CASE
+                        WHEN excluded.needs_sync = 1 THEN 1
+                        ELSE repair_orders.needs_sync
+                    END
                 """,
-                (order.id, payload, order.updated, order.status),
+                (order.id, payload, order.updated, order.status, needs),
             )
+            # Explicit clear when caching a remote copy with no local dirty flag.
+            if not mark_pending_sync:
+                conn.execute(
+                    "UPDATE repair_orders SET needs_sync = 0 WHERE id = ?",
+                    (order.id,),
+                )
         return order
 
     def create(self, **fields) -> RepairOrder:
@@ -86,10 +127,91 @@ class LocalStore:
         order = RepairOrder(id=ro_id, **fields)
         return self.save(order)
 
-    def delete(self, ro_id: str) -> bool:
+    def delete(self, ro_id: str, *, queue_remote: bool = False) -> bool:
+        """
+        Delete locally. If queue_remote=True, remember the id so sync can DELETE
+        on the shop server once connectivity returns.
+        """
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM repair_orders WHERE id = ?", (ro_id,))
+            if queue_remote and cur.rowcount > 0:
+                conn.execute(
+                    """
+                    INSERT INTO pending_deletes (id, deleted_at)
+                    VALUES (?, ?)
+                    ON CONFLICT(id) DO UPDATE SET deleted_at = excluded.deleted_at
+                    """,
+                    (ro_id, now_iso()),
+                )
             return cur.rowcount > 0
+
+    def mark_synced(self, ro_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE repair_orders SET needs_sync = 0 WHERE id = ?",
+                (ro_id,),
+            )
+
+    def mark_needs_sync(self, ro_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE repair_orders SET needs_sync = 1 WHERE id = ?",
+                (ro_id,),
+            )
+
+    def needs_sync(self, ro_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT needs_sync FROM repair_orders WHERE id = ?",
+                (ro_id,),
+            ).fetchone()
+        return bool(row and int(row["needs_sync"] or 0))
+
+    def list_pending_sync_ids(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id FROM repair_orders WHERE needs_sync = 1 ORDER BY updated DESC"
+            ).fetchall()
+        return [r["id"] for r in rows]
+
+    def list_pending_orders(self) -> list[RepairOrder]:
+        ids = self.list_pending_sync_ids()
+        out: list[RepairOrder] = []
+        for rid in ids:
+            order = self.get(rid)
+            if order:
+                out.append(order)
+        return out
+
+    def pending_sync_count(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM repair_orders WHERE needs_sync = 1"
+            ).fetchone()
+            dels = conn.execute("SELECT COUNT(*) AS n FROM pending_deletes").fetchone()
+        return int(row["n"] if row else 0) + int(dels["n"] if dels else 0)
+
+    def list_pending_deletes(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id FROM pending_deletes ORDER BY deleted_at"
+            ).fetchall()
+        return [r["id"] for r in rows]
+
+    def clear_pending_delete(self, ro_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM pending_deletes WHERE id = ?", (ro_id,))
+
+    def sync_status(self) -> dict:
+        pending_ros = self.list_pending_sync_ids()
+        pending_dels = self.list_pending_deletes()
+        return {
+            "pending_ros": len(pending_ros),
+            "pending_deletes": len(pending_dels),
+            "pending_total": len(pending_ros) + len(pending_dels),
+            "pending_ro_ids": pending_ros[:50],
+            "pending_delete_ids": pending_dels[:50],
+        }
 
     def search(
         self,
@@ -125,7 +247,7 @@ class LocalStore:
                         str(it.get("item_type") or ""),
                         str(it.get("status") or ""),
                         " ".join(
-                            f"{(p.get('description') or '')} {(p.get('part_number') or '')} {(p.get('manufacturer') or '')}"
+                            f"{(p.get('description') or '')} {(p.get('part_number') or '')} {(p.get('manufacturer') or '')} {(p.get('brand') or '')}"
                             for p in (it.get("parts") or [])
                             if isinstance(p, dict)
                         ),
@@ -213,11 +335,15 @@ class LocalStore:
         retain_active = active[: max(0, keep)]
         retain_billed = billed[: max(0, billed_keep)]
         retain_ids = {o.id for o in retain_active} | {o.id for o in retain_billed}
+        # Never drop ROs that have not reached the shop server yet.
+        retain_ids |= set(self.list_pending_sync_ids())
         retained = [o for o in orders if o.id in retain_ids]
 
         photo_keep = max(0, min(photo_keep, len(retained)))
         # Strip photos from retained ROs outside the newest photo_keep window
         for order in retained[photo_keep:]:
+            if self.needs_sync(order.id):
+                continue
             self._clear_local_photos(order, mark_meta=True)
 
         # Drop aged received part lines from retained ROs (server already has them via sync).
@@ -226,8 +352,10 @@ class LocalStore:
 
         parts_hours = resolve_local_parts_received_keep_hours(cfg)
         for order in retained:
+            if self.needs_sync(order.id):
+                continue
             if prune_received_parts(order, keep_hours=parts_hours):
-                self.save(order)
+                self.save(order, mark_pending_sync=False)
 
         for order in orders:
             if order.id in retain_ids:
@@ -255,4 +383,4 @@ class LocalStore:
         if mark_meta and cleared:
             for meta in order.photos:
                 meta["local_cleared"] = True
-            self.save(order)
+            self.save(order, mark_pending_sync=False)

@@ -2,7 +2,11 @@
 Background autosync timer (minutes). Default off (0).
 
 Runs while the carro engine or interactive CLI menu is up so bay PCs can keep
-the shop server current for a future advisor app without manual sync.
+the shop server current without manual sync.
+
+Even when autosync_minutes is 0, pending (unsynced) local edits are retried
+every couple of minutes whenever a server_url is configured — so a temporary
+outage does not leave work stranded on one bay.
 """
 
 from __future__ import annotations
@@ -16,8 +20,12 @@ from typing import Any
 from carro.config import load_config, resolve_autosync_minutes
 from carro.core.db import LocalStore
 from carro.core.sync_ops import perform_sync
+from carro.storage.remote import RemoteClient
 
 log = logging.getLogger("carro.autosync")
+
+# When full autosync is off, still retry dirty ROs this often (seconds).
+_PENDING_RETRY_SEC = 120.0
 
 _lock = threading.Lock()
 _stop = threading.Event()
@@ -32,6 +40,7 @@ _status: dict[str, Any] = {
     "last_message": None,
     "last_error": None,
     "next_due_at": None,
+    "pending_retry": False,
 }
 
 
@@ -41,6 +50,11 @@ def autosync_status() -> dict[str, Any]:
     cfg_mins = resolve_autosync_minutes()
     st["interval_minutes"] = cfg_mins
     st["enabled"] = cfg_mins > 0
+    try:
+        store = _store or LocalStore()
+        st["pending"] = store.sync_status()
+    except Exception:
+        st["pending"] = {"pending_total": 0}
     return st
 
 
@@ -81,38 +95,50 @@ def _iso(ts: float) -> str:
 
 def _worker() -> None:
     poll = 15.0
-    last_run = 0.0
+    last_full = 0.0
+    last_pending = 0.0
     while not _stop.is_set():
         try:
             minutes = resolve_autosync_minutes(load_config())
+            store = _store or LocalStore()
+            remote_on = RemoteClient().enabled
+            pending_n = 0
+            try:
+                pending_n = int(store.pending_sync_count())
+            except Exception:
+                pending_n = 0
+
             with _lock:
                 _status["interval_minutes"] = minutes
                 _status["enabled"] = minutes > 0
                 _status["running"] = True
+                _status["pending_retry"] = bool(remote_on and pending_n > 0)
 
-            if minutes <= 0:
-                last_run = 0.0
+            now = time.time()
+
+            if minutes > 0:
+                interval = float(max(1, minutes) * 60)
+                if last_full <= 0.0:
+                    with _lock:
+                        _status["next_due_at"] = _iso(now + poll)
+                    if _stop.wait(poll):
+                        break
+                    _run_once(pending_only=False)
+                    last_full = time.time()
+                    last_pending = last_full
+                elif now - last_full >= interval:
+                    _run_once(pending_only=False)
+                    last_full = time.time()
+                    last_pending = last_full
+                with _lock:
+                    _status["next_due_at"] = _iso(last_full + interval)
+            else:
+                # Autosync off: still drain the pending queue when the server returns.
                 with _lock:
                     _status["next_due_at"] = None
-                _stop.wait(poll)
-                continue
-
-            interval = float(max(1, minutes) * 60)
-            now = time.time()
-            if last_run <= 0.0:
-                # First run shortly after enable (one poll), then every N minutes.
-                with _lock:
-                    _status["next_due_at"] = _iso(now + poll)
-                if _stop.wait(poll):
-                    break
-                _run_once()
-                last_run = time.time()
-            elif now - last_run >= interval:
-                _run_once()
-                last_run = time.time()
-
-            with _lock:
-                _status["next_due_at"] = _iso(last_run + interval)
+                if remote_on and pending_n > 0 and (now - last_pending) >= _PENDING_RETRY_SEC:
+                    _run_once(pending_only=True)
+                    last_pending = time.time()
         except Exception as exc:  # noqa: BLE001
             log.warning("autosync loop error: %s", exc)
             with _lock:
@@ -121,17 +147,35 @@ def _worker() -> None:
         _stop.wait(poll)
 
 
-def _run_once() -> None:
+def _run_once(*, pending_only: bool = False) -> None:
     store = _store or LocalStore()
     try:
-        result = perform_sync(store)
+        # Calendar-day queue rollover (next_day → daily, leftover daily → next_day)
+        try:
+            from carro.core.queue_lanes import rollover_all_orders
+            from carro.core.sync_ops import try_push_ro
+
+            for order in rollover_all_orders(store.list_orders()):
+                store.save(order)
+                try_push_ro(
+                    store,
+                    order,
+                    actor="autosync",
+                    actor_id="",
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("queue rollover: %s", exc)
+
+        result = perform_sync(store, pending_only=pending_only)
         msg = str(result.get("message") or "ok")
         with _lock:
             _status["last_run_at"] = datetime.now(tz=timezone.utc).isoformat()
-            _status["last_ok"] = True
+            _status["last_ok"] = bool(result.get("ok"))
             _status["last_message"] = msg
-            _status["last_error"] = None
-        log.info("autosync: %s", msg)
+            _status["last_error"] = (
+                None if result.get("ok") else str(result.get("error") or msg)
+            )
+        log.info("autosync%s: %s", " (pending)" if pending_only else "", msg)
     except Exception as exc:  # noqa: BLE001
         with _lock:
             _status["last_run_at"] = datetime.now(tz=timezone.utc).isoformat()

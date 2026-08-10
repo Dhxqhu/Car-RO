@@ -54,7 +54,8 @@ Important files on the **server** (never put these in git or a public chat):
 | File | What it is |
 | --- | --- |
 | `~/.config/carro-server.env` | Server settings: data folder + **shop token** |
-| `~/carro-data/` (default) | The actual archive on disk |
+| `~/carro-data/` (default) | The actual archive on disk (`volumes.json`, DB, photos) |
+| `~/carro-data/volumes.json` | Named photo drives (add more disks later without reinstall) |
 | `~/.config/systemd/user/carro-server.service` | Keeps the server running |
 
 On each **bay PC**:
@@ -335,20 +336,142 @@ No new server install. Keep using the **same** shop token until you rotate it on
 
 ---
 
-## Updating the server after a Car-RO release
+## Adding another drive (live server)
 
-On the server:
+Photos can fill the first disk. You can attach a second (or third) drive **without reinstalling** and **without moving** the repair-order database. Old photos stay where they are; new uploads go to whichever volume you mark as default.
+
+### What stays put vs what moves
+
+| Piece | Location |
+| --- | --- |
+| Repair orders (SQLite), tech/advisor lists, `volumes.json` | Always under `CARRO_DATA_DIR` (default `~/carro-data`) |
+| Photo files | Under each volume’s `…/photos/<RO-id>/` |
+| **Default** volume | Where **new** photos are written |
+
+Changing the default volume never relocates the database.
+
+### Step A — Mount the new drive on the server
+
+On the **server** (examples only — use your real device/mount point):
+
+1. Plug in / attach the disk and create a mount point, e.g. `/mnt/extra`.
+2. Format and mount it (or add it to `/etc/fstab` so it mounts on boot).
+3. Create a Car-RO folder on it, e.g. `/mnt/extra/carro`, owned by the user that runs `carro-server`.
 
 ```bash
-cd ~/Car-RO
-# update files (git pull, or unzip a new Release over the folder)
-./scripts/install-server.sh
-# say Yes to restart when prompted
+sudo mkdir -p /mnt/extra/carro
+sudo chown "$USER:$USER" /mnt/extra/carro
+df -h /mnt/extra    # confirm free space
 ```
+
+Keep the mount available after reboot (fstab / systemd mount). If the path disappears, new photo writes to that volume will fail until it is back.
+
+### Step B — Register the volume (no downtime)
+
+**Easiest — helper script on the server** (uses the shop token from `~/.config/carro-server.env`):
+
+```bash
+cd ~/Car-RO    # or wherever the Car-RO source lives
+chmod +x scripts/add-server-volume.sh
+
+# See what you have now
+./scripts/add-server-volume.sh --list
+
+# Add the drive; start sending NEW photos there
+./scripts/add-server-volume.sh --name extra --path /mnt/extra/carro --make-default
+```
+
+**Or curl** (replace token + hostname):
+
+```bash
+# List
+curl -s -H "Authorization: Bearer YOUR_TOKEN" http://127.0.0.1:8787/volumes | python3 -m json.tool
+
+# Add (make_default=true → new photos land here)
+curl -s -H "Authorization: Bearer YOUR_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"extra","path":"/mnt/extra/carro","make_default":true}' \
+  http://127.0.0.1:8787/volumes | python3 -m json.tool
+```
+
+**Or switch default later** (volume already registered):
+
+```bash
+./scripts/add-server-volume.sh --set-default extra
+# same as:
+curl -s -H "Authorization: Bearer YOUR_TOKEN" -X PUT \
+  http://127.0.0.1:8787/volumes/extra/default
+```
+
+No bay PC changes are required. Clients already download photos by searching every volume.
+
+### Step C — Confirm
+
+```bash
+./scripts/add-server-volume.sh --list
+# or
+curl -s -H "Authorization: Bearer YOUR_TOKEN" http://127.0.0.1:8787/health | python3 -m json.tool
+```
+
+You should see each volume’s `path`, `free_gb`, and which one is default. Upload a test photo from a bay PC and check that new files appear under `/mnt/extra/carro/photos/…`.
+
+### Optional — edit `volumes.json` by hand
+
+File: `$CARRO_DATA_DIR/volumes.json` (usually `~/carro-data/volumes.json`).
+
+```json
+{
+  "version": 1,
+  "default": "extra",
+  "volumes": {
+    "primary": { "path": "/home/YOU/carro-data", "role": "data" },
+    "extra": { "path": "/mnt/extra/carro", "role": "primary" }
+  }
+}
+```
+
+Then either:
+
+```bash
+curl -s -H "Authorization: Bearer YOUR_TOKEN" -X POST http://127.0.0.1:8787/volumes/reload
+```
+
+or `systemctl --user restart carro-server`.
+
+### First-install multi-disk (optional)
+
+Before the first start you can seed volumes in `~/.config/carro-server.env`:
+
+```text
+CARRO_VOLUMES=primary=/home/YOU/carro-data,extra=/mnt/extra/carro
+```
+
+That only applies when `volumes.json` does **not** exist yet. On a live server that already has data, use the helper / API above instead.
+
+### Notes
+
+- Bay PCs do **not** need a new token or URL when you add a drive.
+- Update the server package (`./scripts/install-server.sh`) if `/volumes` or `--make-default` is missing (older builds).
+- Do not delete the old volume from `volumes.json` while photos still live there — downloads look up every listed path.
+
+---
+
+## Updating the server after a Car-RO release
+
+**You do not have to update** a working shop. When you want new features, follow **[UPDATING.md](UPDATING.md)** (server first, then bay/advisor PCs). Short version on the server:
+
+```bash
+cd ~/Car-RO   # or your checkout
+# update files (git pull, or unzip a new Release over the folder)
+./scripts/update-server.sh
+```
+
+(`./scripts/install-server.sh` still works for refresh too; `update-server.sh` is the dedicated live path and never regenerates the shop token.)
 
 Updates **keep** `~/.config/carro-server.env` (your token and data path stay put).
 
-If a bay PC says a URL is **404** (e.g. `/technicians`), the server is still on old code — update + restart.
+If a bay PC says a URL is **404** (e.g. `/technicians` or `/messages`), the server is still on old code — update + restart.
+
+Shop **person-to-person messaging** (`/messages`) also needs this update before bay/advisor clients can send notes.
 
 ---
 
@@ -390,6 +513,9 @@ loginctl enable-linger $USER
 | Sync OK but techs missing | Run sync / tech menu **Pull roster**; ensure server was updated for `/technicians` |
 | Deleted RO comes back | Server delete failed (old server). Update server, delete again |
 | Forgot token | See [I forgot the shop token](#i-forgot-the-shop-token) |
+| Disk filling up with photos | [Adding another drive (live server)](#adding-another-drive-live-server) |
+| New volume path “not writable” | Mount the disk, `chown` the folder to the carro-server user, re-run `add-server-volume.sh` |
+| Photos 404 after adding a drive | Keep the old volume in `volumes.json`; only *new* uploads use the default |
 | Generated a token in the GUI and now sync fails | You changed only the **bay** copy. Either paste the server’s `CARRO_TOKEN` back onto the bay, or [rotate](#rotate-the-shop-token-on-purpose) the server to match the new one **and** update every other bay |
 
 ---

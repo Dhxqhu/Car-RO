@@ -162,7 +162,7 @@ def pin_conflicts(
     admin_pin_plain: str | None = None,
 ) -> bool:
     """
-    True if PIN matches admin and/or another technician.
+    True if PIN matches admin, another technician, or any advisor.
     `admin_pin_plain` covers first-run before admin hash is saved.
     """
     pin = validate_pin(pin)
@@ -176,6 +176,14 @@ def pin_conflicts(
             continue
         if verify_pin(pin, tech.pin_hash):
             return True
+    try:
+        from carro.core import advisors as advmod
+
+        for adv in advmod.list_advisors():
+            if verify_pin(pin, adv.pin_hash):
+                return True
+    except Exception:
+        pass
     return False
 
 
@@ -195,7 +203,7 @@ def ensure_pin_available(
         check_admin=check_admin,
         admin_pin_plain=admin_pin_plain,
     ):
-        raise ValueError("PIN already used (admin or another technician)")
+        raise ValueError("PIN already used (admin, technician, or advisor)")
     return pin
 
 

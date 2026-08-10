@@ -31,10 +31,14 @@ def assign_ro(
 
 
 def clear_current_task(order: RepairOrder) -> None:
+    from carro.core.queue_lanes import apply_pending_queue_lane
     from carro.core.work_items import stop_all_work_timers
 
+    wid = (order.current_item_id or "").strip()
     # Bank any running work-item timers before leaving the bay task
     stop_all_work_timers(order)
+    if wid:
+        apply_pending_queue_lane(order, wid)
     order.current_tech_id = ""
     order.current_tech_name = ""
     order.current_since = ""
@@ -94,7 +98,7 @@ def add_to_my_queue(
     item_id: str = "",
 ) -> None:
     """Plan work: assign a work item to this tech (queue is per concern, not per car)."""
-    from carro.core.work_items import pick_default_work_item_id
+    from carro.core.work_items import ensure_work_items_on_order, pick_default_work_item_id
 
     if order.status == "billed_out":
         return
@@ -103,6 +107,15 @@ def add_to_my_queue(
     wid = (item_id or "").strip() or pick_default_work_item_id(order)
     if not wid:
         raise ValueError("Add a work item before queuing — queue is per concern, not per car")
+    items = ensure_work_items_on_order(order)
+    target = next((w for w in items if w.id == wid), None)
+    if not target:
+        raise ValueError(f"Work item not found: {wid}")
+    owner = (target.assigned_to_id or "").strip()
+    if owner and owner != (tech_id or "").strip():
+        raise ValueError(
+            "This work item is assigned to another technician — ask an advisor to reassign"
+        )
     if not assign_work_item(order, wid, tech_id=tech_id, tech_name=tech_name):
         raise ValueError(f"Work item not found: {wid}")
     if order.status in ("", "open"):
@@ -502,6 +515,8 @@ def assign_work_item(
     tech_name: str = "",
 ) -> bool:
     """Assign (or clear) a single work item — the unit of planned / billed work."""
+    from carro.core.queue_lanes import ensure_daily_on_assign
+
     items = ensure_work_items_on_order(order)
     target = next((w for w in items if w.id == item_id), None)
     if not target:
@@ -516,6 +531,7 @@ def assign_work_item(
         target.assigned_to_id = tid
         target.assigned_to_name = tname
         target.assigned_at = now_iso()
+        ensure_daily_on_assign(target)
     target.updated = now_iso()
     order.work_items = work_items_to_dicts(items)
     return True
@@ -606,6 +622,8 @@ def summarize_order_for_board(order: RepairOrder | dict[str, Any]) -> dict[str, 
         "parts_requested_by": d.get("parts_requested_by") or "",
         "approval_requested_at": d.get("approval_requested_at") or "",
         "approval_requested_by": d.get("approval_requested_by") or "",
+        "waiter": bool(d.get("waiter")),
+        "urgent": bool(d.get("urgent")),
         "worked_minutes": sum(
             max(0, int(it.get("worked_minutes") or 0)) for it in items
         ),
@@ -638,6 +656,7 @@ def summarize_item_job(
     item: dict[str, Any],
 ) -> dict[str, Any]:
     """One queued / current work unit: work item + car context from the RO."""
+    from carro.core.queue_lanes import normalize_next_day_request, normalize_queue_lane
     from carro.core.work_items import (
         live_stage_minutes,
         normalize_stage_totals,
@@ -653,6 +672,7 @@ def summarize_item_job(
     wid = str(item.get("id") or "")
     istatus = str(item.get("status") or "open")
     totals = normalize_stage_totals(item.get("stage_totals"))
+    req = normalize_next_day_request(item.get("next_day_request"))
     return {
         "id": f"{d.get('id') or ''}:{wid}",  # unique key for lists
         "ro_id": d.get("id") or "",
@@ -668,6 +688,12 @@ def summarize_item_job(
         or "(no vehicle)",
         "vin": d.get("vin") or "",
         "ro_status": d.get("status") or "open",
+        "waiter": bool(d.get("waiter")),
+        "urgent": bool(d.get("urgent")),
+        "queue_lane": normalize_queue_lane(item.get("queue_lane"), default="daily"),
+        "pending_queue_lane": str(item.get("pending_queue_lane") or "").strip(),
+        "queue_day": str(item.get("queue_day") or "").strip(),
+        "next_day_request": req,
         "assigned_to_id": item.get("assigned_to_id") or "",
         "assigned_to_name": item.get("assigned_to_name") or "",
         "assigned_at": item.get("assigned_at") or "",
@@ -700,19 +726,55 @@ def build_assigned_board(
 ) -> dict[str, Any]:
     """
     Assigned Work is work-item centric:
-    - mine / unassigned / by_tech / now_working / waiting_* = itemized jobs
+    - mine / mine_daily / mine_next_day / mine_long_term
+    - next_day / long_term / daily_by_tech (shop-wide lanes)
+    - unassigned / by_tech / now_working / waiting_* = itemized jobs
     - ready_to_bill / billed_out = car-level RO stages (advisor handoff)
+
+    Current work items appear under now_working (in progress) and are omitted
+    from daily/next_day/long_term lane lists.
     """
+    from carro.core.queue_lanes import normalize_queue_lane
+
     mine: list[dict[str, Any]] = []
+    mine_daily: list[dict[str, Any]] = []
+    mine_next_day: list[dict[str, Any]] = []
+    mine_long_term: list[dict[str, Any]] = []
+    next_day: list[dict[str, Any]] = []
+    long_term: list[dict[str, Any]] = []
     waiting_parts: list[dict[str, Any]] = []
     waiting_customer: list[dict[str, Any]] = []
     found_issues_pending: list[dict[str, Any]] = []
     ready_to_bill: list[dict[str, Any]] = []
     billed_out: list[dict[str, Any]] = []
     by_tech: dict[str, dict[str, Any]] = {}
+    daily_by_tech: dict[str, dict[str, Any]] = {}
     unassigned: list[dict[str, Any]] = []
     now_working: list[dict[str, Any]] = []
     my_current: dict[str, Any] | None = None
+    defer_requests: list[dict[str, Any]] = []
+
+    def _lane_bucket(job: dict[str, Any]) -> None:
+        lane = normalize_queue_lane(job.get("queue_lane"), default="daily")
+        if lane == "next_day":
+            next_day.append(job)
+        elif lane == "long_term":
+            long_term.append(job)
+        else:
+            aid = str(job.get("assigned_to_id") or "")
+            aname = str(job.get("assigned_to_name") or "")
+            key = _tech_key(aid, aname)
+            if key:
+                bucket = daily_by_tech.setdefault(
+                    key,
+                    {
+                        "id": aid,
+                        "name": aname or aid or "Unknown",
+                        "jobs": [],
+                    },
+                )
+                if not any(j.get("id") == job["id"] for j in bucket["jobs"]):
+                    bucket["jobs"].append(job)
 
     for order in orders:
         from carro.core.work_items import sanitize_open_time_segments
@@ -756,6 +818,8 @@ def build_assigned_board(
                     "vehicle": summary.get("vehicle") or "",
                     "vin": summary.get("vin") or "",
                     "ro_status": status,
+                    "waiter": bool(d.get("waiter")),
+                    "urgent": bool(d.get("urgent")),
                     "is_current": True,
                     "current_tech_id": cur_id,
                     "current_tech_name": cur_name,
@@ -776,8 +840,6 @@ def build_assigned_board(
             if entry["is_me"]:
                 my_current = job
 
-        # Floor queue: all non-closed ROs; waiting items go to waiting lists,
-        # other open items stay queueable even if siblings wait.
         if status == "billed_out":
             continue
 
@@ -788,28 +850,47 @@ def build_assigned_board(
             if istatus == "done":
                 continue
             job = summarize_item_job(d, it)
+            req = job.get("next_day_request") or {}
+            if isinstance(req, dict) and req.get("status") == "pending":
+                defer_requests.append(job)
             if istatus == "waiting_parts":
                 waiting_parts.append(job)
                 continue
             if istatus == "waiting_customer":
                 waiting_customer.append(job)
                 continue
-            # Ready-to-bill RO: don't also list unfinished items in mine
-            # (shouldn't happen if rollup is correct)
             if status == "done":
                 continue
 
+            # In-progress (current) stays out of lane lists
+            if job.get("is_current"):
+                aid = str(it.get("assigned_to_id") or "")
+                aname = str(it.get("assigned_to_name") or "")
+                if matches_tech(aid, aname, me_id=tech_id, me_name=tech_name):
+                    mine.append(job)
+                continue
+
+            lane = normalize_queue_lane(job.get("queue_lane"), default="daily")
             aid = str(it.get("assigned_to_id") or "")
             aname = str(it.get("assigned_to_name") or "")
             if matches_tech(aid, aname, me_id=tech_id, me_name=tech_name):
                 mine.append(job)
+                if lane == "next_day":
+                    mine_next_day.append(job)
+                elif lane == "long_term":
+                    mine_long_term.append(job)
+                else:
+                    mine_daily.append(job)
+                _lane_bucket(job)
                 continue
             if not aid and not aname:
                 unassigned.append(job)
+                _lane_bucket(job)
                 continue
             key = _tech_key(aid, aname)
             if not key:
                 unassigned.append(job)
+                _lane_bucket(job)
                 continue
             bucket = by_tech.setdefault(
                 key,
@@ -829,10 +910,44 @@ def build_assigned_board(
                 cur_id, cur_name, me_id=aid, me_name=aname
             ):
                 bucket["current"] = job
+            _lane_bucket(job)
+
+    def sort_floor(lst: list[dict[str, Any]]) -> None:
+        # waiter → urgent → newer updated first
+        lst.sort(
+            key=lambda o: (
+                0 if o.get("waiter") else 1,
+                0 if o.get("urgent") else 1,
+                str(o.get("updated") or ""),
+            ),
+            reverse=False,
+        )
+        # Within same waiter/urgent, want updated DESC — split sort:
+        lst.sort(key=lambda o: str(o.get("updated") or ""), reverse=True)
+        lst.sort(
+            key=lambda o: (
+                0 if o.get("waiter") else 1,
+                0 if o.get("urgent") else 1,
+            )
+        )
 
     by_tech_list = sorted(by_tech.values(), key=lambda b: (b.get("name") or "").lower())
-    for lst in (mine, unassigned, waiting_parts, waiting_customer):
-        lst.sort(key=lambda o: o.get("updated") or "", reverse=True)
+    daily_by_tech_list = sorted(
+        daily_by_tech.values(), key=lambda b: (b.get("name") or "").lower()
+    )
+    for lst in (
+        mine,
+        mine_daily,
+        mine_next_day,
+        mine_long_term,
+        next_day,
+        long_term,
+        unassigned,
+        waiting_parts,
+        waiting_customer,
+        defer_requests,
+    ):
+        sort_floor(lst)
     found_issues_pending.sort(key=lambda o: o.get("found_at") or "", reverse=True)
     for lst in (ready_to_bill, billed_out):
         lst.sort(key=lambda o: o.get("updated") or "", reverse=True)
@@ -842,11 +957,20 @@ def build_assigned_board(
     )
     now_working.sort(key=lambda e: (e.get("tech_name") or "").lower())
     for b in by_tech_list:
-        b["jobs"].sort(key=lambda o: o.get("updated") or "", reverse=True)
+        sort_floor(b["jobs"])
         b["orders"].sort(key=lambda o: o.get("updated") or "", reverse=True)
+    for b in daily_by_tech_list:
+        sort_floor(b["jobs"])
 
     return {
         "mine": mine,
+        "mine_daily": mine_daily,
+        "mine_next_day": mine_next_day,
+        "mine_long_term": mine_long_term,
+        "next_day": next_day,
+        "long_term": long_term,
+        "daily_by_tech": daily_by_tech_list,
+        "defer_requests": defer_requests,
         "waiting_parts": waiting_parts,
         "waiting_customer": waiting_customer,
         "found_issues_pending": found_issues_pending,

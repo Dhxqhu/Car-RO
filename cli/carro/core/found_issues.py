@@ -28,6 +28,8 @@ class FoundIssue:
     work_item_id: str = ""
     source_work_item_id: str = ""
     compose_downtime_minutes: int = 0
+    # Photo metadata (same shape as RO photos; files live under photos/<ro_id>/)
+    photos: list[dict[str, Any]] = field(default_factory=list)
     updated: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -47,6 +49,11 @@ class FoundIssue:
         clean["decline_reason"] = reason if reason in DECLINE_REASONS else ""
         clean["description"] = str(clean.get("description") or "")
         clean["notes"] = str(clean.get("notes") or "")
+        photos = clean.get("photos")
+        if not isinstance(photos, list):
+            clean["photos"] = []
+        else:
+            clean["photos"] = [p for p in photos if isinstance(p, dict)]
         try:
             clean["compose_downtime_minutes"] = max(
                 0, int(clean.get("compose_downtime_minutes") or 0)
@@ -352,6 +359,9 @@ def summarize_found_issue_for_board(order: Any, fi: FoundIssue | dict[str, Any])
         "found_by_id": f.get("found_by_id") or "",
         "found_at": f.get("found_at") or "",
         "source_work_item_id": f.get("source_work_item_id") or "",
+        "photo_count": len(f.get("photos") or [])
+        if isinstance(f.get("photos"), list)
+        else 0,
         "customer": f"{d.get('last_name') or ''}, {d.get('first_name') or ''}".strip(", ").strip()
         or "(no customer)",
         "vehicle": " ".join(
@@ -360,6 +370,34 @@ def summarize_found_issue_for_board(order: Any, fi: FoundIssue | dict[str, Any])
         or "(no vehicle)",
         "vin": d.get("vin") or "",
     }
+
+
+def link_photos_to_found_issue(
+    order: Any,
+    fi_id: str,
+    photo_metas: list[dict[str, Any]],
+) -> FoundIssue:
+    """Append photo metadata onto a found issue (files already on the RO)."""
+    items, fi = _find_fi(order, fi_id)
+    existing_ids = {
+        str(p.get("id") or "")
+        for p in (fi.photos or [])
+        if isinstance(p, dict) and p.get("id")
+    }
+    for meta in photo_metas:
+        if not isinstance(meta, dict):
+            continue
+        pid = str(meta.get("id") or "")
+        if pid and pid in existing_ids:
+            continue
+        entry = dict(meta)
+        entry["found_issue_id"] = fi.id
+        fi.photos.append(entry)
+        if pid:
+            existing_ids.add(pid)
+    fi.updated = now_iso()
+    _save_found_issues(order, items)
+    return fi
 
 
 def decline_reason_label(reason: str) -> str:

@@ -2,6 +2,7 @@ import { Cable, Moon, Sun } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { TechNotifications } from "@/components/TechNotifications";
+import { TechShiftControls } from "@/components/TechShiftControls";
 import { useTheme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
 import carroMarkOnDark from "@/assets/carro-mark-512-on-dark.png";
@@ -18,6 +19,7 @@ const workspaces = [
       p.startsWith("/assigned") ||
       p.startsWith("/parts") ||
       p.startsWith("/history") ||
+      p.startsWith("/messages") ||
       p.startsWith("/settings") ||
       p.startsWith("/techs") ||
       p.startsWith("/admin"),
@@ -29,6 +31,7 @@ const orderLinks = [
   { to: "/", label: "Orders", end: true },
   { to: "/assigned", label: "Assigned" },
   { to: "/parts", label: "Parts" },
+  { to: "/messages", label: "Messages" },
   { to: "/history", label: "History" },
   { to: "/settings", label: "Config" },
   { to: "/techs", label: "Technicians" },
@@ -143,7 +146,10 @@ export function AppShell({
                 ))
               : null}
             {!scannerShell && techName ? (
-              <TechNotifications techName={techName} techId={techId} />
+              <>
+                <TechShiftControls techId={techId} />
+                <TechNotifications techName={techName} techId={techId} />
+              </>
             ) : null}
             {onExit ? (
               <Button variant="ghost" onClick={onExit}>

@@ -2,38 +2,218 @@
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import Any
 
 from carro.config import (
     load_config,
+    photos_dir,
     resolve_local_billed_keep,
     resolve_local_keep,
     resolve_local_photo_keep,
 )
 from carro.core.db import LocalStore
-from carro.storage.remote import RemoteClient
+from carro.core.models import RepairOrder
+from carro.storage.remote import RemoteClient, ServerTooOldError
+
+log = logging.getLogger("carro.sync")
 
 
-def perform_sync(store: LocalStore | None = None) -> dict[str, Any]:
+def _current_actor() -> tuple[str, str]:
+    try:
+        from carro.core import advisors as advmod
+
+        adv = advmod.current_advisor()
+        if adv:
+            return adv.name, adv.id
+    except Exception:
+        pass
+    try:
+        from carro.core import technicians as techmod
+
+        tech = techmod.current_technician()
+        if tech:
+            return tech.name, tech.id
+    except Exception:
+        pass
+    return "", ""
+
+
+def retry_unsynced_photos(order: RepairOrder) -> int:
     """
-    Push local ROs (+ technician roster) to the shop server and prune local cache.
-    Returns a result dict suitable for API / logging. Does not raise for missing server.
+    Re-upload local photo files that never reached the shop server.
+    Returns count of newly uploaded photos. Updates order.photos in place.
+    """
+    remote = RemoteClient()
+    if not remote.enabled:
+        return 0
+    uploaded = 0
+    dest_dir = photos_dir() / order.id
+    for meta in order.photos or []:
+        if not isinstance(meta, dict):
+            continue
+        if meta.get("remote") is True:
+            continue
+        if meta.get("local_cleared"):
+            continue
+        rel = meta.get("relpath") or meta.get("filename")
+        if not rel:
+            continue
+        path = dest_dir / Path(str(rel)).name
+        if not path.is_file():
+            continue
+        try:
+            remote_meta = remote.upload_photo(
+                order.id,
+                str(path),
+                tag=str(meta.get("tag") or "other"),
+                filename=path.name,
+                notes=str(meta.get("notes") or ""),
+            )
+            if isinstance(remote_meta, dict):
+                meta["volume"] = remote_meta.get("volume", meta.get("volume") or "local")
+            meta["remote"] = True
+            uploaded += 1
+        except Exception as exc:
+            meta["remote"] = False
+            log.debug("photo retry failed for %s/%s: %s", order.id, path.name, exc)
+    return uploaded
+
+
+def try_push_ro(
+    store: LocalStore,
+    order: RepairOrder,
+    *,
+    actor: str = "",
+    actor_id: str = "",
+    save_photo_meta: bool = True,
+) -> dict[str, Any]:
+    """
+    Best-effort upsert to the shop server after a local save.
+    On failure the RO stays marked needs_sync for later retry — local data is never rolled back.
+    """
+    remote = RemoteClient()
+    if not remote.enabled:
+        store.mark_synced(order.id)
+        return {"ok": True, "skipped": True, "reason": "no_server"}
+
+    who = actor
+    who_id = actor_id
+    if not who and not who_id:
+        who, who_id = _current_actor()
+    if not who:
+        who = order.technician_name or ""
+    if not who_id:
+        who_id = order.technician_id or ""
+
+    photos_changed = False
+    try:
+        remote.check_server_compat()
+        if retry_unsynced_photos(order):
+            photos_changed = True
+        remote.upsert_ro(order, actor=who, actor_id=who_id)
+        store.mark_synced(order.id)
+        if photos_changed and save_photo_meta:
+            # Persist remote=True flags without re-dirtying the RO.
+            store.save(order, mark_pending_sync=False)
+            store.mark_synced(order.id)
+        return {"ok": True, "skipped": False}
+    except ServerTooOldError as exc:
+        store.mark_needs_sync(order.id)
+        return {
+            "ok": False,
+            "error": str(exc),
+            "reason": "server_too_old",
+            "needs_sync": True,
+        }
+    except Exception as exc:
+        store.mark_needs_sync(order.id)
+        if photos_changed and save_photo_meta:
+            try:
+                store.save(order, mark_pending_sync=True)
+            except Exception:
+                pass
+        log.warning("push RO %s failed (kept locally, will retry): %s", order.id, exc)
+        return {"ok": False, "skipped": False, "error": str(exc)}
+
+
+def try_push_pending_deletes(store: LocalStore, remote: RemoteClient | None = None) -> dict[str, Any]:
+    remote = remote or RemoteClient()
+    ids = store.list_pending_deletes()
+    if not remote.enabled:
+        return {"ok": True, "skipped": True, "cleared": 0, "failed": 0}
+    cleared = 0
+    failed = 0
+    for rid in ids:
+        try:
+            remote.delete_ro(rid)
+            store.clear_pending_delete(rid)
+            cleared += 1
+        except Exception as exc:
+            failed += 1
+            log.warning("pending delete %s failed (will retry): %s", rid, exc)
+    return {"ok": failed == 0, "cleared": cleared, "failed": failed}
+
+
+def perform_sync(
+    store: LocalStore | None = None,
+    *,
+    pending_only: bool = False,
+) -> dict[str, Any]:
+    """
+    Push local ROs (+ rosters) to the shop server and prune local cache.
+    Continues past individual RO failures so one bad push cannot block the rest.
+    Never prunes while unsynced ROs or pending deletes remain.
     """
     store = store or LocalStore()
     remote = RemoteClient()
+    pending = store.sync_status()
     if not remote.enabled:
         removed = store.prune()
         return {
             "ok": True,
             "skipped": True,
             "reason": "no_server",
-            "message": "No server_url configured — local only.",
+            "message": "No server_url configured — local only (data kept on this PC).",
             "pushed": 0,
+            "failed": 0,
             "pruned": removed,
             "roster": "skipped",
+            "pending": pending,
         }
 
-    remote.health()  # may raise
+    try:
+        remote.check_server_compat()
+    except ServerTooOldError as exc:
+        return {
+            "ok": False,
+            "skipped": False,
+            "reason": "server_too_old",
+            "message": str(exc),
+            "pushed": 0,
+            "failed": 0,
+            "pruned": 0,
+            "roster": "skipped",
+            "pending": pending,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "skipped": False,
+            "reason": "unreachable",
+            "message": (
+                f"Server unreachable — local edits kept on this PC "
+                f"({pending.get('pending_total', 0)} waiting to sync). {exc}"
+            ),
+            "pushed": 0,
+            "failed": 0,
+            "pruned": [],
+            "roster": "skipped",
+            "pending": pending,
+            "error": str(exc),
+        }
+
     roster_status = "skipped"
     try:
         from carro.core.tech_ui import sync_roster_with_server
@@ -42,38 +222,71 @@ def perform_sync(store: LocalStore | None = None) -> dict[str, Any]:
     except Exception:
         roster_status = "skipped"
 
-    actor = ""
-    actor_id = ""
-    try:
-        from carro.core import technicians as techmod
+    del_result = try_push_pending_deletes(store, remote)
 
-        tech = techmod.current_technician()
-        if tech:
-            actor, actor_id = tech.name, tech.id
-    except Exception:
-        pass
+    actor, actor_id = _current_actor()
+    orders = store.list_pending_orders() if pending_only else store.list_orders()
+    # Always include pending first when doing a full sync (pending may already be in list).
+    if not pending_only:
+        seen = {o.id for o in orders}
+        for o in store.list_pending_orders():
+            if o.id not in seen:
+                orders.insert(0, o)
+                seen.add(o.id)
 
-    n = 0
-    for order in store.list_orders():
-        # Prefer logged-in tech as the change actor so they are not notified of their own sync
-        remote.upsert_ro(
+    pushed = 0
+    failed = 0
+    errors: list[str] = []
+    for order in orders:
+        who = actor or order.technician_name or ""
+        who_id = actor_id or order.technician_id or ""
+        result = try_push_ro(
+            store,
             order,
-            actor=actor or order.technician_name or "",
-            actor_id=actor_id or order.technician_id or "",
+            actor=who,
+            actor_id=who_id,
         )
-        n += 1
-    removed = store.prune()
+        if result.get("ok"):
+            pushed += 1
+        else:
+            failed += 1
+            err = str(result.get("error") or "push failed")
+            errors.append(f"{order.id}: {err}")
+
+    pending_after = store.sync_status()
+    still_pending = int(pending_after.get("pending_total") or 0)
+    removed: list[str] = []
+    if still_pending == 0 and failed == 0 and int(del_result.get("failed") or 0) == 0:
+        removed = store.prune()
+    elif still_pending:
+        log.info(
+            "skipping prune — %s item(s) still pending sync",
+            still_pending,
+        )
+
     cfg = load_config()
     keep_n = resolve_local_keep(cfg)
     photo_n = resolve_local_photo_keep(cfg)
     billed_n = resolve_local_billed_keep(cfg)
+    ok = failed == 0 and int(del_result.get("failed") or 0) == 0
+    if ok:
+        message = f"Pushed {pushed} RO(s); roster: {roster_status}"
+    else:
+        message = (
+            f"Synced {pushed} RO(s), {failed} failed — local copies kept "
+            f"({still_pending} pending). Roster: {roster_status}"
+        )
     return {
-        "ok": True,
+        "ok": ok,
         "skipped": False,
-        "message": f"Pushed {n} RO(s); technician roster: {roster_status}",
-        "pushed": n,
+        "message": message,
+        "pushed": pushed,
+        "failed": failed,
+        "errors": errors[:20],
         "pruned": removed,
         "roster": roster_status,
+        "deletes": del_result,
+        "pending": pending_after,
         "local_keep": keep_n,
         "local_photo_keep": photo_n,
         "local_billed_keep": billed_n,

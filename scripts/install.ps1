@@ -43,22 +43,35 @@ Write-Host "==> Installing Python dependencies"
 $BinDir = Join-Path $env:LOCALAPPDATA "Car-RO\bin"
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 $Bat = Join-Path $BinDir "carro.bat"
+$AdvisorBat = Join-Path $BinDir "carroadviser.bat"
 $VenvCarro = Join-Path $Root ".venv\Scripts\python.exe"
 @"
 @echo off
-set PYTHONPATH=$Root\cli;$Root\server
+set PYTHONPATH=$Root\cli;$Root\server;$Root\engine
 "$VenvCarro" -m carro %*
 "@ | Set-Content -Path $Bat -Encoding ASCII
-
-# Also drop a helper next to the repo
-$LocalBat = Join-Path $Root "carro.bat"
 @"
 @echo off
-set PYTHONPATH=$Root\cli;$Root\server
+set PYTHONPATH=$Root\cli;$Root\server;$Root\engine
+"$VenvCarro" -m carro advisor %*
+"@ | Set-Content -Path $AdvisorBat -Encoding ASCII
+
+# Also drop helpers next to the repo
+$LocalBat = Join-Path $Root "carro.bat"
+$LocalAdvisorBat = Join-Path $Root "carroadviser.bat"
+@"
+@echo off
+set PYTHONPATH=$Root\cli;$Root\server;$Root\engine
 "$VenvCarro" -m carro %*
 "@ | Set-Content -Path $LocalBat -Encoding ASCII
+@"
+@echo off
+set PYTHONPATH=$Root\cli;$Root\server;$Root\engine
+"$VenvCarro" -m carro advisor %*
+"@ | Set-Content -Path $LocalAdvisorBat -Encoding ASCII
 
 Write-Host "==> Wrote $Bat"
+Write-Host "==> Wrote $AdvisorBat"
 
 # User PATH
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -90,13 +103,14 @@ New-Item -ItemType Directory -Force -Path (Join-Path $DocRoot "photos") | Out-Nu
 New-Item -ItemType Directory -Force -Path (Join-Path $DocRoot "inbox") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $DocRoot "branding") | Out-Null
 
-$env:PYTHONPATH = "$Root\cli;$Root\server"
+$env:PYTHONPATH = "$Root\cli;$Root\server;$Root\engine"
 & $VenvCarro -m carro config init 2>$null | Out-Null
 
 Write-Host ""
 Write-Host "Done. Reopen Windows Terminal, then:"
 Write-Host "  carro"
 Write-Host "  carro config"
+Write-Host "  carroadviser          # advisor desk CLI"
 Write-Host ""
 Write-Host "Join shop server: see docs\SERVER_SETUP.md and docs\WINDOWS.md"
 Write-Host "  carro config set server_url http://YOUR_SERVER:8787"

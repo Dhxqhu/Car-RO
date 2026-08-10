@@ -6,7 +6,7 @@ while [[ -L "$SOURCE" ]]; do
   SOURCE="$(readlink -f "$SOURCE")"
 done
 ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd)"
-export PYTHONPATH="${ROOT}/cli:${ROOT}/server${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="${ROOT}/cli:${ROOT}/server:${ROOT}/engine${PYTHONPATH:+:$PYTHONPATH}"
 for candidate in "${ROOT}/.venv/bin/python3" "${ROOT}/.venv/bin/python"; do
   if [[ -x "$candidate" ]]; then
     exec "$candidate" -m carro "$@"

@@ -11,6 +11,7 @@ import { AssignedWorkPage } from "@/pages/AssignedWorkPage";
 import { HistoryPage } from "@/pages/HistoryPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { PartsPage } from "@/pages/PartsPage";
+import { MessagesPage } from "@/pages/MessagesPage";
 import { TechsPage } from "@/pages/TechsPage";
 import { AdminPage } from "@/pages/AdminPage";
 import { ScanAdaptersPage } from "@/pages/scan/ScanAdaptersPage";
@@ -140,6 +141,7 @@ export default function App() {
               <Route path="ro/:id" element={<RoEditorPage />} />
               <Route path="assigned" element={<AssignedWorkPage />} />
               <Route path="parts" element={<PartsPage />} />
+              <Route path="messages" element={<MessagesPage />} />
               <Route path="history" element={<HistoryPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="techs" element={<TechsPage />} />

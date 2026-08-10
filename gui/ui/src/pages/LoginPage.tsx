@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type C
 import { Cable, Moon, Sun } from "lucide-react";
 import { api, type Technician } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useTheme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
@@ -21,24 +22,30 @@ export function LoginPage({
   const [techs, setTechs] = useState<Technician[]>([]);
   const [techId, setTechId] = useState("");
   const [digits, setDigits] = useState<string[]>(() => Array(PIN_LEN).fill(""));
+  const [hasAdminPin, setHasAdminPin] = useState(true);
+  const [empty, setEmpty] = useState(false);
+  const [bootName, setBootName] = useState("");
+  const [bootPin, setBootPin] = useState("");
+  const [adminPin, setAdminPin] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
   const pin = digits.join("");
 
   useEffect(() => {
-    api
-      .listTechs()
-      .then((r) => {
-        setTechs(r.technicians);
-        if (r.technicians[0]) setTechId(r.technicians[0].id);
+    Promise.all([api.listTechs(), api.adminSession()])
+      .then(([r, a]) => {
+        setTechs(r.technicians || []);
+        setHasAdminPin(!!a.has_admin_pin);
+        setEmpty(!(r.technicians || []).length);
+        if (r.technicians?.[0]) setTechId(r.technicians[0].id);
       })
       .catch((e: Error) => setError(e.message));
   }, []);
 
   useEffect(() => {
-    inputsRef.current[0]?.focus();
-  }, []);
+    if (!empty) inputsRef.current[0]?.focus();
+  }, [empty, techs]);
 
   function focusAt(i: number) {
     const el = inputsRef.current[Math.max(0, Math.min(PIN_LEN - 1, i))];
@@ -108,6 +115,25 @@ export function LoginPage({
     }
   }
 
+  async function bootstrap(e: FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const r = await api.bootstrapTechnician({
+        name: bootName,
+        pin: bootPin,
+        admin_pin: adminPin,
+        set_admin: !hasAdminPin,
+      });
+      onAuthed(r.technician.name, r.technician.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Setup failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="relative flex min-h-screen items-center justify-center px-4">
       <Button
@@ -120,77 +146,124 @@ export function LoginPage({
         {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
       </Button>
       <div className="w-full max-w-md animate-[fadeIn_0.35s_ease] space-y-4">
-        <form
-          onSubmit={submit}
-          className="rounded-2xl border border-border bg-surface p-8 shadow-sm"
-        >
-          <img
-            src={theme === "dark" ? carroWordmarkOnDark : carroWordmark}
-            alt="Car-RO"
-            className="mx-auto h-12 w-auto max-w-full object-contain sm:h-14"
-            draggable={false}
-          />
-          <p className="mt-3 text-sm text-muted">
-            Pick your name and enter your 4-digit PIN to stamp repair orders.
-          </p>
+        {empty ? (
+          <form
+            onSubmit={(e) => void bootstrap(e)}
+            className="rounded-2xl border border-border bg-surface p-8 shadow-sm"
+          >
+            <img
+              src={theme === "dark" ? carroWordmarkOnDark : carroWordmark}
+              alt="Car-RO"
+              className="mx-auto h-12 w-auto max-w-full object-contain sm:h-14"
+              draggable={false}
+            />
+            <p className="mt-3 text-sm text-muted">
+              {hasAdminPin
+                ? "No technicians yet — enter the shop admin PIN and create the first tech."
+                : "First startup — set the global admin PIN, then create the first technician."}
+            </p>
+            <div className="mt-6 space-y-3">
+              <div className="space-y-2">
+                <Label>{hasAdminPin ? "Admin PIN" : "New admin PIN"}</Label>
+                <Input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={adminPin}
+                  onChange={(e) => setAdminPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Technician name</Label>
+                <Input value={bootName} onChange={(e) => setBootName(e.target.value)} required />
+              </div>
+              <div className="space-y-2">
+                <Label>Technician login PIN</Label>
+                <Input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={bootPin}
+                  onChange={(e) => setBootPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                  required
+                />
+              </div>
+              {error ? <p className="text-sm text-danger">{error}</p> : null}
+              <Button className="w-full" disabled={loading}>
+                {loading ? "Creating…" : "Create technician"}
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <form
+            onSubmit={submit}
+            className="rounded-2xl border border-border bg-surface p-8 shadow-sm"
+          >
+            <img
+              src={theme === "dark" ? carroWordmarkOnDark : carroWordmark}
+              alt="Car-RO"
+              className="mx-auto h-12 w-auto max-w-full object-contain sm:h-14"
+              draggable={false}
+            />
+            <p className="mt-3 text-sm text-muted">
+              Pick your name and enter your 4-digit PIN to stamp repair orders.
+            </p>
 
-          <div className="mt-8 space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="tech">Technician</Label>
-              <select
-                id="tech"
-                className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
-                value={techId}
-                onChange={(e) => setTechId(e.target.value)}
-              >
-                {techs.length === 0 ? (
-                  <option value="">No technicians — set up via CLI first</option>
-                ) : (
-                  techs.map((t) => (
+            <div className="mt-8 space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="tech">Technician</Label>
+                <select
+                  id="tech"
+                  className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
+                  value={techId}
+                  onChange={(e) => setTechId(e.target.value)}
+                >
+                  {techs.map((t) => (
                     <option key={t.id} value={t.id}>
                       {t.name}
                     </option>
-                  ))
-                )}
-              </select>
-            </div>
-            <div className="space-y-2">
-              <Label id="pin-label">PIN</Label>
-              <div
-                className="flex justify-center gap-2"
-                role="group"
-                aria-labelledby="pin-label"
-              >
-                {digits.map((digit, i) => (
-                  <input
-                    key={i}
-                    ref={(el) => {
-                      inputsRef.current[i] = el;
-                    }}
-                    type="password"
-                    inputMode="numeric"
-                    autoComplete={i === 0 ? "one-time-code" : "off"}
-                    maxLength={1}
-                    aria-label={`PIN digit ${i + 1}`}
-                    value={digit}
-                    onChange={(e) => setDigitAt(i, e.target.value)}
-                    onKeyDown={(e) => onKeyDown(i, e)}
-                    onPaste={onPaste}
-                    onFocus={(e) => e.target.select()}
-                    className={cn(
-                      "h-14 w-14 rounded-xl border border-border bg-bg text-center font-mono text-2xl text-fg",
-                      "outline-none transition-[border-color,box-shadow] focus:border-accent focus:ring-2 focus:ring-accent/30",
-                    )}
-                  />
-                ))}
+                  ))}
+                </select>
               </div>
+              <div className="space-y-2">
+                <Label id="pin-label">PIN</Label>
+                <div
+                  className="flex justify-center gap-2"
+                  role="group"
+                  aria-labelledby="pin-label"
+                >
+                  {digits.map((digit, i) => (
+                    <input
+                      key={i}
+                      ref={(el) => {
+                        inputsRef.current[i] = el;
+                      }}
+                      type="password"
+                      inputMode="numeric"
+                      autoComplete={i === 0 ? "one-time-code" : "off"}
+                      maxLength={1}
+                      aria-label={`PIN digit ${i + 1}`}
+                      value={digit}
+                      onChange={(e) => setDigitAt(i, e.target.value)}
+                      onKeyDown={(e) => onKeyDown(i, e)}
+                      onPaste={onPaste}
+                      onFocus={(e) => e.target.select()}
+                      className={cn(
+                        "h-14 w-14 rounded-xl border border-border bg-bg text-center font-mono text-2xl text-fg",
+                        "outline-none transition-[border-color,box-shadow] focus:border-accent focus:ring-2 focus:ring-accent/30",
+                      )}
+                    />
+                  ))}
+                </div>
+              </div>
+              {error ? <p className="text-sm text-danger">{error}</p> : null}
+              <Button className="w-full" disabled={loading || !techId || pin.length !== PIN_LEN}>
+                {loading ? "Checking…" : "Continue"}
+              </Button>
             </div>
-            {error ? <p className="text-sm text-danger">{error}</p> : null}
-            <Button className="w-full" disabled={loading || !techId || pin.length !== PIN_LEN}>
-              {loading ? "Checking…" : "Continue"}
-            </Button>
-          </div>
-        </form>
+          </form>
+        )}
 
         <div className="rounded-2xl border border-dashed border-border bg-surface/60 p-6">
           <p className="text-sm font-medium">Just need the scan tool?</p>
@@ -208,7 +281,6 @@ export function LoginPage({
           </Button>
         </div>
       </div>
-      <style>{`@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}`}</style>
     </div>
   );
 }

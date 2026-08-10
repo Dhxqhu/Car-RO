@@ -46,13 +46,15 @@ def _format_parts(order: RepairOrder, item_id: str | None) -> str:
     for i, p in enumerate(parts, 1):
         pn = (p.get("part_number") or "").strip() or "—"
         mfr = (p.get("manufacturer") or "").strip() or "—"
+        brand = (p.get("brand") or "").strip()
         desc = (p.get("description") or "—").replace("\n", " ")
         if len(desc) > 40:
             desc = desc[:37] + "…"
         wrong = " · wrong note" if (p.get("wrong_note") or "").strip() else ""
+        brand_bit = f" · {brand}" if brand else ""
         lines.append(
             f"  {i}. {p.get('id')} [{part_status_label(p.get('status'))}] "
-            f"{desc} · PN {pn} · {mfr}{wrong}"
+            f"{desc} · PN {pn}{brand_bit} · {mfr}{wrong}"
         )
     return "\n".join(lines)
 
@@ -129,6 +131,8 @@ class WorkItemsForm(CarroThemeApp[RepairOrder | None]):
             yield Input(placeholder="Brake pad set", id="part_desc")
             yield Label("Part number (optional)", classes="label")
             yield Input(placeholder="PN / OEM", id="part_number")
+            yield Label("Brand / cross (optional)", classes="label")
+            yield Input(placeholder="Denso, Motorcraft…", id="part_brand")
             yield Label("Manufacturer (defaults to vehicle make)", classes="label")
             yield Input(placeholder=self.order.make or "e.g. Ford", id="part_mfr")
             with Horizontal():
@@ -203,6 +207,7 @@ class WorkItemsForm(CarroThemeApp[RepairOrder | None]):
         self.query_one("#part_pick", Input).value = ""
         self.query_one("#part_desc", Input).value = ""
         self.query_one("#part_number", Input).value = ""
+        self.query_one("#part_brand", Input).value = ""
         self.query_one("#part_mfr", Input).value = self.order.make or ""
         self.query_one("#part_status", Select).value = "new_request"
         self.query_one("#part_wrong_note", Input).value = ""
@@ -291,6 +296,7 @@ class WorkItemsForm(CarroThemeApp[RepairOrder | None]):
             return
         desc = self.query_one("#part_desc", Input).value.strip()
         pn = self.query_one("#part_number", Input).value.strip()
+        brand = self.query_one("#part_brand", Input).value.strip()
         mfr_raw = self.query_one("#part_mfr", Input).value.strip()
         mfr = mfr_raw if mfr_raw else None
         status = self.query_one("#part_status", Select).value
@@ -308,6 +314,7 @@ class WorkItemsForm(CarroThemeApp[RepairOrder | None]):
                     description=desc,
                     part_number=pn,
                     manufacturer=mfr,
+                    brand=brand,
                 )
                 if st != "new_request":
                     set_part_status(
@@ -329,6 +336,7 @@ class WorkItemsForm(CarroThemeApp[RepairOrder | None]):
                     description=desc,
                     part_number=pn,
                     manufacturer=mfr_raw if mfr_raw else (self.order.make or ""),
+                    brand=brand,
                 )
                 set_part_status(
                     self.order,
@@ -363,6 +371,7 @@ class WorkItemsForm(CarroThemeApp[RepairOrder | None]):
         self.query_one("#part_pick", Input).value = str(part.get("id") or "")
         self.query_one("#part_desc", Input).value = str(part.get("description") or "")
         self.query_one("#part_number", Input).value = str(part.get("part_number") or "")
+        self.query_one("#part_brand", Input).value = str(part.get("brand") or "")
         self.query_one("#part_mfr", Input).value = str(
             part.get("manufacturer") or self.order.make or ""
         )

@@ -15,6 +15,45 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, 
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
 from carro_server.events import append_event, diff_ro_events, ensure_events_table, list_events
+from carro_server.version import APP_VERSION, version_payload
+from carro_server.indexes import (
+    backfill_projections,
+    delete_ro_projections,
+    distinct_part_suggestions,
+    ensure_index_tables,
+    load_ros_by_ids,
+    maybe_backfill_if_empty,
+    parts_usage_by_month,
+    search_parts,
+    search_ro_ids,
+    sync_ro_projections,
+)
+from carro_server.messages import (
+    ensure_messages_table,
+    list_inbox,
+    list_sent,
+    mark_read,
+    renotify,
+    send_message,
+    unread_count,
+)
+from carro_server.shifts import (
+    delete_shift,
+    end_shift,
+    ensure_shifts_table,
+    get_open_shift,
+    get_shift,
+    list_active,
+    list_shifts,
+    start_shift,
+    update_shift,
+)
+from carro_server.weekly_reports import (
+    ensure_weekly_reports_table,
+    get_report as get_weekly_report,
+    list_reports as list_weekly_reports,
+    upsert_report as upsert_weekly_report,
+)
 from carro_server.upload_tokens import SHORTCUT_PAGE, UPLOAD_PAGE, UploadTokenStore
 from carro_server.volumes import VolumeManager
 
@@ -24,6 +63,11 @@ UPLOADS = UploadTokenStore(VOLUMES.root / "upload_sessions.json")
 
 
 def _db() -> sqlite3.Connection:
+    """Open shop DB and apply additive schema ensures (CREATE IF NOT EXISTS / ADD COLUMN).
+
+    Migrations must stay non-destructive in-place. Destructive changes need a major
+    VERSION bump and an explicit backup step in docs/UPDATING.md.
+    """
     path = VOLUMES.db_path()
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
@@ -37,6 +81,11 @@ def _db() -> sqlite3.Connection:
         """
     )
     ensure_events_table(conn)
+    ensure_index_tables(conn)
+    ensure_messages_table(conn)
+    ensure_shifts_table(conn)
+    ensure_weekly_reports_table(conn)
+    maybe_backfill_if_empty(conn)
     return conn
 
 
@@ -49,7 +98,7 @@ def require_auth(authorization: str | None = Header(default=None)) -> None:
         raise HTTPException(403, "Invalid token")
 
 
-app = FastAPI(title="carro-server", version="0.1.0")
+app = FastAPI(title="carro-server", version=APP_VERSION)
 
 
 def _technicians_path() -> Path:
@@ -93,16 +142,22 @@ def _load_technicians() -> dict:
 
 
 @app.get("/health")
-def health(_: None = Depends(require_auth)):
-    vols = {
-        name: {"path": meta.get("path"), "role": meta.get("role")}
-        for name, meta in VOLUMES.list_volumes().items()
-    }
+def health():
+    """Liveness + volume summary (no auth — used by install checks / monitoring)."""
+    vols = VOLUMES.volume_stats()
     return {
         "ok": True,
         "default_volume": VOLUMES.default_name,
+        "meta_dir": str(VOLUMES.root),
         "volumes": vols,
+        **version_payload(),
     }
+
+
+@app.get("/version")
+def version_info():
+    """Release identity (no auth)."""
+    return {"ok": True, **version_payload()}
 
 
 @app.get("/technicians")
@@ -133,19 +188,117 @@ def put_technicians(body: dict, _: None = Depends(require_auth)):
     return {"ok": True, **payload}
 
 
+def _advisors_path() -> Path:
+    return VOLUMES.root / "advisors.json"
+
+
+def _load_advisors() -> dict:
+    path = _advisors_path()
+    if not path.is_file():
+        return {"version": 1, "updated": "", "advisors": []}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"version": 1, "updated": "", "advisors": []}
+    if not isinstance(raw, dict):
+        return {"version": 1, "updated": "", "advisors": []}
+    advisors = raw.get("advisors")
+    if not isinstance(advisors, list):
+        advisors = []
+    return {
+        "version": 1,
+        "updated": str(raw.get("updated") or ""),
+        "advisors": [a for a in advisors if isinstance(a, dict)],
+    }
+
+
+@app.get("/advisors")
+def get_advisors(_: None = Depends(require_auth)):
+    return _load_advisors()
+
+
+@app.put("/advisors")
+def put_advisors(body: dict, _: None = Depends(require_auth)):
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    advisors = body.get("advisors")
+    if advisors is not None and not isinstance(advisors, list):
+        raise HTTPException(400, "advisors must be a list")
+    payload = {
+        "version": 1,
+        "updated": str(body.get("updated") or ""),
+        "advisors": [a for a in (advisors or []) if isinstance(a, dict)],
+    }
+    if not payload["updated"]:
+        from datetime import datetime
+
+        payload["updated"] = datetime.now().isoformat(timespec="seconds")
+    path = _advisors_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return {"ok": True, **payload}
+
+
 @app.get("/volumes")
 def list_volumes(_: None = Depends(require_auth)):
-    return {"default": VOLUMES.default_name, "volumes": VOLUMES.list_volumes()}
+    return {
+        "default": VOLUMES.default_name,
+        "meta_dir": str(VOLUMES.root),
+        "db_path": str(VOLUMES.db_path()),
+        "volumes": VOLUMES.volume_stats(),
+    }
 
 
 @app.post("/volumes")
 def add_volume(body: dict, _: None = Depends(require_auth)):
+    """
+    Register another drive for photo storage on a live server.
+
+    Body: {"name": "extra", "path": "/mnt/extra/carro", "make_default": false}
+    make_default=true sends *new* photo uploads to this volume (DB stays put).
+    """
     name = str(body.get("name") or "").strip()
     path = str(body.get("path") or "").strip()
     if not name or not path:
         raise HTTPException(400, "name and path required")
-    VOLUMES.add_volume(name, path, make_default=bool(body.get("make_default")))
-    return {"ok": True, "default": VOLUMES.default_name, "volumes": VOLUMES.list_volumes()}
+    try:
+        VOLUMES.add_volume(name, path, make_default=bool(body.get("make_default")))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "ok": True,
+        "default": VOLUMES.default_name,
+        "meta_dir": str(VOLUMES.root),
+        "db_path": str(VOLUMES.db_path()),
+        "volumes": VOLUMES.volume_stats(),
+    }
+
+
+@app.put("/volumes/{name}/default")
+def set_default_volume(name: str, _: None = Depends(require_auth)):
+    """Point new photo uploads at an existing volume. Does not move the database."""
+    try:
+        VOLUMES.set_default(name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {
+        "ok": True,
+        "default": VOLUMES.default_name,
+        "volumes": VOLUMES.volume_stats(),
+    }
+
+
+@app.post("/volumes/reload")
+def reload_volumes(_: None = Depends(require_auth)):
+    """Re-read volumes.json after a manual edit (no full service restart required)."""
+    VOLUMES.reload()
+    return {
+        "ok": True,
+        "default": VOLUMES.default_name,
+        "volumes": VOLUMES.volume_stats(),
+    }
 
 
 @app.get("/ros")
@@ -158,83 +311,103 @@ def list_ros(
     vin: str = "",
     status: str = "",
     plate: str = "",
+    limit: int = 500,
     _: None = Depends(require_auth),
 ):
     with _db() as conn:
-        rows = conn.execute(
-            "SELECT data FROM repair_orders ORDER BY updated DESC"
-        ).fetchall()
-    orders = [json.loads(r["data"]) for r in rows]
-    return _filter_ros(
-        orders,
-        q=q,
-        make=make,
-        model=model,
-        year=year,
-        name=name,
-        vin=vin,
-        status=status,
-        plate=plate,
-    )
-
-
-def _filter_ros(
-    orders: list[dict],
-    *,
-    q: str = "",
-    make: str = "",
-    model: str = "",
-    year: str = "",
-    name: str = "",
-    vin: str = "",
-    status: str = "",
-    plate: str = "",
-) -> list[dict]:
-    q = q.strip().lower()
-    make, model, year = make.lower(), model.lower(), year.lower()
-    name, vin, status, plate = name.lower(), vin.lower(), status.lower(), plate.lower()
-    hits = []
-    for o in orders:
-        blob = " ".join(
-            str(o.get(k) or "")
-            for k in (
-                "id",
-                "first_name",
-                "last_name",
-                "year",
-                "make",
-                "model",
-                "vin",
-                "plate",
-                "phone",
-                "status",
-                "complaint",
-                "tech_notes",
+        has_filter = any(
+            str(x or "").strip()
+            for x in (q, make, model, year, name, vin, status, plate)
+        )
+        if has_filter:
+            ids = search_ro_ids(
+                conn,
+                q=q,
+                make=make,
+                model=model,
+                year=year,
+                name=name,
+                vin=vin,
+                status=status,
+                plate=plate,
+                limit=limit,
             )
-        ).lower()
-        for it in o.get("work_items") or []:
-            if isinstance(it, dict):
-                blob += " " + f"{it.get('concern') or ''} {it.get('notes') or ''}".lower()
-        if q and q not in blob:
-            continue
-        if make and make not in str(o.get("make") or "").lower():
-            continue
-        if model and model not in str(o.get("model") or "").lower():
-            continue
-        if year and year not in str(o.get("year") or "").lower():
-            continue
-        if vin and vin not in str(o.get("vin") or "").lower():
-            continue
-        if plate and plate not in str(o.get("plate") or "").lower():
-            continue
-        if status and status != str(o.get("status") or "").lower():
-            continue
-        if name:
-            cust = f"{o.get('first_name', '')} {o.get('last_name', '')}".lower()
-            if name not in cust:
-                continue
-        hits.append(o)
-    return hits
+            return load_ros_by_ids(conn, ids)
+        # Unfiltered: newest via index, then load blobs
+        ensure_index_tables(conn)
+        maybe_backfill_if_empty(conn)
+        cap = max(1, min(int(limit), 2000))
+        ids = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM ro_index ORDER BY updated DESC LIMIT ?", (cap,)
+            ).fetchall()
+        ]
+        if not ids:
+            rows = conn.execute(
+                "SELECT data FROM repair_orders ORDER BY updated DESC LIMIT ?",
+                (cap,),
+            ).fetchall()
+            return [json.loads(r["data"]) for r in rows]
+        return load_ros_by_ids(conn, ids)
+
+
+@app.get("/parts")
+def list_parts(
+    part_number: str = "",
+    manufacturer: str = "",
+    status: str = "",
+    ro_id: str = "",
+    q: str = "",
+    include_received: bool = False,
+    limit: int = 500,
+    _: None = Depends(require_auth),
+):
+    with _db() as conn:
+        rows = search_parts(
+            conn,
+            part_number=part_number,
+            manufacturer=manufacturer,
+            status=status,
+            ro_id=ro_id,
+            q=q,
+            include_received=include_received,
+            limit=limit,
+        )
+    return {"parts": rows, "count": len(rows), "source": "server"}
+
+
+@app.get("/parts/usage")
+def parts_usage(
+    year: int | None = None,
+    month: int | None = None,
+    limit: int = 100,
+    _: None = Depends(require_auth),
+):
+    now = datetime.now(tz=timezone.utc)
+    y = int(year or now.year)
+    m = int(month or now.month)
+    with _db() as conn:
+        try:
+            rows = parts_usage_by_month(conn, year=y, month=m, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    return {"usage": rows, "count": len(rows), "year": y, "month": m}
+
+
+@app.get("/parts/suggest")
+def parts_suggest(q: str = "", limit: int = 25, _: None = Depends(require_auth)):
+    with _db() as conn:
+        rows = distinct_part_suggestions(conn, q=q, limit=limit)
+    return {"suggestions": rows, "count": len(rows)}
+
+
+@app.post("/admin/reindex")
+def admin_reindex(_: None = Depends(require_auth)):
+    with _db() as conn:
+        stats = backfill_projections(conn)
+        conn.commit()
+    return {"ok": True, **stats}
 
 
 @app.get("/ros/{ro_id}")
@@ -275,6 +448,8 @@ def put_ro(ro_id: str, body: dict, _: None = Depends(require_auth)):
             """,
             (ro_id, payload, updated or body.get("created") or ""),
         )
+        clean_body = {k: v for k, v in body.items() if k not in strip_keys}
+        sync_ro_projections(conn, clean_body)
         for ev in diff_ro_events(before, body, actor=actor):
             append_event(
                 conn,
@@ -396,6 +571,371 @@ async def events_stream(
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+def _resolve_roster_person(person_id: str, role: str) -> tuple[str, str, str]:
+    """Return (id, name, role) if person exists on the shop roster."""
+    pid = (person_id or "").strip()
+    role = (role or "").strip().lower()
+    if not pid:
+        raise HTTPException(400, "Person id required")
+    if role == "technician":
+        for t in _load_technicians().get("technicians") or []:
+            if str(t.get("id") or "") == pid:
+                return pid, str(t.get("name") or pid), "technician"
+        raise HTTPException(404, f"Technician not found: {pid}")
+    if role == "advisor":
+        for a in _load_advisors().get("advisors") or []:
+            if str(a.get("id") or "") == pid:
+                return pid, str(a.get("name") or pid), "advisor"
+        raise HTTPException(404, f"Advisor not found: {pid}")
+    raise HTTPException(400, "role must be technician or advisor")
+
+
+@app.get("/messages")
+def get_messages(
+    for_id: str = "",
+    unread: int = 0,
+    limit: int = 100,
+    _: None = Depends(require_auth),
+):
+    """Inbox for a specific person (to_id)."""
+    if not (for_id or "").strip():
+        raise HTTPException(400, "for_id required")
+    with _db() as conn:
+        messages = list_inbox(
+            conn,
+            for_id=for_id,
+            unread_only=bool(unread),
+            limit=limit,
+        )
+        count = unread_count(conn, for_id=for_id)
+    return {"messages": messages, "unread": count}
+
+
+@app.get("/messages/sent")
+def get_sent_messages(
+    from_id: str = "",
+    limit: int = 100,
+    _: None = Depends(require_auth),
+):
+    if not (from_id or "").strip():
+        raise HTTPException(400, "from_id required")
+    with _db() as conn:
+        messages = list_sent(conn, from_id=from_id, limit=limit)
+    return {"messages": messages}
+
+
+@app.post("/messages")
+def post_message(body: dict, _: None = Depends(require_auth)):
+    """
+    Person-to-person shop note.
+    Body: body, from_id, from_name, from_role, to_id, to_role,
+          optional to_name, ro_id, work_item_id, reply_to.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    from_id = str(body.get("from_id") or "").strip()
+    from_role = str(body.get("from_role") or "").strip().lower()
+    to_id = str(body.get("to_id") or "").strip()
+    to_role = str(body.get("to_role") or "").strip().lower()
+    # Validate recipient against live roster; fill name if omitted
+    to_id, to_name, to_role = _resolve_roster_person(to_id, to_role)
+    if body.get("to_name"):
+        to_name = str(body.get("to_name") or to_name).strip() or to_name
+    from_name = str(body.get("from_name") or "").strip() or from_id
+    # Soft-check sender exists (don't block if roster lag on another bay)
+    try:
+        from_id, resolved_from_name, from_role = _resolve_roster_person(from_id, from_role)
+        if not str(body.get("from_name") or "").strip():
+            from_name = resolved_from_name
+    except HTTPException:
+        if from_role not in ("technician", "advisor") or not from_id:
+            raise
+    reply_raw = body.get("reply_to")
+    reply_to = None
+    if reply_raw is not None and str(reply_raw).strip() != "":
+        try:
+            reply_to = int(reply_raw)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "reply_to must be an integer") from exc
+
+    with _db() as conn:
+        try:
+            msg = send_message(
+                conn,
+                body=str(body.get("body") or ""),
+                from_id=from_id,
+                from_name=from_name,
+                from_role=from_role,
+                to_id=to_id,
+                to_name=to_name,
+                to_role=to_role,
+                ro_id=str(body.get("ro_id") or ""),
+                work_item_id=str(body.get("work_item_id") or ""),
+                reply_to=reply_to,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        ro_id = str(msg.get("ro_id") or "")
+        bits = [msg["from_name"], "→", msg["to_name"]]
+        if msg.get("work_item_id"):
+            bits.append(f"({msg['work_item_id']})")
+        bits.append((msg.get("body") or "")[:80])
+        append_event(
+            conn,
+            type="shop_message",
+            ro_id=ro_id or "_message",
+            item_id=str(msg.get("work_item_id") or ""),
+            actor=msg["from_name"],
+            summary=" ".join(bits)[:240],
+            payload={
+                "message_id": msg["id"],
+                "to_id": msg["to_id"],
+                "to_name": msg["to_name"],
+                "to_role": msg["to_role"],
+            },
+        )
+    return {"ok": True, "message": msg}
+
+
+@app.post("/messages/{message_id}/read")
+def post_message_read(message_id: int, body: dict | None = None, _: None = Depends(require_auth)):
+    body = body if isinstance(body, dict) else {}
+    for_id = str(body.get("for_id") or "").strip()
+    if not for_id:
+        raise HTTPException(400, "for_id required (recipient id)")
+    with _db() as conn:
+        try:
+            msg = mark_read(conn, message_id, for_id=for_id)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+    if not msg:
+        raise HTTPException(404, "Message not found")
+    return {"ok": True, "message": msg}
+
+
+@app.post("/messages/{message_id}/renotify")
+def post_message_renotify(
+    message_id: int, body: dict | None = None, _: None = Depends(require_auth)
+):
+    """Sender re-pings recipient for an unread message (min 15m gap)."""
+    body = body if isinstance(body, dict) else {}
+    from_id = str(body.get("from_id") or "").strip()
+    if not from_id:
+        raise HTTPException(400, "from_id required (sender id)")
+    with _db() as conn:
+        try:
+            msg = renotify(conn, message_id, from_id=from_id)
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        bits = [msg["from_name"], "→", msg["to_name"], "(renotify)"]
+        if msg.get("work_item_id"):
+            bits.append(f"({msg['work_item_id']})")
+        bits.append((msg.get("body") or "")[:80])
+        append_event(
+            conn,
+            type="shop_message",
+            ro_id=str(msg.get("ro_id") or "") or "_message",
+            item_id=str(msg.get("work_item_id") or ""),
+            actor=msg["from_name"],
+            summary=" ".join(bits)[:240],
+            payload={
+                "message_id": msg["id"],
+                "to_id": msg["to_id"],
+                "to_name": msg["to_name"],
+                "to_role": msg["to_role"],
+                "renotify": True,
+            },
+        )
+    return {"ok": True, "message": msg}
+
+
+@app.get("/shifts/active")
+def get_active_shifts(_: None = Depends(require_auth)):
+    with _db() as conn:
+        return {"shifts": list_active(conn)}
+
+
+@app.get("/shifts")
+def get_shifts(
+    tech_id: str = "",
+    day_from: str = "",
+    day_to: str = "",
+    limit: int = 500,
+    _: None = Depends(require_auth),
+):
+    with _db() as conn:
+        return {
+            "shifts": list_shifts(
+                conn,
+                tech_id=tech_id,
+                day_from=day_from,
+                day_to=day_to,
+                limit=limit,
+            )
+        }
+
+
+@app.get("/shifts/mine")
+def get_my_shift(tech_id: str = "", _: None = Depends(require_auth)):
+    if not (tech_id or "").strip():
+        raise HTTPException(400, "tech_id required")
+    with _db() as conn:
+        return {"shift": get_open_shift(conn, tech_id)}
+
+
+@app.post("/shifts/start")
+def post_shift_start(body: dict, _: None = Depends(require_auth)):
+    tech_id = str(body.get("tech_id") or "").strip()
+    tech_name = str(body.get("tech_name") or "").strip()
+    started_at = str(body.get("started_at") or "").strip() or None
+    day = str(body.get("day") or "").strip() or None
+    if not tech_id:
+        raise HTTPException(400, "tech_id required")
+    with _db() as conn:
+        try:
+            shift = start_shift(
+                conn,
+                tech_id=tech_id,
+                tech_name=tech_name,
+                day=day,
+                started_at=started_at,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        append_event(
+            conn,
+            type="tech_day_start",
+            ro_id="_shift",
+            item_id=tech_id,
+            actor=tech_name or tech_id,
+            summary=f"{tech_name or tech_id} day start",
+            payload={"tech_id": tech_id, "shift_id": shift["id"]},
+        )
+    return {"ok": True, "shift": shift}
+
+
+@app.post("/shifts/end")
+def post_shift_end(body: dict, _: None = Depends(require_auth)):
+    tech_id = str(body.get("tech_id") or "").strip()
+    ended_at = str(body.get("ended_at") or "").strip() or None
+    shift_id_raw = body.get("shift_id")
+    shift_id = int(shift_id_raw) if shift_id_raw not in (None, "") else None
+    if not tech_id and shift_id is None:
+        raise HTTPException(400, "tech_id or shift_id required")
+    with _db() as conn:
+        try:
+            shift = end_shift(
+                conn, tech_id=tech_id, shift_id=shift_id, ended_at=ended_at
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        append_event(
+            conn,
+            type="tech_day_end",
+            ro_id="_shift",
+            item_id=str(shift.get("tech_id") or tech_id),
+            actor=str(shift.get("tech_name") or tech_id),
+            summary=f"{shift.get('tech_name') or tech_id} day end",
+            payload={"tech_id": shift.get("tech_id"), "shift_id": shift["id"]},
+        )
+    return {"ok": True, "shift": shift}
+
+
+@app.patch("/shifts/{shift_id}")
+def patch_shift(shift_id: int, body: dict, _: None = Depends(require_auth)):
+    clear_end = bool(body.get("clear_end"))
+    started_at = body.get("started_at")
+    ended_at = body.get("ended_at")
+    day = body.get("day")
+    tech_name = body.get("tech_name")
+    with _db() as conn:
+        try:
+            shift = update_shift(
+                conn,
+                shift_id,
+                started_at=str(started_at) if started_at is not None else None,
+                ended_at=str(ended_at) if ended_at is not None else None,
+                clear_end=clear_end,
+                day=str(day) if day is not None else None,
+                tech_name=str(tech_name) if tech_name is not None else None,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        append_event(
+            conn,
+            type="tech_shift_edited",
+            ro_id="_shift",
+            item_id=str(shift.get("tech_id") or ""),
+            actor=str(body.get("edited_by") or "advisor"),
+            summary=f"Shift #{shift_id} edited",
+            payload={"shift_id": shift_id, "tech_id": shift.get("tech_id")},
+        )
+    return {"ok": True, "shift": shift}
+
+
+@app.delete("/shifts/{shift_id}")
+def delete_shift_route(shift_id: int, _: None = Depends(require_auth)):
+    with _db() as conn:
+        existing = get_shift(conn, shift_id)
+        if not existing:
+            raise HTTPException(404, "Shift not found")
+        delete_shift(conn, shift_id)
+        append_event(
+            conn,
+            type="tech_shift_deleted",
+            ro_id="_shift",
+            item_id=str(existing.get("tech_id") or ""),
+            actor="advisor",
+            summary=f"Shift #{shift_id} deleted",
+            payload={"shift_id": shift_id, "tech_id": existing.get("tech_id")},
+        )
+    return {"ok": True, "id": shift_id}
+
+
+@app.get("/reports/weekly")
+def get_weekly_report_route(week_start: str = "", _: None = Depends(require_auth)):
+    if not (week_start or "").strip():
+        raise HTTPException(400, "week_start required (Sunday YYYY-MM-DD)")
+    with _db() as conn:
+        snap = get_weekly_report(conn, week_start.strip())
+    return {"snapshot": snap}
+
+
+@app.get("/reports/weekly/list")
+def list_weekly_reports_route(limit: int = 52, _: None = Depends(require_auth)):
+    with _db() as conn:
+        return {"weeks": list_weekly_reports(conn, limit=limit)}
+
+
+@app.put("/reports/weekly/{week_start}")
+def put_weekly_report_route(
+    week_start: str, body: dict, _: None = Depends(require_auth)
+):
+    week_end = str(body.get("week_end") or "").strip()
+    payload = body.get("payload")
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "payload object required")
+    if not week_end:
+        week_end = str(payload.get("week_end") or "").strip()
+    if not week_end:
+        raise HTTPException(400, "week_end required")
+    with _db() as conn:
+        try:
+            snap = upsert_weekly_report(
+                conn,
+                week_start=week_start,
+                week_end=week_end,
+                payload=payload,
+                created_by=str(body.get("created_by") or ""),
+                created_by_id=str(body.get("created_by_id") or ""),
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "snapshot": snap}
+
+
 @app.delete("/ros/{ro_id}")
 def delete_ro(ro_id: str, _: None = Depends(require_auth)):
     """Remove RO metadata and photo directories on all volumes."""
@@ -403,6 +943,7 @@ def delete_ro(ro_id: str, _: None = Depends(require_auth)):
 
     with _db() as conn:
         cur = conn.execute("DELETE FROM repair_orders WHERE id = ?", (ro_id,))
+        delete_ro_projections(conn, ro_id)
         removed = cur.rowcount > 0
     photo_dirs = 0
     for name in VOLUMES.list_volumes():
@@ -498,6 +1039,7 @@ def _save_photo_bytes(
                 "UPDATE repair_orders SET data = ? WHERE id = ?",
                 (json.dumps(order), ro_id),
             )
+            sync_ro_projections(conn, order)
         else:
             # Create a stub RO so phone uploads are not lost
             stub = {
@@ -511,6 +1053,7 @@ def _save_photo_bytes(
                 "INSERT INTO repair_orders (id, data, updated) VALUES (?, ?, ?)",
                 (ro_id, json.dumps(stub), ""),
             )
+            sync_ro_projections(conn, stub)
     return meta
 
 

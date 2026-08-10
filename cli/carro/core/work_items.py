@@ -75,6 +75,8 @@ def normalize_part(data: dict[str, Any] | None, *, default_manufacturer: str = "
         "description": str(data.get("description") or "").strip(),
         "part_number": str(data.get("part_number") or "").strip(),
         "manufacturer": str(data.get("manufacturer") or default_manufacturer or "").strip(),
+        # Actual part brand / cross (e.g. Denso, Motorcraft) — distinct from OEM manufacturer.
+        "brand": str(data.get("brand") or "").strip(),
         "status": normalize_part_status(data.get("status")),
         "requested_at": str(data.get("requested_at") or "").strip(),
         "ordered_at": str(data.get("ordered_at") or "").strip(),
@@ -198,6 +200,14 @@ class WorkItem:
     assigned_to_id: str = ""
     assigned_to_name: str = ""
     assigned_at: str = ""
+    # Floor planning: daily | next_day | long_term
+    queue_lane: str = "daily"
+    # Advisor-armed move applied on clock-out when this item is current.
+    pending_queue_lane: str = ""
+    # Local calendar day (YYYY-MM-DD) when the item entered its current lane.
+    queue_day: str = ""
+    # Tech request to push to next day (advisor approves; apply on clock-out if current).
+    next_day_request: dict[str, Any] = field(default_factory=dict)
     # Shop-only efficiency: time actually spent (not billed hours). Never on customer PDF.
     worked_minutes: int = 0
     time_log: list[dict[str, Any]] = field(default_factory=list)
@@ -215,7 +225,7 @@ class WorkItem:
     downtime_log: list[dict[str, Any]] = field(default_factory=list)
     downtime_started_at: str = ""
     downtime_reason: str = ""
-    # Needed parts (shop order sheet). Never on customer PDF.
+    # Needed parts (shop order sheet). Customer PDF lists description/mfr/PN only.
     parts: list[dict[str, Any]] = field(default_factory=list)
     updated_by: str = ""
     updated_by_role: str = ""
@@ -269,6 +279,24 @@ class WorkItem:
             clean["priority"] = int(clean.get("priority") or 0)
         except (TypeError, ValueError):
             clean["priority"] = 0
+        from carro.core.queue_lanes import (
+            empty_next_day_request,
+            normalize_next_day_request,
+            normalize_queue_lane,
+            today_local_iso,
+        )
+
+        clean["queue_lane"] = normalize_queue_lane(clean.get("queue_lane"), default="daily")
+        pending = str(clean.get("pending_queue_lane") or "").strip().lower()
+        clean["pending_queue_lane"] = (
+            pending if pending in ("daily", "next_day", "long_term") else ""
+        )
+        clean["queue_day"] = str(clean.get("queue_day") or "").strip()
+        if not clean["queue_day"] and clean["queue_lane"] == "daily":
+            clean["queue_day"] = today_local_iso()
+        clean["next_day_request"] = normalize_next_day_request(
+            clean.get("next_day_request") or empty_next_day_request()
+        )
         if not clean["stage_entered_at"] and clean.get("created"):
             clean["stage_entered_at"] = str(clean.get("created") or "")
         return cls(**clean)
@@ -509,6 +537,7 @@ def add_part(
     description: str,
     part_number: str = "",
     manufacturer: str | None = None,
+    brand: str = "",
 ) -> dict[str, Any]:
     """Add a needed-part line to a work item."""
     items, target = _find_item(order, item_id)
@@ -524,6 +553,7 @@ def add_part(
             "description": desc,
             "part_number": (part_number or "").strip(),
             "manufacturer": mfr,
+            "brand": (brand or "").strip(),
             "status": "new_request",
             "requested_at": ts,
             "updated_at": ts,
@@ -546,6 +576,7 @@ def update_part(
     description: str | None = None,
     part_number: str | None = None,
     manufacturer: str | None = None,
+    brand: str | None = None,
 ) -> dict[str, Any]:
     items, target = _find_item(order, item_id)
     parts = list(target.parts or [])
@@ -558,6 +589,8 @@ def update_part(
             p["part_number"] = part_number.strip()
         if manufacturer is not None:
             p["manufacturer"] = manufacturer.strip()
+        if brand is not None:
+            p["brand"] = brand.strip()
         p["updated_at"] = now_iso()
         parts[i] = normalize_part(p)
         target.parts = parts
@@ -616,6 +649,13 @@ def set_part_status(
             p["ordered_at"] = ""
             if not (p.get("requested_at") or "").strip():
                 p["requested_at"] = ts
+            # Stop wrench timer and tag wrong-parts downtime for Efficiency
+            if (target.timer_started_at or "").strip():
+                _stop_timer_on_item(target)
+            if (target.downtime_started_at or "").strip():
+                target.downtime_reason = "wrong_parts"
+            else:
+                start_downtime(target, reason="wrong_parts", at=ts)
             request_parts(
                 order,
                 tech_id=actor_id,
@@ -650,6 +690,7 @@ def collect_parts_sheet(
     manufacturer: str = "",
     part_number: str = "",
     ro_id: str = "",
+    q: str = "",
     include_received: bool = False,
 ) -> list[dict[str, Any]]:
     """Flatten part lines across ROs for the shop parts order sheet."""
@@ -657,6 +698,7 @@ def collect_parts_sheet(
     want_mfr = (manufacturer or "").strip().lower()
     want_pn = (part_number or "").strip().lower()
     want_ro = (ro_id or "").strip()
+    want_q = (q or "").strip().lower()
     rows: list[dict[str, Any]] = []
     for order in orders:
         oid = getattr(order, "id", "") or ""
@@ -682,6 +724,11 @@ def collect_parts_sheet(
                 pn = (p.get("part_number") or "").strip()
                 if want_pn and want_pn not in pn.lower():
                     continue
+                desc = (p.get("description") or "").strip()
+                concern = (w.concern or "").strip()
+                brand = (p.get("brand") or "").strip()
+                if want_q and want_q not in f"{desc} {pn} {mfr} {brand} {concern}".lower():
+                    continue
                 rows.append(
                     {
                         "ro_id": oid,
@@ -692,9 +739,10 @@ def collect_parts_sheet(
                         "vehicle": vehicle,
                         "make": make,
                         "part_id": p.get("id"),
-                        "description": p.get("description") or "",
+                        "description": desc,
                         "part_number": pn,
                         "manufacturer": mfr,
+                        "brand": brand,
                         "status": pst,
                         "requested_at": p.get("requested_at") or "",
                         "ordered_at": p.get("ordered_at") or "",

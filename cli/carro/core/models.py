@@ -76,12 +76,17 @@ class RepairOrder:
     approval_requested_at: str = ""
     approval_requested_by: str = ""
     approval_requested_by_id: str = ""
+    # Floor flags (advisor): customer waiting on-site / push to finish faster
+    waiter: bool = False
+    urgent: bool = False
     status: str = "open"
     obd_snapshot: str = ""
     photos: list[dict[str, Any]] = field(default_factory=list)
     work_items: list[dict[str, Any]] = field(default_factory=list)
     # Tech discoveries awaiting advisor / customer approval (sibling of work_items).
     found_issues: list[dict[str, Any]] = field(default_factory=list)
+    # Desk pool completions — which advisor handled what (shared shop trail).
+    advisor_actions: list[dict[str, Any]] = field(default_factory=list)
     created: str = ""
     updated: str = ""
 
@@ -100,10 +105,15 @@ class RepairOrder:
         clean.setdefault("photos", [])
         clean.setdefault("work_items", [])
         clean.setdefault("found_issues", [])
+        clean.setdefault("advisor_actions", [])
         if not isinstance(clean.get("work_items"), list):
             clean["work_items"] = []
         if not isinstance(clean.get("found_issues"), list):
             clean["found_issues"] = []
+        if not isinstance(clean.get("advisor_actions"), list):
+            clean["advisor_actions"] = []
+        clean["waiter"] = bool(clean.get("waiter"))
+        clean["urgent"] = bool(clean.get("urgent"))
         order = cls(**clean)
         items = ensure_work_items_from_legacy(
             work_items=order.work_items,
@@ -112,8 +122,10 @@ class RepairOrder:
         )
         order.work_items = [w.to_dict() for w in items]
         from carro.core.found_issues import normalize_found_issues
+        from carro.core.advisor_actions import normalize_advisor_actions
 
         order.found_issues = normalize_found_issues(order.found_issues)
+        order.advisor_actions = normalize_advisor_actions(order.advisor_actions)
         if items:
             apply_rollups(order)
         from carro.core.work_items import sanitize_open_time_segments

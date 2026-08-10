@@ -180,13 +180,14 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 mkdir -p ~/.local/bin ~/.config/carro
 ln -sfn "$(pwd)/scripts/carro" ~/.local/bin/carro
+ln -sfn "$(pwd)/scripts/carroadviser" ~/.local/bin/carroadviser
 test -f ~/.config/carro/config.toml || cp config.example.toml ~/.config/carro/config.toml
 carro config init   # optional: ensure token placeholder / dirs
 ```
 
-### Terminal commands (`carro` and `obdscan`)
+### Terminal commands (`carro`, `carroadviser`, and `obdscan`)
 
-Install puts a launcher in `~/.local/bin`. That only works if that directory is on your `PATH`.
+Install puts launchers in `~/.local/bin`. That only works if that directory is on your `PATH`.
 
 **1. Symlink (Car-RO does this in `./scripts/install.sh`):**
 
@@ -194,6 +195,7 @@ Install puts a launcher in `~/.local/bin`. That only works if that directory is 
 mkdir -p ~/.local/bin
 # from your Car-RO checkout:
 ln -sfn "$(pwd)/scripts/carro" ~/.local/bin/carro
+ln -sfn "$(pwd)/scripts/carroadviser" ~/.local/bin/carroadviser
 ```
 
 **2. Same idea for [obdscan](https://github.com/Dhxqhu/obdscan)** (after its venv + deps are set up):
@@ -252,6 +254,7 @@ carro photo shortcut --id RO-… --tag intake  # iOS Share Sheet (setup page + ~
 carro photo phone --id RO-… --tag intake     # Tailscale QR → Safari
 carro pdf RO-…
 carro sync             # push to your server + prune local cache
+                       # (if the server is down, edits stay on this PC and retry later)
 ```
 
 ### Vehicle history (VIN-first)
@@ -310,6 +313,7 @@ The empty repo `share/` folder is unused. Branding/logo stay local (`branding/`,
 ## Optional home-lab server
 
 **Full beginner guide (multi-PC, shop token, forgot/rotate token):** [docs/SERVER_SETUP.md](docs/SERVER_SETUP.md)  
+**Updating a live shop (manual, opt-in):** [docs/UPDATING.md](docs/UPDATING.md)  
 **Windows bay PCs:** [docs/WINDOWS.md](docs/WINDOWS.md)  
 **Desktop GUI (Tauri + React — Orders + Scanner workspaces):** [docs/GUI.md](docs/GUI.md)
 
@@ -345,11 +349,83 @@ Roster file: `~/.config/carro/technicians.json` (PIN **hashes** only — never c
 
 When `server_url` is set, the roster **pulls/pushes** on login, after admin edits, and on `carro sync`, so every bay PC shares the same tech list. This is **same-shop multi-PC**, not separate shops on one server.
 
+### Advisor desk (CLI)
+
+Advisors use a separate roster and login wall (advisor PINs cannot open the tech CLI, and vice versa). The **shop admin PIN** is shared with the tech app — whichever side sets up first creates it.
+
+Install links **`carroadviser`** next to `carro` (`~/.local/bin/carroadviser`). Same commands as `carro advisor …`:
+
+```bash
+carroadviser              # interactive desk menu
+carroadviser login
+carroadviser logout
+carroadviser whoami
+carroadviser pool         # shared pool: found issues, assign, bill-out
+carroadviser people       # add advisors + techs
+carroadviser messages     # person-to-person notes (optional work-item tag)
+```
+
+Also: `carro messages` (tech or advisor session). From the main `carro` menu, **`m`** opens messages and **`a`** opens the advisor desk. Roster file: `~/.config/carro/advisors.json`. With `server_url` set, advisors sync on login / people edits / `carro sync` like technicians.
+
+### Shop messaging
+
+Person-to-person only (pick a specific tech or advisor). Optional RO + work-item tags. Needs an updated **carro-server** (`/messages`). Compose from the GUI Messages page, or from the bay / RO **Message** button (work item pre-filled). Not on the customer PDF.
+
+The recipient’s bell badge updates within a few seconds and plays a short chime. Toggle categories and sound under **Config → Notifications** (all on by default; this PC only) or **Sound on/off** in the bell panel. Browser autoplay rules mean the first click in the app unlocks sound.
+
+**Sent tab:** shows whether the recipient has read the message. **Renotify** pings them again if it’s still unread (15-minute cooldown). Needs server update for `last_notified_at` / `/messages/{id}/renotify`.
+
+### Day start / day end + weekly reports + efficiency
+
+Technicians **Day start** / **Day end** (header in the tech GUI, or `carro shift start|end|status|active`) mark shop presence on the server. Techs can **Edit punch** on their own day start/end times; that requires the **shop admin PIN** (advisors can edit any punch without a PIN from the desk). Advisors see **Available techs (on the clock)** on the desk pool, can clock techs in/out (**Set time** for backdated clock-in), and can edit or delete today’s punches.
+
+Advisor **Reports** (Sun–Sat): per-tech job hours (timers) and presence hours, with daily columns and job breakdown. **Save week to server** archives a snapshot for later (`/reports/weekly*`).
+
+Advisor **Efficiency** (Sun–Sat): shop metric against a **40h normal-week baseline** (5×8 — not a cap). Per tech and shop rollup show **worked vs clocked**, **utilized vs downtime** (waiting parts, wrong parts, customer waits, between-job gaps), baseline fill (can exceed 100%), and **OT** (clocked hours over baseline). Marking a part **wrong** tags `wrong_parts` downtime. API: `/reports/efficiency`.
+
+Needs an updated **carro-server** (`tech_shifts`, weekly report tables).
+
+### Advisor Admin
+
+Unlock with the **shop admin PIN** (separate from advisor/tech login PINs). Manage advisors and technicians (add, reset login PIN, rename, remove) and change the shop admin PIN. Tech GUI Admin has the same admin PIN change plus tech roster tools and worked-time corrections.
+
+### Daily / next-day / long-term queues
+
+Work items (not whole cars) sit in floor lanes:
+
+- **Today (daily)** — per-tech queue; advisor assigns or tech picks up
+- **In progress** — while the tech is clocked onto that item
+- **Next day** — advisor push, or tech request (advisor approves); if the tech is on the job, the move applies on **clock-out**. At midnight: next-day items become today’s daily; unfinished daily items roll into next day
+- **Long-term** — long-stay project work (advisor moves in/out)
+
+**Waiter** = customer waiting on-site (RO flag, sorts first). **Urgent** = desk push on an RO to finish faster. Advisor sets both from Assigned work or the RO editor.
+
+### Found-issue photos
+
+When sending a found-issue request (tech or advisor RO editor), attach photos in the compose form or use **Add photos** on a pending request. Thumbs show on the RO and photo counts on the desk pool. CLI:
+
+```bash
+carro photo add path.jpg --id RO-… --found-issue FI-001
+```
+
+Pending/declined found-issue pics stay off the customer PDF until the issue is approved (converted to a work item).
+
 ### Adding another drive later
+
+Photos can span multiple disks on the shop server. The repair-order database stays on `CARRO_DATA_DIR`; only photo storage grows onto new mounts. Full steps (mount, register, make default, verify): **[docs/SERVER_SETUP.md → Adding another drive (live server)](docs/SERVER_SETUP.md#adding-another-drive-live-server)**.
+
+On the server:
+
+```bash
+./scripts/add-server-volume.sh --list
+./scripts/add-server-volume.sh --name extra --path /mnt/extra/carro --make-default
+```
+
+Or with curl:
 
 ```bash
 curl -H "Authorization: Bearer YOUR_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name":"extra","path":"/path/to/new/drive/carro"}' \
+  -d '{"name":"extra","path":"/mnt/extra/carro","make_default":true}' \
   http://YOUR_SERVER:8787/volumes
 ```
 
@@ -361,17 +437,36 @@ curl -H "Authorization: Bearer YOUR_TOKEN" -H 'Content-Type: application/json' \
 cli/carro/              # CLI package (forms, PDF, OBD hook, photo providers)
 server/carro_server     # FastAPI archive + phone upload sessions
 engine/                 # Local API for the desktop GUI
-gui/ui                  # React + Tailwind UI (dark/light)
+gui/ui                  # Tech React UI (dark/light)
 gui/src-tauri           # Tauri 2 shell (Windows + Linux)
+advisor/ui              # Advisor desk React UI
+advisor/src-tauri       # Advisor Tauri shell
+VERSION                 # app_version (see docs/UPDATING.md)
 scripts/carro           # launcher used by ~/.local/bin/carro
+scripts/carroadviser    # launcher used by ~/.local/bin/carroadviser (advisor desk)
 scripts/install.sh      # Linux workstation install
 scripts/install.ps1     # Windows install (called by Install-Car-RO.bat)
 Install-Car-RO.bat      # Windows: double-click to install
 scripts/install-server.sh
-scripts/join-server.sh  # point a bay PC at the shop server
+scripts/update-server.sh      # opt-in live server refresh (keeps token + data)
+scripts/update-client.sh      # opt-in Linux bay/advisor refresh
+scripts/update-client.ps1     # opt-in Windows client refresh
+Update-Car-RO.bat             # Windows: double-click client update
+scripts/add-server-volume.sh  # register another photo drive on a live server
+scripts/join-server.sh  # point a bay PC at the shop server (Linux)
+scripts/join-server.ps1 # same on Windows (or Join-Server.bat)
+Join-Server.bat
 scripts/run-gui-dev.sh  # engine + Vite UI
 scripts/run-gui-tauri.sh
+scripts/run-gui-dev.ps1
+scripts/run-advisor-ui.ps1
+scripts/run-gui-tauri.ps1
+scripts/run-advisor-ui.sh
+Run-Tech-GUI.bat
+Run-Advisor-GUI.bat
+Run-Tech-GUI-Tauri.bat
 docs/SERVER_SETUP.md    # multi-PC server guide
+docs/UPDATING.md        # manual opt-in updates (no auto-nag)
 docs/WINDOWS.md         # Windows bay PC guide
 docs/GUI.md             # desktop GUI build / run
 config.example.toml     # copy to ~/.config/carro/config.toml

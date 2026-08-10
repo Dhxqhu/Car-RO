@@ -480,8 +480,11 @@ export function AdminPage() {
 
           <section className="space-y-3 rounded-2xl border border-border bg-surface p-5">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
-              Change admin PIN
+              Shop admin PIN
             </h2>
+            <p className="text-xs text-muted">
+              Unlocks Admin on bay and advisor apps. Not a technician login PIN.
+            </p>
             <div className="flex flex-wrap gap-2">
               <Input
                 type="password"
@@ -526,7 +529,7 @@ export function AdminPage() {
                   })()
                 }
               >
-                Update PIN
+                Update admin PIN
               </Button>
             </div>
           </section>

@@ -29,7 +29,9 @@ echo "==> Installing Python dependencies"
 BIN_DIR="${CARRO_BIN_DIR:-$HOME/.local/bin}"
 mkdir -p "$BIN_DIR"
 ln -sfn "$ROOT/scripts/carro" "$BIN_DIR/carro"
+ln -sfn "$ROOT/scripts/carroadviser" "$BIN_DIR/carroadviser"
 echo "==> Linked $BIN_DIR/carro → scripts/carro"
+echo "==> Linked $BIN_DIR/carroadviser → scripts/carroadviser"
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/carro"
 mkdir -p "$CONFIG_DIR"
@@ -44,7 +46,7 @@ DOC_ROOT="${CARRO_DOCS:-$HOME/Documents/Car-RO}"
 mkdir -p "$DOC_ROOT/photos" "$DOC_ROOT/inbox" "$DOC_ROOT/branding"
 
 # Ensure dirs via app as well (pdf cache, etc.)
-export PYTHONPATH="$ROOT/cli:$ROOT/server${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$ROOT/cli:$ROOT/server:$ROOT/engine${PYTHONPATH:+:$PYTHONPATH}"
 .venv/bin/python -m carro config init >/dev/null 2>&1 || true
 
 case ":$PATH:" in
@@ -61,6 +63,8 @@ echo
 echo "Done. Try:"
 echo "  carro"
 echo "  carro config"
+echo "  carroadviser          # advisor desk CLI"
+echo "  carroadviser pool"
 echo
 echo "Optional home-lab server: ./scripts/install-server.sh"
 echo "Docs: README.md"
