@@ -158,7 +158,11 @@ carro
 
 ### Windows bay PC
 
-See [WINDOWS.md](WINDOWS.md) (`scripts/install.ps1`).
+1. Download the latest **Source code (zip)** from Releases and unzip.  
+2. Double-click **`Install-Car-RO.bat`** in that folder.  
+3. Open Windows Terminal and run `carro`.
+
+Full detail: [WINDOWS.md](WINDOWS.md).
 
 You can also use the desktop GUI later; Config stores the **same** URL + token as the CLI.
 

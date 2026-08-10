@@ -98,20 +98,28 @@ Local-only works fine. The server is for people who want history that outlives a
 
 ## Quick install (workstation)
 
-You need: **Linux** (or **Windows** — see [docs/WINDOWS.md](docs/WINDOWS.md)) and **Python 3.10+**. One install script does the rest.
+You need: **Linux** or **Windows** and **Python 3.10+**. One install script does the rest.
+
+| OS | Install |
+| --- | --- |
+| **Linux** | `./scripts/install.sh` (below) |
+| **Windows** | Double-click **`Install-Car-RO.bat`** — full guide: [docs/WINDOWS.md](docs/WINDOWS.md) |
 
 ### Easiest: download a Release (recommended)
 
 1. Open **[the latest Release](https://github.com/Dhxqhu/Car-RO/releases/latest)**  
 2. Under **Assets**, download **Source code (zip)**  
-3. Unzip it somewhere you keep tools (e.g. `~/Documents/Car-RO`)  
-4. In a terminal:
+3. Unzip it somewhere you keep tools (e.g. `~/Documents/Car-RO` or `Documents\Car-RO`)  
+
+**Linux:**
 
 ```bash
 cd ~/Documents/Car-RO   # or wherever you unzipped (folder name may include a version)
 ./scripts/install.sh
 carro
 ```
+
+**Windows:** open the unzipped folder in File Explorer and double-click **`Install-Car-RO.bat`**, then open Windows Terminal and run `carro`. Details: [docs/WINDOWS.md](docs/WINDOWS.md).
 
 That script will:
 
@@ -158,7 +166,7 @@ cd Car-RO
 ./scripts/install.sh
 ```
 
-**Upgrade later:** download the newer Release zip and run `./scripts/install.sh` again (or `git pull` then `./scripts/install.sh` if you cloned).
+**Upgrade later:** download the newer Release zip and run `./scripts/install.sh` again on Linux, or double-click **`Install-Car-RO.bat`** again on Windows (or `git pull` then the same install if you cloned).
 
 ### Manual install (same steps as the script)
 
@@ -354,7 +362,8 @@ gui/ui                  # React + Tailwind UI (dark/light)
 gui/src-tauri           # Tauri 2 shell (Windows + Linux)
 scripts/carro           # launcher used by ~/.local/bin/carro
 scripts/install.sh      # Linux workstation install
-scripts/install.ps1     # Windows workstation install
+scripts/install.ps1     # Windows install (called by Install-Car-RO.bat)
+Install-Car-RO.bat      # Windows: double-click to install
 scripts/install-server.sh
 scripts/join-server.sh  # point a bay PC at the shop server
 scripts/run-gui-dev.sh  # engine + Vite UI

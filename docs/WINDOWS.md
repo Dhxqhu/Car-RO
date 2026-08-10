@@ -13,37 +13,49 @@ The **server stays on Linux**; this PC is only a client.
 1. Windows 10/11 (x64 or ARM64)  
 2. [Python 3.10+](https://www.python.org/downloads/) — during setup, check **“Add python.exe to PATH”**  
 3. [Windows Terminal](https://aka.ms/terminal) (recommended)  
-4. Car-RO zip from [Releases](https://github.com/Dhxqhu/Car-RO/releases/latest)
+4. Car-RO zip from [Releases](https://github.com/Dhxqhu/Car-RO/releases/latest) — use the **latest** release (not an old tag)
 
 ---
 
-## Install (copy/paste)
+## Install (easiest: double-click)
 
-1. Download **Source code (zip)** and unzip (example: `Documents\Car-RO`)  
-2. Open **Windows Terminal** or PowerShell  
-3. Run:
-
-```powershell
-cd $env:USERPROFILE\Documents\Car-RO
-# If the unzipped folder has a version suffix, cd into that folder instead
-Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\install.ps1
-```
-
-4. Close and reopen the terminal (so PATH updates)  
-5. Run:
+1. Download **Source code (zip)** from the latest Release and unzip (example: `Documents\Car-RO-0.1.1` — rename if you like).  
+2. Open that unzipped folder in File Explorer.  
+3. Double-click **`Install-Car-RO.bat`** at the **top** of the folder (next to `README.md`).  
+4. If Windows SmartScreen warns, choose **More info → Run anyway** (this is your own zip from GitHub).  
+5. When it finishes, **close that window**, open **Windows Terminal**, and run:
 
 ```powershell
 carro
 ```
 
-If `carro` is not found:
+That `.bat` is the supported path: it finds `scripts\install.ps1` for you and runs it with the right PowerShell flags. You do **not** need to “Open with” PowerShell on the `.ps1`, and you do **not** need to type the script path by hand.
+
+### Optional: run from PowerShell yourself
+
+If you prefer the terminal:
 
 ```powershell
-& "$env:USERPROFILE\Documents\Car-RO\.venv\Scripts\carro.bat"
+cd $env:USERPROFILE\Documents\Car-RO   # or your unzip folder (name may include a version)
+.\Install-Car-RO.bat
 ```
 
-(or whatever path you unzipped to)
+Or call the script directly:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\install.ps1
+```
+
+### If `carro` is not found after install
+
+Close and reopen Windows Terminal (PATH updates), then try `carro` again. Still missing:
+
+```powershell
+& "$env:USERPROFILE\Documents\Car-RO\carro.bat"
+```
+
+(or the `carro.bat` inside whatever folder you unzipped)
 
 ---
 
@@ -123,7 +135,7 @@ When packaging for Windows, plan **one installer** that covers both products:
 - Tech app = current Car-RO bay client (this repo)
 - Advisor app = separate application (not started yet) that assigns work / watches the shop; talks to the same `carro-server`
 
-Keep the default selection on **Technician** — that will be the common bay install.
+Today’s **`Install-Car-RO.bat`** is the Technician path only. Keep that as the default when a combined installer lands.
 
 ### Quick audit before a Windows GUI build smoke-test
 
@@ -131,7 +143,7 @@ These are the likely hiccups — fix or expect them before relying on an MSI/NSI
 
 | Area | Status | Note |
 | --- | --- | --- |
-| CLI install | Ready | `scripts/install.ps1` + Windows Terminal |
+| CLI install | Ready | Double-click `Install-Car-RO.bat` → `scripts/install.ps1` |
 | Serial / BT adapters | Ready | COM ports via shared `platform_ports` (see above) |
 | PDF open | Ready | Uses `os.startfile` on Windows |
 | Tauri targets | Configured | `msi` + `nsis` in `gui/src-tauri/tauri.conf.json`; WebView2 bootstrapper download |
@@ -140,4 +152,17 @@ These are the likely hiccups — fix or expect them before relying on an MSI/NSI
 | Config / data dirs | Works, atypical | Still `~/.config/carro` and `~/.local/share/carro` (fine under the user profile, but not `%APPDATA%`). Photos use `Documents\Car-RO\…`. |
 | Shop server | Redeploy | Tech notifications + Assigned board need a server that has `/events` and `/assigned`. Older servers soft-fail events (no crash) but won’t show live team updates. |
 
-Day-one Windows testing can stay on **CLI + `install.ps1`** until the engine sidecar / PowerShell Tauri launcher is wired.
+### Advisor handoff (status + events)
+
+Tech app emits shop-server events the future advisor app will consume:
+
+| Tech action | RO status | Event type |
+| --- | --- | --- |
+| Request parts (advisor) | `waiting_parts` | `ro_parts_requested` |
+| Push for customer approval | `waiting_customer` | `ro_approval_requested` |
+| Mark done | `done` | `ro_ready_to_bill` |
+| Mark billed out | `billed_out` | `ro_billed_out` |
+
+Advisor workflow (planned): parts order + approval notifications → billing queue (`done`) → enter accounting → **billed out** closes the RO.
+
+Day-one Windows testing can stay on **CLI + `Install-Car-RO.bat`** until the engine sidecar / PowerShell Tauri launcher is wired.

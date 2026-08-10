@@ -1,5 +1,7 @@
 # Install Car-RO CLI on Windows (venv + carro on User PATH).
-# Run from an unzipped Car-RO tree:
+#
+# Easiest: double-click Install-Car-RO.bat in the repo root.
+# Or from PowerShell in the unzipped folder:
 #   Set-ExecutionPolicy -Scope Process Bypass
 #   .\scripts\install.ps1
 
