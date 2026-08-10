@@ -119,7 +119,9 @@ cd ~/Documents/Car-RO   # or wherever you unzipped (folder name may include a ve
 carro
 ```
 
-**Windows:** open the unzipped folder in File Explorer and double-click **`Install-Car-RO.bat`**, then open Windows Terminal and run `carro`. Details: [docs/WINDOWS.md](docs/WINDOWS.md).
+**Windows:** open the unzipped folder in File Explorer and double-click **`Install-Car-RO.bat`** (not the `.ps1`), then open Windows Terminal and run `carro`.  
+If the `.bat` is blocked, or double-clicking a `.ps1` asks “which app?”: copy the folder path from Explorer → open PowerShell → `cd` to that path → `Set-ExecutionPolicy -Scope Process Bypass` → `.\scripts\install.ps1`.  
+Full steps: [docs/WINDOWS.md](docs/WINDOWS.md).
 
 That script will:
 

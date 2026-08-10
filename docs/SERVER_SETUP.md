@@ -159,7 +159,8 @@ carro
 ### Windows bay PC
 
 1. Download the latest **Source code (zip)** from Releases and unzip.  
-2. Double-click **`Install-Car-RO.bat`** in that folder.  
+2. Double-click **`Install-Car-RO.bat`** in that folder (not `scripts\install.ps1` — Windows often has no “Open with PowerShell” for `.ps1` files).  
+   Fallback: copy the folder path → PowerShell → `cd` there → `Set-ExecutionPolicy -Scope Process Bypass` → `.\scripts\install.ps1`.  
 3. Open Windows Terminal and run `carro`.
 
 Full detail: [WINDOWS.md](WINDOWS.md).

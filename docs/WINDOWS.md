@@ -17,9 +17,12 @@ The **server stays on Linux**; this PC is only a client.
 
 ---
 
-## Install (easiest: double-click)
+## Install (easiest: double-click the `.bat`)
 
-1. Download **Source code (zip)** from the latest Release and unzip (example: `Documents\Car-RO-0.1.1` — rename if you like).  
+Use **`Install-Car-RO.bat`**, not `scripts\install.ps1`.  
+Double-clicking a `.ps1` often opens “How do you want to open this file?” and **PowerShell is not in the list** — that is normal on Windows. Do not hunt for PowerShell in that menu.
+
+1. Download **Source code (zip)** from the latest Release and unzip (example: `Documents\Car-RO-0.1.2` — rename if you like).  
 2. Open that unzipped folder in File Explorer.  
 3. Double-click **`Install-Car-RO.bat`** at the **top** of the folder (next to `README.md`).  
 4. If Windows SmartScreen warns, choose **More info → Run anyway** (this is your own zip from GitHub).  
@@ -29,22 +32,39 @@ The **server stays on Linux**; this PC is only a client.
 carro
 ```
 
-That `.bat` is the supported path: it finds `scripts\install.ps1` for you and runs it with the right PowerShell flags. You do **not** need to “Open with” PowerShell on the `.ps1`, and you do **not** need to type the script path by hand.
+### Fallback: install from PowerShell (copy the folder path)
 
-### Optional: run from PowerShell yourself
+Use this if the `.bat` is blocked, or if you prefer the terminal (same steps that work when `.ps1` is not “Open with” friendly):
 
-If you prefer the terminal:
+1. Unzip the Release zip.  
+2. In File Explorer, open the unzipped Car-RO folder (the one that contains `Install-Car-RO.bat` and a `scripts` folder).  
+3. Click the address bar at the top → **Ctrl+C** to copy the full path.  
+4. Open **Windows Terminal** or **PowerShell** (Start menu → type `powershell` → Enter).  
+5. Paste:
 
 ```powershell
-cd $env:USERPROFILE\Documents\Car-RO   # or your unzip folder (name may include a version)
-.\Install-Car-RO.bat
+cd "PASTE_THE_PATH_HERE"
 ```
 
-Or call the script directly:
+(Example: `cd "C:\Users\You\Downloads\Car-RO-0.1.2"`)
+
+6. Allow scripts for this window only, then run the installer:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\install.ps1
+```
+
+Or run the bat from that same folder:
+
+```powershell
+.\Install-Car-RO.bat
+```
+
+7. Close and reopen the terminal, then:
+
+```powershell
+carro
 ```
 
 ### If `carro` is not found after install
@@ -52,10 +72,14 @@ Set-ExecutionPolicy -Scope Process Bypass
 Close and reopen Windows Terminal (PATH updates), then try `carro` again. Still missing:
 
 ```powershell
-& "$env:USERPROFILE\Documents\Car-RO\carro.bat"
+.\carro.bat
 ```
 
-(or the `carro.bat` inside whatever folder you unzipped)
+(from inside the unzipped folder), or:
+
+```powershell
+& "$env:LOCALAPPDATA\Car-RO\bin\carro.bat"
+```
 
 ---
 

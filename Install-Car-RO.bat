@@ -52,7 +52,12 @@ echo    1. Close this window
 echo    2. Open Windows Terminal ^(or a new PowerShell^)
 echo    3. Type:  carro
 echo.
-echo  Shop server join: docs\WINDOWS.md and docs\SERVER_SETUP.md
+echo  If this .bat was blocked, or a .ps1 asked "which app?":
+echo    copy this folder path from Explorer, open PowerShell, then:
+echo      cd "PASTE_PATH"
+echo      Set-ExecutionPolicy -Scope Process Bypass
+echo      .\scripts\install.ps1
+echo    See docs\WINDOWS.md
 echo.
 pause
 endlocal
