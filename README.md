@@ -8,6 +8,7 @@
 # Car-RO
 
 **Technician repair-order notes for people who also like running their own gear.**
+This is a technician-made RO workflow project aimed to assist independent shops and technicians to have a way to streamline their workflow and help track efficiency with repair orders with individual timed work item to keep track of time spent, not only on the car itself, but also each task assign on each job.
 
 Car-RO documents diagnostic and repair work — the stuff you wish you’d written down *while you were still under the hood*. It is **not** a DMS, not billing, and not meant to replace your shop’s official RO system. It is a personal / bay-side knowledge base that happens to spit out a clean PDF a service advisor can read.
 
