@@ -8,6 +8,7 @@ import {
   type DoipProbeRow,
   type DoipVehicle,
 } from "@/lib/obdApi";
+import { formatLabel } from "@/lib/utils";
 
 export function ScanDoipPage() {
   const [hasDoip, setHasDoip] = useState<boolean | null>(null);
@@ -275,8 +276,8 @@ export function ScanDoipPage() {
                     </button>
                   </td>
                   <td className="py-1.5 pr-3">{r.name}</td>
-                  <td className={`py-1.5 font-mono ${r.alive ? "text-accent" : "text-muted"}`}>
-                    {r.status}
+                  <td className={`py-1.5 ${r.alive ? "text-accent" : "text-muted"}`}>
+                    {formatLabel(r.status)}
                   </td>
                 </tr>
               ))}

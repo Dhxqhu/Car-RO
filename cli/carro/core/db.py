@@ -60,6 +60,9 @@ class LocalStore:
         return RepairOrder.from_dict(json.loads(row["data"]))
 
     def save(self, order: RepairOrder) -> RepairOrder:
+        from carro.core.work_items import apply_rollups
+
+        apply_rollups(order)
         order.updated = now_iso()
         if not order.created:
             order.created = order.updated
@@ -113,6 +116,11 @@ class LocalStore:
         }
         hits: list[RepairOrder] = []
         for order in self.list_orders():
+            item_blob = " ".join(
+                f"{(it.get('concern') or '')} {(it.get('notes') or '')} {(it.get('status') or '')}"
+                for it in (order.work_items or [])
+                if isinstance(it, dict)
+            )
             blob = " ".join(
                 [
                     order.id,
@@ -128,6 +136,7 @@ class LocalStore:
                     order.status,
                     order.complaint,
                     order.tech_notes,
+                    item_blob,
                 ]
             ).lower()
             if q and q not in blob:

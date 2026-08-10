@@ -82,6 +82,8 @@ def write_text_pack(
 
 
 def _text_ro_block(order: RepairOrder) -> list[str]:
+    from carro.core.work_items import ensure_work_items_on_order
+
     header = (
         f"{order.id} · {order.updated or order.created or '—'} · {order.status} · "
         f"{order.customer_label()} · {order.vehicle_label()} · VIN {order.vin or '—'}"
@@ -89,18 +91,32 @@ def _text_ro_block(order: RepairOrder) -> list[str]:
     obd = (order.obd_snapshot or "").strip()
     if len(obd) > OBD_TEXT_MAX:
         obd = obd[:OBD_TEXT_MAX] + "\n… truncated"
-    return [
-        header,
-        "",
-        "Complaint / request:",
-        (order.complaint or "—").strip() or "—",
-        "",
-        "Technician notes:",
-        (order.tech_notes or "—").strip() or "—",
-        "",
-        "OBD / DTC:",
-        obd or "—",
-    ]
+    lines = [header, "", "Work items:"]
+    items = ensure_work_items_on_order(order)
+    if not items:
+        lines.extend(
+            [
+                "(none — legacy fields)",
+                "",
+                "Complaint / request:",
+                (order.complaint or "—").strip() or "—",
+                "",
+                "Technician notes:",
+                (order.tech_notes or "—").strip() or "—",
+            ]
+        )
+    else:
+        for i, w in enumerate(items, 1):
+            lines.append(f"  {i}. {w.id} [{w.status}]")
+            lines.append(f"     Concern: {(w.concern or '—').strip() or '—'}")
+            notes = (w.notes or "").strip()
+            if notes:
+                lines.append("     Notes:")
+                for ln in notes.splitlines():
+                    lines.append(f"       {ln}")
+            lines.append("")
+    lines.extend(["", "OBD / DTC:", obd or "—"])
+    return lines
 
 
 def open_text_pack(path: Path) -> None:
@@ -128,8 +144,14 @@ def estimate_pack_pages(orders: list[RepairOrder], *, include_photos: bool) -> f
     """Rough page estimate for oversized warning."""
     pages = 0.35  # title
     for order in orders:
+        item_chars = sum(
+            len(str(it.get("concern") or "")) + len(str(it.get("notes") or ""))
+            for it in (order.work_items or [])
+            if isinstance(it, dict)
+        )
         text_chars = (
-            len(order.complaint or "")
+            item_chars
+            + len(order.complaint or "")
             + len(order.tech_notes or "")
             + min(len(order.obd_snapshot or ""), OBD_TEXT_MAX)
         )
@@ -304,34 +326,60 @@ def _pdf_ro_sections(
         f"{_xml_escape(order.customer_label())} · {_xml_escape(order.vehicle_label())} · "
         f"VIN {_xml_escape(order.vin or '—')}"
     )
+    from carro.core.work_items import ensure_work_items_on_order
+
     bits.append(CondPageBreak(1.2 * inch))
     bits.append(KeepTogether([Paragraph(head, h2)]))
     bits.append(Spacer(1, 0.08 * inch))
-    bits.append(
-        KeepTogether(
-            [
-                _section_box(
-                    "Customer complaint / request",
-                    order.complaint or "—",
-                    head_style=box_head,
-                    body_style=box_body,
+    items = ensure_work_items_on_order(order)
+    if items:
+        for i, w in enumerate(items, 1):
+            concern = (w.concern or "—").strip() or "—"
+            notes = (w.notes or "").strip()
+            body_txt = (
+                f"{concern}\n\nDiagnosis [{w.status}]:\n{notes}"
+                if notes
+                else f"{concern}\n\n({w.status})"
+            )
+            bits.append(
+                KeepTogether(
+                    [
+                        _section_box(
+                            f"Work item {i} · {w.id}",
+                            body_txt,
+                            head_style=box_head,
+                            body_style=box_body,
+                        )
+                    ]
                 )
-            ]
+            )
+            bits.append(Spacer(1, 0.08 * inch))
+    else:
+        bits.append(
+            KeepTogether(
+                [
+                    _section_box(
+                        "Customer complaint / request",
+                        order.complaint or "—",
+                        head_style=box_head,
+                        body_style=box_body,
+                    )
+                ]
+            )
         )
-    )
-    bits.append(Spacer(1, 0.08 * inch))
-    bits.append(
-        KeepTogether(
-            [
-                _section_box(
-                    "Technician notes",
-                    order.tech_notes or "—",
-                    head_style=box_head,
-                    body_style=box_body,
-                )
-            ]
+        bits.append(Spacer(1, 0.08 * inch))
+        bits.append(
+            KeepTogether(
+                [
+                    _section_box(
+                        "Technician notes",
+                        order.tech_notes or "—",
+                        head_style=box_head,
+                        body_style=box_body,
+                    )
+                ]
+            )
         )
-    )
     if order.obd_snapshot.strip():
         obd = order.obd_snapshot.strip()
         if len(obd) > OBD_TEXT_MAX:

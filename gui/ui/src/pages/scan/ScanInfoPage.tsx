@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ScaffoldNote } from "@/components/ScaffoldNote";
 import { Button } from "@/components/ui/button";
 import { obdApi } from "@/lib/obdApi";
+import { formatLabel, formatStatus } from "@/lib/utils";
 
 const PRIMARY_KEYS = ["vin", "year", "make"] as const;
 
@@ -9,7 +10,14 @@ function labelFor(key: string): string {
   if (key === "vin") return "VIN";
   if (key === "mil") return "MIL";
   if (key === "wmi") return "WMI";
-  return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return formatLabel(key);
+}
+
+function formatObdSource(source: string | null): string {
+  if (!source) return "—";
+  if (source === "live") return "Live adapter";
+  if (source === "cache" || source === "saved") return "Saved codes";
+  return formatLabel(source);
 }
 
 export function ScanInfoPage() {
@@ -132,7 +140,7 @@ export function ScanInfoPage() {
       {vehicle ? (
         <div className="space-y-4">
           <div className="rounded-xl border border-border bg-surface p-4">
-            <div className="text-xs text-muted">Source: {source || "—"}</div>
+            <div className="text-xs text-muted">Source: {formatObdSource(source)}</div>
             {fields.length > 0 ? (
               <dl className="mt-3 space-y-2">
                 {fields.map(([k, v]) => (
@@ -178,15 +186,18 @@ export function ScanInfoPage() {
               <p className="mt-2 text-sm">
                 MIL:{" "}
                 <span className={readiness.mil ? "text-danger" : "text-accent"}>
-                  {readiness.mil ? "ON" : "OFF"}
+                  {readiness.mil ? "On" : "Off"}
                 </span>{" "}
-                · DTC count: {readiness.dtc_count} · Ignition: {readiness.ignition}
+                · DTC count: {readiness.dtc_count}
+                {readiness.ignition
+                  ? ` · Ignition: ${formatLabel(readiness.ignition)}`
+                  : ""}
               </p>
               <ul className="mt-3 space-y-1 text-sm">
                 {readiness.monitors.map((m) => (
                   <li key={m.name} className="flex justify-between gap-3">
                     <span className="text-muted">{m.name}</span>
-                    <span className="font-mono">{m.status}</span>
+                    <span>{formatStatus(m.status)}</span>
                   </li>
                 ))}
               </ul>

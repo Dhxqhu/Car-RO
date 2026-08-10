@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 
 
-STATUSES = ("open", "in_progress", "done")
+STATUSES = ("open", "assigned", "in_progress", "done")
 
 
 @dataclass
@@ -33,25 +33,53 @@ class RepairOrder:
     vin: str = ""
     mileage: str = ""
     plate: str = ""
+    # Legacy rollups — kept in sync from work_items for search / old clients
     complaint: str = ""
     tech_notes: str = ""
     technician_name: str = ""
     technician_id: str = ""
+    # Who the job is assigned to (advisor desk / Assigned Work board).
+    # Distinct from technician_* which stamps who last edited / created the RO.
+    assigned_to_id: str = ""
+    assigned_to_name: str = ""
+    assigned_at: str = ""
+    # Who is actively working this car right now (bay / current task).
+    current_tech_id: str = ""
+    current_tech_name: str = ""
+    current_since: str = ""
     status: str = "open"
     obd_snapshot: str = ""
     photos: list[dict[str, Any]] = field(default_factory=list)
+    work_items: list[dict[str, Any]] = field(default_factory=list)
     created: str = ""
     updated: str = ""
 
     def to_dict(self) -> dict[str, Any]:
+        from carro.core.work_items import apply_rollups
+
+        apply_rollups(self)
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RepairOrder":
+        from carro.core.work_items import apply_rollups, ensure_work_items_from_legacy
+
         known = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
         clean = {k: v for k, v in data.items() if k in known}
         clean.setdefault("photos", [])
-        return cls(**clean)
+        clean.setdefault("work_items", [])
+        if not isinstance(clean.get("work_items"), list):
+            clean["work_items"] = []
+        order = cls(**clean)
+        items = ensure_work_items_from_legacy(
+            work_items=order.work_items,
+            complaint=order.complaint,
+            tech_notes=order.tech_notes,
+        )
+        order.work_items = [w.to_dict() for w in items]
+        if items:
+            apply_rollups(order)
+        return order
 
     def customer_label(self) -> str:
         name = f"{self.last_name}, {self.first_name}".strip(", ").strip()

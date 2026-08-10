@@ -22,8 +22,18 @@ from textual.widgets import (
 
 from carro.core.models import RepairOrder
 from carro.core.textual_theme import CARRO_SCROLL_BINDINGS, CarroThemeApp
+from carro.core.work_items import (
+    apply_rollups,
+    ensure_work_items_on_order,
+    format_items_for_display,
+)
 
-STATUS_OPTIONS = [("open", "open"), ("in_progress", "in_progress"), ("done", "done")]
+STATUS_OPTIONS = [
+    ("open", "open"),
+    ("assigned", "assigned"),
+    ("in_progress", "in_progress"),
+    ("done", "done"),
+]
 
 
 class RepairOrderForm(CarroThemeApp[RepairOrder | None]):
@@ -53,8 +63,12 @@ class RepairOrderForm(CarroThemeApp[RepairOrder | None]):
         height: 6;
         width: 1fr;
     }
-    #complaint, #tech_notes {
-        height: 8;
+    #obd_snapshot {
+        height: 14;
+    }
+    #work_items_list {
+        color: $text;
+        padding: 0 0 1 0;
     }
     #actions {
         height: auto;
@@ -79,6 +93,7 @@ class RepairOrderForm(CarroThemeApp[RepairOrder | None]):
         Binding("ctrl+q", "quit_form", "Quit", show=True),
         Binding("escape", "quit_form", "Quit", show=False),
         Binding("f2", "pull_obd", "Pull OBD", show=True),
+        Binding("ctrl+w", "edit_work_items", "Work items", show=True),
     ]
 
     def __init__(
@@ -95,8 +110,9 @@ class RepairOrderForm(CarroThemeApp[RepairOrder | None]):
     def compose(self) -> ComposeResult:
         o = self.order
         yield Header(show_clock=True)
+        ensure_work_items_on_order(o)
         yield Static(
-            f"Repair Order  {o.id}    Tab/Shift+Tab move · Ctrl+S save · Ctrl+Q quit · F2 OBD",
+            f"Repair Order  {o.id}    Ctrl+S save · Ctrl+W work items · F2 OBD · Ctrl+Q quit",
             id="title",
         )
         with TouchFriendlyScroll(id="body"):
@@ -110,25 +126,38 @@ class RepairOrderForm(CarroThemeApp[RepairOrder | None]):
             yield from self._row("Mileage", Input(o.mileage, id="mileage", placeholder="Miles"))
             yield from self._row("Plate", Input(o.plate, id="plate", placeholder="Plate"))
             yield from self._row(
-                "Technician",
+                "Last editor",
                 Input(
                     o.technician_name,
                     id="technician_name",
                     placeholder="From login (editable)",
                 ),
             )
+            yield from self._row(
+                "Assigned to",
+                Input(
+                    o.assigned_to_name,
+                    id="assigned_to_name",
+                    placeholder="Tech name (whole RO)",
+                ),
+            )
             with Horizontal(classes="row"):
                 yield Label("Status", classes="label")
                 yield Select(
                     STATUS_OPTIONS,
-                    value=o.status if o.status in {"open", "in_progress", "done"} else "open",
+                    value=(
+                        o.status
+                        if o.status in {"open", "assigned", "in_progress", "done"}
+                        else "open"
+                    ),
                     id="status",
                     allow_blank=False,
                 )
-            yield Label("Customer complaint / request", classes="label")
-            yield TextArea(o.complaint or "", id="complaint")
-            yield Label("Technician notes", classes="label")
-            yield TextArea(o.tech_notes or "", id="tech_notes")
+            yield Label("Work items (concerns + diag) — Ctrl+W to edit", classes="label")
+            yield Static(
+                format_items_for_display(ensure_work_items_on_order(o)),
+                id="work_items_list",
+            )
             yield Label("OBD snapshot (read/edit)", classes="label")
             yield TextArea(o.obd_snapshot or "", id="obd_snapshot")
             photo_n = len(o.photos)
@@ -138,6 +167,7 @@ class RepairOrderForm(CarroThemeApp[RepairOrder | None]):
             )
         with Horizontal(id="actions"):
             yield Button("Save (Ctrl+S)", id="btn_save", variant="success")
+            yield Button("Work items (Ctrl+W)", id="btn_items", variant="primary")
             yield Button("Pull OBD (F2)", id="btn_obd", variant="primary")
             yield Button("Quit (Ctrl+Q)", id="btn_quit", variant="default")
         yield Footer()
@@ -169,13 +199,31 @@ class RepairOrderForm(CarroThemeApp[RepairOrder | None]):
                 o.technician_id = cur.id
             else:
                 o.technician_id = ""
+        new_assigned = self.query_one("#assigned_to_name", Input).value.strip()
+        if new_assigned != (o.assigned_to_name or ""):
+            from carro.core import technicians as techmod
+            from carro.core.assignment import assign_ro
+
+            match = next(
+                (t for t in techmod.list_technicians() if t.name == new_assigned),
+                None,
+            )
+            assign_ro(
+                o,
+                tech_id=match.id if match else "",
+                tech_name=new_assigned,
+                set_status_assigned=bool(new_assigned),
+            )
         status = self.query_one("#status", Select).value
         if isinstance(status, str):
             o.status = status
-        o.complaint = self.query_one("#complaint", TextArea).text
-        o.tech_notes = self.query_one("#tech_notes", TextArea).text
         o.obd_snapshot = self.query_one("#obd_snapshot", TextArea).text
+        apply_rollups(o)
         return o
+
+    def action_edit_work_items(self) -> None:
+        # Exit to outer loop — nested Textual apps are unreliable.
+        self.exit(("work_items", self._read_into_order()))
 
     def action_save(self) -> None:
         self._saved = self._read_into_order()
@@ -214,6 +262,10 @@ class RepairOrderForm(CarroThemeApp[RepairOrder | None]):
     def _btn_obd(self) -> None:
         self.action_pull_obd()
 
+    @on(Button.Pressed, "#btn_items")
+    def _btn_items(self) -> None:
+        self.action_edit_work_items()
+
 
 def run_ro_form(
     order: RepairOrder,
@@ -221,5 +273,21 @@ def run_ro_form(
     on_pull_obd: Callable[[RepairOrder], RepairOrder] | None = None,
 ) -> RepairOrder | None:
     """Open navigable form; returns updated order on save, or None if quit."""
-    app = RepairOrderForm(order, on_pull_obd=on_pull_obd)
-    return app.run()
+    from carro.core import technicians as techmod
+    from carro.core.work_items_form import run_work_items_form
+
+    current = order
+    while True:
+        result = RepairOrderForm(current, on_pull_obd=on_pull_obd).run()
+        if result is None:
+            return None
+        if isinstance(result, tuple) and result and result[0] == "work_items":
+            draft = result[1]
+            tech = techmod.current_technician()
+            actor = tech.name if tech else (draft.technician_name or "")
+            updated = run_work_items_form(draft, actor=actor, actor_role="tech")
+            current = updated if updated is not None else draft
+            continue
+        if isinstance(result, RepairOrder):
+            return result
+        return None

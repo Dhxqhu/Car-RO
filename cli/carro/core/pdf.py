@@ -355,21 +355,41 @@ def export_pdf(
     )
     _append_kept(story, grid, min_remain_inch=1.8)
 
-    complaint_box = _section_box(
-        "CUSTOMER CONCERN / REQUEST",
-        order.complaint or "—",
-        head_style=box_head,
-        body_style=box_body,
-    )
-    _append_kept(story, Spacer(1, 0.14 * inch), complaint_box, min_remain_inch=1.2)
+    from carro.core.work_items import ensure_work_items_on_order
 
-    notes_box = _section_box(
-        "DIAGNOSIS & TECHNICIAN NOTES",
-        order.tech_notes or "—",
-        head_style=box_head,
-        body_style=box_body,
-    )
-    _append_kept(story, Spacer(1, 0.12 * inch), notes_box, min_remain_inch=1.2)
+    items = ensure_work_items_on_order(order)
+    if items:
+        for i, w in enumerate(items, 1):
+            concern = (w.concern or "—").strip() or "—"
+            notes = (w.notes or "").strip()
+            body_txt = concern
+            if notes:
+                body_txt = f"{concern}\n\nDiagnosis / notes [{w.status}]:\n{notes}"
+            else:
+                body_txt = f"{concern}\n\n({w.status})"
+            box = _section_box(
+                f"WORK ITEM {i} · {w.id}",
+                body_txt,
+                head_style=box_head,
+                body_style=box_body,
+            )
+            _append_kept(story, Spacer(1, 0.12 * inch), box, min_remain_inch=1.2)
+    else:
+        complaint_box = _section_box(
+            "CUSTOMER CONCERN / REQUEST",
+            order.complaint or "—",
+            head_style=box_head,
+            body_style=box_body,
+        )
+        _append_kept(story, Spacer(1, 0.14 * inch), complaint_box, min_remain_inch=1.2)
+
+        notes_box = _section_box(
+            "DIAGNOSIS & TECHNICIAN NOTES",
+            order.tech_notes or "—",
+            head_style=box_head,
+            body_style=box_body,
+        )
+        _append_kept(story, Spacer(1, 0.12 * inch), notes_box, min_remain_inch=1.2)
 
     if order.obd_snapshot.strip():
         obd_html = _xml_escape(order.obd_snapshot).replace("\n", "<br/>")

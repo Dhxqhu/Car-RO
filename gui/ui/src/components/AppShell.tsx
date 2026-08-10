@@ -1,6 +1,7 @@
 import { Cable, Moon, Sun } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { TechNotifications } from "@/components/TechNotifications";
 import { useTheme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
 import carroMarkOnDark from "@/assets/carro-mark-512-on-dark.png";
@@ -14,6 +15,7 @@ const workspaces = [
     match: (p: string) =>
       p === "/" ||
       p.startsWith("/ro") ||
+      p.startsWith("/assigned") ||
       p.startsWith("/history") ||
       p.startsWith("/settings") ||
       p.startsWith("/techs"),
@@ -23,6 +25,7 @@ const workspaces = [
 
 const orderLinks = [
   { to: "/", label: "Orders", end: true },
+  { to: "/assigned", label: "Assigned" },
   { to: "/history", label: "History" },
   { to: "/settings", label: "Config" },
   { to: "/techs", label: "Technicians" },
@@ -31,11 +34,13 @@ const orderLinks = [
 export function AppShell({
   variant = "full",
   techName,
+  techId,
   scannerOnly = false,
   onExit,
 }: {
   variant?: "full" | "scanner";
   techName?: string;
+  techId?: string;
   scannerOnly?: boolean;
   onExit?: () => void;
 }) {
@@ -133,6 +138,9 @@ export function AppShell({
                   </NavLink>
                 ))
               : null}
+            {!scannerShell && techName ? (
+              <TechNotifications techName={techName} techId={techId} />
+            ) : null}
             {onExit ? (
               <Button variant="ghost" onClick={onExit}>
                 {scannerShell ? "Exit to login" : "Log out"}

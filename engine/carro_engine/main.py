@@ -132,6 +132,64 @@ def health() -> dict[str, Any]:
     return {"ok": True, "shop_name": cfg.get("shop_name") or ""}
 
 
+def _push_ro(order: RepairOrder) -> None:
+    """Upsert to shop server, stamping the logged-in tech as actor (not notified of self)."""
+    remote = RemoteClient()
+    if not remote.enabled:
+        return
+    tech = techmod.current_technician()
+    try:
+        remote.upsert_ro(
+            order,
+            actor=(tech.name if tech else order.technician_name) or "",
+            actor_id=(tech.id if tech else order.technician_id) or "",
+        )
+    except Exception:
+        pass
+
+
+@app.get("/events")
+def engine_events(
+    since: str = "",
+    since_id: int = 0,
+    ro_id: str = "",
+    limit: int = 100,
+    exclude_actor: str = "",
+    exclude_actor_id: str = "",
+    exclude_self: bool = True,
+) -> dict[str, Any]:
+    """
+    Shop-server event feed. By default excludes the current technician so
+    tech↔tech (and later advisor) notifications never fire for the person who made the change.
+    """
+    remote = RemoteClient()
+    if not remote.enabled:
+        return {
+            "events": [],
+            "note": "No server_url — live events require carro-server.",
+        }
+    if exclude_self and not exclude_actor and not exclude_actor_id:
+        tech = techmod.current_technician()
+        if tech:
+            exclude_actor = tech.name
+            exclude_actor_id = tech.id
+    try:
+        return remote.list_events(
+            since=since,
+            since_id=since_id,
+            ro_id=ro_id,
+            limit=limit,
+            exclude_actor=exclude_actor,
+            exclude_actor_id=exclude_actor_id,
+        )
+    except Exception as exc:
+        # Older shop servers may not have /events yet — keep the tech UI quiet.
+        return {
+            "events": [],
+            "note": f"Live events unavailable on server ({exc}). Update carro-server for team notifications.",
+        }
+
+
 @app.get("/technicians")
 def list_technicians() -> dict[str, Any]:
     techs = [{"id": t.id, "name": t.name} for t in techmod.list_technicians()]
@@ -218,12 +276,162 @@ def put_ro(ro_id: str, body: dict[str, Any]) -> dict[str, Any]:
         order.technician_id = tech.id
         order.technician_name = tech.name
     store.save(order)
+    _push_ro(order)
+    return order.to_dict()
+
+
+class WorkItemBody(BaseModel):
+    id: str | None = None
+    concern: str | None = None
+    notes: str | None = None
+    status: str | None = None
+    priority: int | None = None
+    assigned_to_id: str | None = None
+    assigned_to_name: str | None = None
+
+
+class AssignRoBody(BaseModel):
+    assigned_to_id: str = ""
+    assigned_to_name: str = ""
+    status: str | None = None
+
+
+class CurrentTaskBody(BaseModel):
+    """Set active=true to claim this RO as the logged-in tech's current bay task."""
+
+    active: bool = True
+
+
+@app.get("/assigned")
+def assigned_board() -> dict[str, Any]:
+    """Assigned Work board: mine, other techs, unassigned (local + server when configured)."""
+    from carro.core.assignment import build_assigned_board
+
+    tech = techmod.current_technician()
+    by_id: dict[str, RepairOrder] = {o.id: o for o in store.list_orders()}
     remote = RemoteClient()
+    source = "local"
     if remote.enabled:
         try:
-            remote.upsert_ro(order)
+            for raw in remote.list_ros():
+                try:
+                    order = RepairOrder.from_dict(raw)
+                except Exception:
+                    continue
+                local = by_id.get(order.id)
+                if local is None or (order.updated or "") >= (local.updated or ""):
+                    by_id[order.id] = order
+            source = "local+server"
         except Exception:
-            pass
+            source = "local"
+    board = build_assigned_board(
+        list(by_id.values()),
+        tech_id=tech.id if tech else "",
+        tech_name=tech.name if tech else "",
+    )
+    board["source"] = source
+    return board
+
+
+@app.post("/ros/{ro_id}/assign")
+def assign_ro_route(ro_id: str, body: AssignRoBody) -> dict[str, Any]:
+    from carro.core.assignment import assign_ro
+
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+    assign_ro(
+        order,
+        tech_id=body.assigned_to_id,
+        tech_name=body.assigned_to_name,
+        set_status_assigned=True,
+    )
+    if body.status and body.status in ("open", "assigned", "in_progress", "done"):
+        order.status = body.status
+    store.save(order)
+    _push_ro(order)
+    return order.to_dict()
+
+
+@app.post("/ros/{ro_id}/current")
+def set_current_task_route(ro_id: str, body: CurrentTaskBody) -> dict[str, Any]:
+    """Claim or release this RO as the logged-in tech's current task (visible on Assigned)."""
+    from carro.core.assignment import (
+        clear_current_task,
+        clear_tech_current_elsewhere,
+        matches_tech,
+        set_current_task,
+    )
+
+    tech = techmod.current_technician()
+    if not tech:
+        raise HTTPException(401, "Log in as a technician to set current task")
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+
+    if body.active:
+        for other in clear_tech_current_elsewhere(
+            store.list_orders(),
+            tech_id=tech.id,
+            tech_name=tech.name,
+            except_id=ro_id,
+        ):
+            store.save(other)
+            _push_ro(other)
+        set_current_task(order, tech_id=tech.id, tech_name=tech.name, also_assign=True)
+    else:
+        if matches_tech(
+            order.current_tech_id,
+            order.current_tech_name,
+            me_id=tech.id,
+            me_name=tech.name,
+        ):
+            clear_current_task(order)
+        else:
+            raise HTTPException(403, "This RO is not your current task")
+    store.save(order)
+    _push_ro(order)
+    return order.to_dict()
+
+
+@app.post("/ros/{ro_id}/work-items")
+def upsert_work_item_route(ro_id: str, body: WorkItemBody) -> dict[str, Any]:
+    from carro.core.work_items import upsert_work_item
+
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+    tech = techmod.current_technician()
+    actor = tech.name if tech else (order.technician_name or "")
+    upsert_work_item(
+        order,
+        item_id=body.id,
+        concern=body.concern,
+        notes=body.notes,
+        status=body.status,
+        priority=body.priority,
+        assigned_to_id=body.assigned_to_id,
+        assigned_to_name=body.assigned_to_name,
+        actor=actor,
+        actor_role="tech",
+    )
+    store.save(order)
+    _push_ro(order)
+    return order.to_dict()
+
+
+@app.delete("/ros/{ro_id}/work-items/{item_id}")
+def delete_work_item_route(ro_id: str, item_id: str) -> dict[str, Any]:
+    from carro.core.work_items import remove_work_item
+
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+    if not remove_work_item(order, item_id):
+        raise HTTPException(404, f"Work item not found: {item_id}")
+    store.save(order)
+    _push_ro(order)
     return order.to_dict()
 
 
@@ -249,16 +457,69 @@ def delete_ro(ro_id: str) -> dict[str, Any]:
 
 
 @app.post("/ros/{ro_id}/pdf")
-def pdf_ro(ro_id: str, include_photos: bool = True) -> dict[str, str | bool]:
+def pdf_ro(
+    ro_id: str,
+    include_photos: bool = True,
+    open_viewer: bool = False,
+) -> dict[str, Any]:
     """Customer PDF. Set include_photos=false for ink-saving / B&W (no job photos)."""
+    from carro.core.pdf_open import open_pdf_viewer
+
     order = store.get(ro_id)
     if not order:
         raise HTTPException(404, "RO not found")
     path = export_pdf(order, include_photos=include_photos)
+    viewer = open_pdf_viewer(path) if open_viewer else None
     return {
         "path": str(path),
         "include_photos": include_photos,
+        "opened": bool(viewer),
+        "viewer": viewer,
+        "view_url": f"/ros/{ro_id}/pdf/file?include_photos={'true' if include_photos else 'false'}",
     }
+
+
+@app.post("/ros/{ro_id}/pdf/open")
+def pdf_open_ro(ro_id: str, include_photos: bool = True) -> dict[str, Any]:
+    """Open (or create) the customer PDF in the system viewer."""
+    from carro.config import DATA_DIR
+    from carro.core.pdf_open import open_pdf_viewer
+
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+    suffix = "" if include_photos else "-lite"
+    path = DATA_DIR / "pdf" / f"{ro_id}{suffix}.pdf"
+    if not path.is_file():
+        path = export_pdf(order, include_photos=include_photos)
+    viewer = open_pdf_viewer(path)
+    return {
+        "path": str(path),
+        "include_photos": include_photos,
+        "opened": bool(viewer),
+        "viewer": viewer,
+        "view_url": f"/ros/{ro_id}/pdf/file?include_photos={'true' if include_photos else 'false'}",
+    }
+
+
+@app.get("/ros/{ro_id}/pdf/file")
+def pdf_file_ro(ro_id: str, include_photos: bool = True) -> FileResponse:
+    """Serve the PDF for in-browser / webview viewing."""
+    from carro.config import DATA_DIR
+
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+    suffix = "" if include_photos else "-lite"
+    path = DATA_DIR / "pdf" / f"{ro_id}{suffix}.pdf"
+    if not path.is_file():
+        path = export_pdf(order, include_photos=include_photos)
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        filename=path.name,
+        content_disposition_type="inline",
+    )
 
 
 @app.post("/ros/{ro_id}/pull-obd")
@@ -520,6 +781,26 @@ def history_new_from(body: HistoryNewFromBody) -> dict[str, Any]:
         order.technician_name = tech.name
         store.save(order)
     return order.to_dict()
+
+
+class OpenFileBody(BaseModel):
+    path: str
+
+
+@app.post("/files/open")
+def open_local_file(body: OpenFileBody) -> dict[str, Any]:
+    """Open a PDF under the Car-RO data dir in the system viewer (GUI View PDF)."""
+    from carro.config import DATA_DIR
+    from carro.core.pdf_open import open_pdf_viewer
+
+    path = Path(body.path).expanduser().resolve()
+    root = DATA_DIR.resolve()
+    if path != root and root not in path.parents:
+        raise HTTPException(403, "Path not under Car-RO data directory")
+    if not path.is_file():
+        raise HTTPException(404, "File not found")
+    viewer = open_pdf_viewer(path)
+    return {"path": str(path), "opened": bool(viewer), "viewer": viewer}
 
 
 @app.post("/sync")

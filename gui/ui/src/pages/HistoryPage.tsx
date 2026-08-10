@@ -5,6 +5,7 @@ import { api, type RepairOrder } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { formatPackKind } from "@/lib/utils";
 
 function matchLabel(matchedBy: string, remote: boolean): string {
   const base =
@@ -31,6 +32,7 @@ export function HistoryPage() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
+  const [lastPdfPath, setLastPdfPath] = useState<string | null>(null);
 
   async function lookup() {
     setBusy(true);
@@ -60,15 +62,33 @@ export function HistoryPage() {
     setBusy(true);
     setErr("");
     setMsg("");
+    setLastPdfPath(null);
     try {
       const r = await api.historyPack(vin, name, kind, excludeId || undefined);
       const pages =
         r.estimated_pages != null ? ` (~${r.estimated_pages} pages)` : "";
-      setMsg(`Wrote ${r.kind} pack (${r.count} job(s))${pages} → ${r.path}`);
+      setMsg(
+        `Wrote ${formatPackKind(r.kind)} pack (${r.count} job(s))${pages} → ${r.path}`,
+      );
+      if (kind === "pdf" || kind === "pdf-lite") setLastPdfPath(r.path);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Pack failed");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function viewLastPdf() {
+    if (!lastPdfPath) return;
+    try {
+      const r = await api.openFile(lastPdfPath);
+      setMsg(
+        r.opened
+          ? `Opened PDF with ${r.viewer || "system viewer"}`
+          : `PDF at ${lastPdfPath} (no system viewer found)`,
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not open PDF");
     }
   }
 
@@ -167,7 +187,16 @@ export function HistoryPage() {
         </div>
       </form>
 
-      {msg ? <p className="text-sm text-accent">{msg}</p> : null}
+      {msg || lastPdfPath ? (
+        <div className="flex flex-wrap items-center gap-3">
+          {msg ? <p className="text-sm text-accent">{msg}</p> : null}
+          {lastPdfPath ? (
+            <Button type="button" variant="secondary" size="sm" onClick={() => void viewLastPdf()}>
+              View PDF
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       {err ? <p className="text-sm text-danger">{err}</p> : null}
 
       {searched && orders.length > 0 ? (

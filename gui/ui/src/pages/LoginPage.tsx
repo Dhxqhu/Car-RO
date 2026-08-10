@@ -14,7 +14,7 @@ export function LoginPage({
   onAuthed,
   onOpenScanner,
 }: {
-  onAuthed: (name: string) => void;
+  onAuthed: (name: string, id?: string) => void;
   onOpenScanner: () => void;
 }) {
   const { theme, toggle } = useTheme();
@@ -98,7 +98,7 @@ export function LoginPage({
     setError("");
     try {
       const r = await api.login(techId, pin);
-      onAuthed(r.technician.name);
+      onAuthed(r.technician.name, r.technician.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
       setDigits(Array(PIN_LEN).fill(""));

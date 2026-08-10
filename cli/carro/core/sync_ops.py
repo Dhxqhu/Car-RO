@@ -37,9 +37,25 @@ def perform_sync(store: LocalStore | None = None) -> dict[str, Any]:
     except Exception:
         roster_status = "skipped"
 
+    actor = ""
+    actor_id = ""
+    try:
+        from carro.core import technicians as techmod
+
+        tech = techmod.current_technician()
+        if tech:
+            actor, actor_id = tech.name, tech.id
+    except Exception:
+        pass
+
     n = 0
     for order in store.list_orders():
-        remote.upsert_ro(order)
+        # Prefer logged-in tech as the change actor so they are not notified of their own sync
+        remote.upsert_ro(
+            order,
+            actor=actor or order.technician_name or "",
+            actor_id=actor_id or order.technician_id or "",
+        )
         n += 1
     removed = store.prune()
     cfg = load_config()

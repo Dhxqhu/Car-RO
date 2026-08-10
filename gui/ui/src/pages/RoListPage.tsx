@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { History, Plus, RefreshCw, Search } from "lucide-react";
-import { api, type RepairOrder } from "@/lib/api";
+import { api, type RepairOrder, type Technician } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { formatStatus } from "@/lib/utils";
 
 export function RoListPage() {
   const nav = useNavigate();
@@ -11,6 +12,7 @@ export function RoListPage() {
   const [q, setQ] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [me, setMe] = useState<Technician | null>(null);
 
   async function load(query = q) {
     setError("");
@@ -24,7 +26,24 @@ export function RoListPage() {
 
   useEffect(() => {
     void load("");
+    void api
+      .whoami()
+      .then((r) => setMe(r.technician))
+      .catch(() => undefined);
   }, []);
+
+  async function setCurrent(id: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await api.setCurrentTask(id, true);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not set current task");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function create() {
     setBusy(true);
@@ -103,33 +122,58 @@ export function RoListPage() {
         {orders.length === 0 ? (
           <li className="px-5 py-10 text-center text-sm text-muted">No repair orders yet.</li>
         ) : (
-          orders.map((o, i) => (
-            <li
-              key={o.id}
-              className="animate-[rowIn_0.3s_ease_both]"
-              style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}
-            >
-              <Link
-                to={`/ro/${o.id}`}
-                className="flex items-center justify-between gap-4 px-5 py-4 transition-colors hover:bg-border/25"
+          orders.map((o, i) => {
+            const mineCurrent =
+              !!me &&
+              ((!!me.id && o.current_tech_id === me.id) ||
+                (!!me.name && o.current_tech_name === me.name));
+            return (
+              <li
+                key={o.id}
+                className="animate-[rowIn_0.3s_ease_both]"
+                style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}
               >
-                <div>
-                  <div className="font-medium">
-                    {o.last_name || o.first_name
-                      ? `${o.last_name}${o.last_name && o.first_name ? ", " : ""}${o.first_name}`
-                      : "(no customer)"}
-                  </div>
-                  <div className="text-sm text-muted">
-                    {[o.year, o.make, o.model].filter(Boolean).join(" ") || "—"} · {o.id}
+                <div className="flex items-center justify-between gap-3 px-5 py-4 transition-colors hover:bg-border/25">
+                  <Link to={`/ro/${o.id}`} className="min-w-0 flex-1">
+                    <div className="font-medium">
+                      {o.last_name || o.first_name
+                        ? `${o.last_name}${o.last_name && o.first_name ? ", " : ""}${o.first_name}`
+                        : "(no customer)"}
+                    </div>
+                    <div className="text-sm text-muted">
+                      {[o.year, o.make, o.model].filter(Boolean).join(" ") || "—"} · {o.id}
+                      {o.current_tech_name ? (
+                        <span className="text-accent">
+                          {" "}
+                          · {mineCurrent ? "Your current task" : `${o.current_tech_name} working`}
+                        </span>
+                      ) : null}
+                    </div>
+                  </Link>
+                  <div className="flex shrink-0 flex-col items-end gap-1 text-right text-xs text-muted">
+                    <div className="font-medium text-accent">{formatStatus(o.status)}</div>
+                    <div>{o.assigned_to_name || o.technician_name || "—"}</div>
+                    {me && !mineCurrent ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() => void setCurrent(o.id)}
+                      >
+                        Select as current task
+                      </Button>
+                    ) : null}
+                    {mineCurrent ? (
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-accent">
+                        Current
+                      </span>
+                    ) : null}
                   </div>
                 </div>
-                <div className="text-right text-xs text-muted">
-                  <div className="font-semibold uppercase tracking-wide text-accent">{o.status}</div>
-                  <div>{o.technician_name || "—"}</div>
-                </div>
-              </Link>
-            </li>
-          ))
+              </li>
+            );
+          })
         )}
       </ul>
       <style>{`@keyframes rowIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>

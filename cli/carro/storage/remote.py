@@ -33,12 +33,26 @@ class RemoteClient:
             r.raise_for_status()
             return r.json()
 
-    def upsert_ro(self, order: RepairOrder) -> dict[str, Any]:
+    def upsert_ro(
+        self,
+        order: RepairOrder,
+        *,
+        actor: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload = order.to_dict()
+        # Who made this change (for notifications — other clients exclude self)
+        who = (actor if actor is not None else order.technician_name) or ""
+        who_id = (actor_id if actor_id is not None else order.technician_id) or ""
+        if who:
+            payload["_actor"] = who
+        if who_id:
+            payload["_actor_id"] = who_id
         with httpx.Client(timeout=30.0) as client:
             r = client.put(
                 f"{self.base}/ros/{order.id}",
                 headers=self._headers(),
-                json=order.to_dict(),
+                json=payload,
             )
             r.raise_for_status()
             return r.json()
@@ -155,6 +169,46 @@ class RemoteClient:
                 f"{self.base}/technicians",
                 headers=self._headers(),
                 json=roster,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    def advisor_recent(self, minutes: int = 120) -> dict[str, Any]:
+        with httpx.Client(timeout=30.0) as client:
+            r = client.get(
+                f"{self.base}/advisor/recent",
+                headers=self._headers(),
+                params={"minutes": minutes},
+            )
+            r.raise_for_status()
+            return r.json()
+
+    def list_events(
+        self,
+        *,
+        since: str = "",
+        since_id: int = 0,
+        ro_id: str = "",
+        limit: int = 100,
+        exclude_actor: str = "",
+        exclude_actor_id: str = "",
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"limit": limit}
+        if since:
+            params["since"] = since
+        if since_id:
+            params["since_id"] = since_id
+        if ro_id:
+            params["ro_id"] = ro_id
+        if exclude_actor:
+            params["exclude_actor"] = exclude_actor
+        if exclude_actor_id:
+            params["exclude_actor_id"] = exclude_actor_id
+        with httpx.Client(timeout=30.0) as client:
+            r = client.get(
+                f"{self.base}/events",
+                headers=self._headers(),
+                params=params,
             )
             r.raise_for_status()
             return r.json()

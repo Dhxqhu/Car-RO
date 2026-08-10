@@ -343,6 +343,28 @@ def _open_ro_form(store: LocalStore, order: RepairOrder) -> RepairOrder | None:
     store.save(result)
     CONSOLE.print(f"[green]Saved[/] {result.id}")
     _maybe_push(result)
+    tech = techmod.current_technician()
+    if tech and Confirm.ask(
+        "Set as your current task (others see it on Assigned)?",
+        default=False,
+    ):
+        from carro.core.assignment import clear_tech_current_elsewhere, set_current_task
+
+        for other in clear_tech_current_elsewhere(
+            store.list_orders(),
+            tech_id=tech.id,
+            tech_name=tech.name,
+            except_id=result.id,
+        ):
+            store.save(other)
+            _maybe_push(other)
+        set_current_task(result, tech_id=tech.id, tech_name=tech.name, also_assign=True)
+        store.save(result)
+        _maybe_push(result)
+        CONSOLE.print(
+            f"[green]Current task[/] {result.id} — {result.vehicle_label()} "
+            f"({tech.name})"
+        )
     return result
 
 
@@ -835,12 +857,7 @@ def cmd_pdf(
         raise ValueError(f"RO not found: {ro_id}")
     if include_photos is None:
         if sys.stdin.isatty():
-            kind = Prompt.ask(
-                "PDF type",
-                choices=["photos", "no-photos"],
-                default="photos",
-            ).strip().lower()
-            include_photos = kind != "no-photos"
+            include_photos = Confirm.ask("Include photos in PDF?", default=True)
         else:
             include_photos = True
     path = export_pdf(order, include_photos=include_photos)
@@ -905,26 +922,13 @@ def cmd_delete(store: LocalStore, ro_id: str | None) -> str | None:
 
 
 def _open_pdf(path: Path) -> None:
-    import shutil
-    import subprocess
+    from carro.core.pdf_open import open_pdf_viewer
 
-    viewers = ("zathura", "papers", "xdg-open")
-    for name in viewers:
-        exe = shutil.which(name)
-        if not exe:
-            continue
-        try:
-            subprocess.Popen(
-                [exe, str(path)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            CONSOLE.print(f"[dim]Opened with {name}[/]")
-            return
-        except OSError:
-            continue
-    CONSOLE.print("[yellow]No PDF viewer found (install zathura).[/]")
+    viewer = open_pdf_viewer(path)
+    if viewer:
+        CONSOLE.print(f"[dim]Opened with {viewer}[/]")
+    else:
+        CONSOLE.print("[yellow]No PDF viewer found (install zathura / use xdg-open).[/]")
 
 
 def cmd_sync(store: LocalStore) -> None:

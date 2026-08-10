@@ -14,6 +14,23 @@ export type Technician = {
   name: string;
 };
 
+export type WorkItem = {
+  id: string;
+  concern: string;
+  notes: string;
+  status: string;
+  priority?: number;
+  assigned_to_id?: string;
+  assigned_to_name?: string;
+  created_by?: string;
+  updated_by?: string;
+  created_by_role?: string;
+  updated_by_role?: string;
+  created?: string;
+  updated?: string;
+  linked_photo_ids?: string[];
+};
+
 export type RepairOrder = {
   id: string;
   first_name: string;
@@ -29,11 +46,76 @@ export type RepairOrder = {
   tech_notes: string;
   technician_name: string;
   technician_id: string;
+  assigned_to_id?: string;
+  assigned_to_name?: string;
+  assigned_at?: string;
+  current_tech_id?: string;
+  current_tech_name?: string;
+  current_since?: string;
   status: string;
   obd_snapshot: string;
   photos: Array<Record<string, unknown>>;
+  work_items?: WorkItem[];
   created: string;
   updated: string;
+};
+
+export type AssignedOrderSummary = {
+  id: string;
+  customer: string;
+  vehicle: string;
+  vin: string;
+  status: string;
+  assigned_to_id: string;
+  assigned_to_name: string;
+  assigned_at: string;
+  current_tech_id?: string;
+  current_tech_name?: string;
+  current_since?: string;
+  updated: string;
+  work_items: Array<{
+    id: string;
+    concern: string;
+    status: string;
+    assigned_to_id: string;
+    assigned_to_name: string;
+  }>;
+};
+
+export type NowWorkingEntry = {
+  tech_id: string;
+  tech_name: string;
+  since: string;
+  order: AssignedOrderSummary;
+  is_me?: boolean;
+};
+
+export type AssignedBoard = {
+  mine: AssignedOrderSummary[];
+  by_tech: Array<{
+    id: string;
+    name: string;
+    orders: AssignedOrderSummary[];
+    current?: AssignedOrderSummary | null;
+  }>;
+  unassigned: AssignedOrderSummary[];
+  now_working?: NowWorkingEntry[];
+  my_current?: AssignedOrderSummary | null;
+  tech_id?: string;
+  tech_name?: string;
+  source?: string;
+};
+
+export type RoEvent = {
+  id?: number | string;
+  type: string;
+  ro_id: string;
+  item_id?: string;
+  actor?: string;
+  actor_id?: string | null;
+  at: string;
+  summary?: string;
+  payload?: { actor_id?: string; [key: string]: unknown };
 };
 
 export type ConfigSnapshot = {
@@ -130,14 +212,38 @@ export const api = {
     }),
   deleteRo: (id: string) =>
     req<{ ok: boolean }>(`/ros/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  exportPdf: (id: string, opts?: { include_photos?: boolean }) => {
+  exportPdf: (id: string, opts?: { include_photos?: boolean; open_viewer?: boolean }) => {
+    const params = new URLSearchParams();
+    if (opts?.include_photos === false) params.set("include_photos", "false");
+    if (opts?.open_viewer) params.set("open_viewer", "true");
+    const q = params.toString() ? `?${params}` : "";
+    return req<{
+      path: string;
+      include_photos?: boolean;
+      opened?: boolean;
+      viewer?: string | null;
+      view_url?: string;
+    }>(`/ros/${encodeURIComponent(id)}/pdf${q}`, { method: "POST" });
+  },
+  openPdf: (id: string, opts?: { include_photos?: boolean }) => {
     const photos = opts?.include_photos !== false;
     const q = photos ? "" : "?include_photos=false";
-    return req<{ path: string; include_photos?: boolean }>(
-      `/ros/${encodeURIComponent(id)}/pdf${q}`,
-      { method: "POST" },
-    );
+    return req<{
+      path: string;
+      opened?: boolean;
+      viewer?: string | null;
+      view_url?: string;
+    }>(`/ros/${encodeURIComponent(id)}/pdf/open${q}`, { method: "POST" });
   },
+  pdfViewUrl: (id: string, include_photos = true) => {
+    const q = include_photos ? "" : "?include_photos=false";
+    return `${engineBase()}/ros/${encodeURIComponent(id)}/pdf/file${q}`;
+  },
+  openFile: (path: string) =>
+    req<{ path: string; opened?: boolean; viewer?: string | null }>("/files/open", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
   pullObd: (id: string) =>
     req<RepairOrder>(`/ros/${encodeURIComponent(id)}/pull-obd`, { method: "POST" }),
   listPhotos: (id: string) =>
@@ -209,6 +315,61 @@ export const api = {
       body: JSON.stringify({ prior_id: priorId }),
     }),
   sync: () => req<{ ok: boolean; message: string }>("/sync", { method: "POST" }),
+  upsertWorkItem: (
+    roId: string,
+    body: {
+      id?: string;
+      concern?: string;
+      notes?: string;
+      status?: string;
+      priority?: number;
+      assigned_to_id?: string;
+      assigned_to_name?: string;
+    },
+  ) =>
+    req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/work-items`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteWorkItem: (roId: string, itemId: string) =>
+    req<RepairOrder>(
+      `/ros/${encodeURIComponent(roId)}/work-items/${encodeURIComponent(itemId)}`,
+      { method: "DELETE" },
+    ),
+  assignedBoard: () => req<AssignedBoard>("/assigned"),
+  assignRo: (
+    roId: string,
+    body: { assigned_to_id?: string; assigned_to_name?: string; status?: string },
+  ) =>
+    req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/assign`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  setCurrentTask: (roId: string, active = true) =>
+    req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/current`, {
+      method: "POST",
+      body: JSON.stringify({ active }),
+    }),
+  listEvents: (opts?: {
+    since?: string;
+    since_id?: number;
+    limit?: number;
+    ro_id?: string;
+    exclude_actor?: string;
+    exclude_actor_id?: string;
+    /** Engine default true — omit own events. Set false only for admin/debug. */
+    exclude_self?: boolean;
+  }) => {
+    const params = new URLSearchParams();
+    if (opts?.since) params.set("since", opts.since);
+    if (opts?.since_id) params.set("since_id", String(opts.since_id));
+    if (opts?.ro_id) params.set("ro_id", opts.ro_id);
+    if (opts?.exclude_actor) params.set("exclude_actor", opts.exclude_actor);
+    if (opts?.exclude_actor_id) params.set("exclude_actor_id", opts.exclude_actor_id);
+    if (opts?.exclude_self === false) params.set("exclude_self", "false");
+    params.set("limit", String(opts?.limit ?? 50));
+    return req<{ events: RoEvent[]; note?: string }>(`/events?${params.toString()}`);
+  },
   getConfig: () => req<ConfigSnapshot>("/config"),
   setConfig: (body: Record<string, unknown>) =>
     req<{ ok: boolean } & ConfigSnapshot>("/config", {

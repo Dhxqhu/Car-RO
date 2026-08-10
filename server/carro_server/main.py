@@ -8,9 +8,13 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+import asyncio
+from datetime import datetime, timedelta, timezone
 
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+
+from carro_server.events import append_event, diff_ro_events, ensure_events_table, list_events
 from carro_server.upload_tokens import SHORTCUT_PAGE, UPLOAD_PAGE, UploadTokenStore
 from carro_server.volumes import VolumeManager
 
@@ -32,6 +36,7 @@ def _db() -> sqlite3.Connection:
         )
         """
     )
+    ensure_events_table(conn)
     return conn
 
 
@@ -207,6 +212,9 @@ def _filter_ros(
                 "tech_notes",
             )
         ).lower()
+        for it in o.get("work_items") or []:
+            if isinstance(it, dict):
+                blob += " " + f"{it.get('concern') or ''} {it.get('notes') or ''}".lower()
         if q and q not in blob:
             continue
         if make and make not in str(o.get("make") or "").lower():
@@ -245,8 +253,20 @@ def put_ro(ro_id: str, body: dict, _: None = Depends(require_auth)):
     body = dict(body)
     body["id"] = ro_id
     updated = str(body.get("updated") or "")
-    payload = json.dumps(body)
+    actor = str(
+        body.get("_actor")
+        or body.get("technician_name")
+        or body.get("updated_by")
+        or ""
+    )
+    actor_id = str(body.get("_actor_id") or body.get("technician_id") or "")
+    strip_keys = {"_actor", "_actor_id"}
+    payload = json.dumps({k: v for k, v in body.items() if k not in strip_keys})
     with _db() as conn:
+        prev_row = conn.execute(
+            "SELECT data FROM repair_orders WHERE id = ?", (ro_id,)
+        ).fetchone()
+        before = json.loads(prev_row["data"]) if prev_row else None
         conn.execute(
             """
             INSERT INTO repair_orders (id, data, updated)
@@ -255,7 +275,125 @@ def put_ro(ro_id: str, body: dict, _: None = Depends(require_auth)):
             """,
             (ro_id, payload, updated or body.get("created") or ""),
         )
-    return body
+        for ev in diff_ro_events(before, body, actor=actor):
+            append_event(
+                conn,
+                type=ev["type"],
+                ro_id=ev["ro_id"],
+                item_id=ev.get("item_id") or "",
+                actor=ev.get("actor") or "",
+                summary=ev.get("summary") or "",
+                at=ev.get("at"),
+                payload={"actor_id": actor_id} if actor_id else None,
+            )
+    return {k: v for k, v in body.items() if k not in strip_keys}
+
+
+@app.get("/advisor/recent")
+def advisor_recent(
+    minutes: int = Query(default=120, ge=1, le=60 * 24 * 14),
+    _: None = Depends(require_auth),
+):
+    """ROs updated in the last N minutes — for a future separate advisor app."""
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(minutes=minutes)
+    # Compare as ISO-ish strings; also accept naive local stamps from clients
+    cutoff_s = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT data, updated FROM repair_orders ORDER BY updated DESC"
+        ).fetchall()
+    orders = []
+    for r in rows:
+        updated = str(r["updated"] or "")
+        if updated < cutoff_s:
+            # still include if nested work_items updated field is newer — trust RO updated
+            continue
+        try:
+            orders.append(json.loads(r["data"]))
+        except json.JSONDecodeError:
+            continue
+    return {"minutes": minutes, "count": len(orders), "orders": orders}
+
+
+@app.get("/assigned")
+def assigned_board(
+    tech_id: str = "",
+    tech_name: str = "",
+    _: None = Depends(require_auth),
+):
+    """Assigned Work board for tech app (and future advisor assignment UI)."""
+    from carro_server.assignment import build_assigned_board
+
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT data FROM repair_orders ORDER BY updated DESC"
+        ).fetchall()
+    orders: list[dict] = []
+    for r in rows:
+        try:
+            orders.append(json.loads(r["data"]))
+        except json.JSONDecodeError:
+            continue
+    board = build_assigned_board(orders, tech_id=tech_id, tech_name=tech_name)
+    board["source"] = "server"
+    return board
+
+
+@app.get("/events")
+def get_events(
+    since: str = "",
+    since_id: int = 0,
+    ro_id: str = "",
+    limit: int = 100,
+    exclude_actor: str = "",
+    exclude_actor_id: str = "",
+    _: None = Depends(require_auth),
+):
+    with _db() as conn:
+        events = list_events(
+            conn,
+            since=since,
+            since_id=since_id,
+            ro_id=ro_id,
+            limit=limit,
+            exclude_actor=exclude_actor,
+            exclude_actor_id=exclude_actor_id,
+        )
+    return {"events": events}
+
+
+@app.get("/events/stream")
+async def events_stream(
+    request: Request,
+    since_id: int = 0,
+    exclude_actor: str = "",
+    exclude_actor_id: str = "",
+    authorization: str | None = Header(default=None),
+):
+    """SSE stream of new RO events (poll-backed). Skips the caller's own events."""
+    require_auth(authorization)
+    last_id = int(since_id or 0)
+
+    async def gen():
+        nonlocal last_id
+        yield "event: hello\ndata: {}\n\n"
+        while True:
+            if await request.is_disconnected():
+                break
+            with _db() as conn:
+                batch = list_events(
+                    conn,
+                    since_id=last_id,
+                    limit=50,
+                    exclude_actor=exclude_actor,
+                    exclude_actor_id=exclude_actor_id,
+                )
+            for ev in batch:
+                last_id = max(last_id, int(ev["id"]))
+                yield f"event: ro\ndata: {json.dumps(ev)}\n\n"
+            await asyncio.sleep(2.0)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @app.delete("/ros/{ro_id}")

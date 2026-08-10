@@ -7,6 +7,7 @@ import { detectScannerOnlyBoot, persistMode, type AppMode } from "@/lib/sessionM
 import { LoginPage } from "@/pages/LoginPage";
 import { RoEditorPage } from "@/pages/RoEditorPage";
 import { RoListPage } from "@/pages/RoListPage";
+import { AssignedWorkPage } from "@/pages/AssignedWorkPage";
 import { HistoryPage } from "@/pages/HistoryPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { TechsPage } from "@/pages/TechsPage";
@@ -43,6 +44,7 @@ export default function App() {
   const scannerOnly = detectScannerOnlyBoot();
   const [mode, setMode] = useState<AppMode>(scannerOnly ? "scanner" : "login");
   const [techName, setTechName] = useState<string | null>(null);
+  const [techId, setTechId] = useState<string | null>(null);
   const [ready, setReady] = useState(scannerOnly);
 
   useEffect(() => {
@@ -57,6 +59,7 @@ export default function App() {
       .then((r) => {
         if (r.technician?.name) {
           setTechName(r.technician.name);
+          setTechId(r.technician.id || null);
           setMode("tech");
           persistMode("tech");
         }
@@ -67,8 +70,9 @@ export default function App() {
       .finally(() => setReady(true));
   }, [scannerOnly]);
 
-  function enterTech(name: string) {
+  function enterTech(name: string, id?: string) {
     setTechName(name);
+    setTechId(id || null);
     setMode("tech");
     persistMode("tech");
   }
@@ -83,6 +87,7 @@ export default function App() {
   function exitToLogin() {
     if (scannerOnly) return;
     setTechName(null);
+    setTechId(null);
     setMode("login");
     persistMode("login");
     document.title = "Car-RO · Orders & Scanner";
@@ -124,12 +129,14 @@ export default function App() {
                 <AppShell
                   variant="full"
                   techName={techName ?? undefined}
+                  techId={techId ?? undefined}
                   onExit={exitToLogin}
                 />
               }
             >
               <Route index element={<RoListPage />} />
               <Route path="ro/:id" element={<RoEditorPage />} />
+              <Route path="assigned" element={<AssignedWorkPage />} />
               <Route path="history" element={<HistoryPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="techs" element={<TechsPage />} />

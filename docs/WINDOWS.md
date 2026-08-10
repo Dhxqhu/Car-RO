@@ -110,3 +110,34 @@ Override anytime with `OBD_PORT` (e.g. `COM5` or `/dev/ttyUSB0`). In the Scanner
 - A separate Windows GUI shell  
 
 Those can wait until the terminal client feels solid on your machines.
+
+---
+
+## Roadmap notes (next sessions)
+
+### Advisor app + shared Windows installer
+
+When packaging for Windows, plan **one installer** that covers both products:
+
+- Installer choice: **Technician** (default) vs **Advisor**
+- Tech app = current Car-RO bay client (this repo)
+- Advisor app = separate application (not started yet) that assigns work / watches the shop; talks to the same `carro-server`
+
+Keep the default selection on **Technician** — that will be the common bay install.
+
+### Quick audit before a Windows GUI build smoke-test
+
+These are the likely hiccups — fix or expect them before relying on an MSI/NSIS build:
+
+| Area | Status | Note |
+| --- | --- | --- |
+| CLI install | Ready | `scripts/install.ps1` + Windows Terminal |
+| Serial / BT adapters | Ready | COM ports via shared `platform_ports` (see above) |
+| PDF open | Ready | Uses `os.startfile` on Windows |
+| Tauri targets | Configured | `msi` + `nsis` in `gui/src-tauri/tauri.conf.json`; WebView2 bootstrapper download |
+| Engine beside GUI | **Gap** | Packaged app only auto-starts the engine if `CARRO_ROOT` / `CARRO_ENGINE_CMD` is set. Dev script is bash-only (`run-gui-tauri.sh`). Need a `.ps1` launcher and/or a real sidecar before “double-click .exe” works offline. |
+| Engine spawn paths | **Gap** | `gui/src-tauri/src/lib.rs` tries `python3` and joins `PYTHONPATH` with `:` — on Windows prefer `python` / `.venv\Scripts\python.exe` and `;` path separators. |
+| Config / data dirs | Works, atypical | Still `~/.config/carro` and `~/.local/share/carro` (fine under the user profile, but not `%APPDATA%`). Photos use `Documents\Car-RO\…`. |
+| Shop server | Redeploy | Tech notifications + Assigned board need a server that has `/events` and `/assigned`. Older servers soft-fail events (no crash) but won’t show live team updates. |
+
+Day-one Windows testing can stay on **CLI + `install.ps1`** until the engine sidecar / PowerShell Tauri launcher is wired.

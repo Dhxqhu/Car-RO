@@ -12,11 +12,18 @@ import {
   Smartphone,
   Trash2,
 } from "lucide-react";
-import { api, photoUrl, type RepairOrder } from "@/lib/api";
+import {
+  api,
+  photoUrl,
+  type RepairOrder,
+  type Technician,
+  type WorkItem,
+} from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { formatPhotoTag, formatStatus, formatUploadMode } from "@/lib/utils";
 
 const empty: RepairOrder = {
   id: "",
@@ -33,14 +40,32 @@ const empty: RepairOrder = {
   tech_notes: "",
   technician_name: "",
   technician_id: "",
+  assigned_to_id: "",
+  assigned_to_name: "",
+  assigned_at: "",
+  current_tech_id: "",
+  current_tech_name: "",
+  current_since: "",
   status: "open",
   obd_snapshot: "",
   photos: [],
+  work_items: [],
   created: "",
   updated: "",
 };
 
 const PHOTO_TAGS = ["intake", "diag", "other"] as const;
+const ITEM_STATUSES = ["open", "in_progress", "waiting_parts", "done", "declined"] as const;
+const RO_STATUSES = ["open", "assigned", "in_progress", "done"] as const;
+
+const emptyItem = (): WorkItem => ({
+  id: "",
+  concern: "",
+  notes: "",
+  status: "open",
+  assigned_to_id: "",
+  assigned_to_name: "",
+});
 
 export function RoEditorPage() {
   const { id } = useParams();
@@ -58,14 +83,97 @@ export function RoEditorPage() {
     mode: string;
   } | null>(null);
   const [photoBusy, setPhotoBusy] = useState(false);
+  const [draftItem, setDraftItem] = useState<WorkItem>(emptyItem());
+  const [itemBusy, setItemBusy] = useState(false);
+  const [lastPdf, setLastPdf] = useState<{
+    path: string;
+    include_photos: boolean;
+  } | null>(null);
+  const [techs, setTechs] = useState<Technician[]>([]);
+  const [me, setMe] = useState<Technician | null>(null);
+  const [currentBusy, setCurrentBusy] = useState(false);
+
+  useEffect(() => {
+    void api
+      .listTechs()
+      .then((r) => setTechs(r.technicians || []))
+      .catch(() => undefined);
+    void api
+      .whoami()
+      .then((r) => setMe(r.technician))
+      .catch(() => undefined);
+  }, []);
+
+  const isMyCurrent =
+    !!me &&
+    ((!!me.id && order.current_tech_id === me.id) ||
+      (!!me.name && order.current_tech_name === me.name));
+
+  async function toggleCurrentTask() {
+    if (!order.id || !me) return;
+    setCurrentBusy(true);
+    setErr("");
+    try {
+      const next = await api.setCurrentTask(order.id, !isMyCurrent);
+      setOrder(next);
+      setMsg(
+        !isMyCurrent
+          ? "Set as your current task — others see this on Assigned"
+          : "Cleared current task",
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not update current task");
+    } finally {
+      setCurrentBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!id) return;
     api
       .getRo(id)
-      .then(setOrder)
+      .then((o) => {
+        setOrder(o);
+        if (!o.work_items?.length && (o.complaint || o.tech_notes)) {
+          /* legacy blob — engine/from_dict synthesizes on next save */
+        }
+      })
       .catch((e: Error) => setErr(e.message));
   }, [id]);
+
+  function setRoAssignee(techId: string) {
+    if (!techId) {
+      setOrder((o) => ({
+        ...o,
+        assigned_to_id: "",
+        assigned_to_name: "",
+        assigned_at: "",
+        status: o.status === "assigned" ? "open" : o.status,
+      }));
+      return;
+    }
+    const t = techs.find((x) => x.id === techId);
+    setOrder((o) => ({
+      ...o,
+      assigned_to_id: techId,
+      assigned_to_name: t?.name || "",
+      assigned_at: o.assigned_at || new Date().toISOString().slice(0, 19),
+      status: o.status === "open" ? "assigned" : o.status,
+    }));
+  }
+
+  function setItemAssignee(techId: string) {
+    if (!techId) {
+      setDraftItem((d) => ({ ...d, assigned_to_id: "", assigned_to_name: "" }));
+      return;
+    }
+    const t = techs.find((x) => x.id === techId);
+    setDraftItem((d) => ({
+      ...d,
+      assigned_to_id: techId,
+      assigned_to_name: t?.name || "",
+    }));
+  }
 
   function set<K extends keyof RepairOrder>(key: K, value: RepairOrder[K]) {
     setOrder((o) => ({ ...o, [key]: value }));
@@ -88,12 +196,36 @@ export function RoEditorPage() {
 
   async function pdf(includePhotos: boolean) {
     setErr("");
+    setMsg("");
     try {
       const r = await api.exportPdf(order.id, { include_photos: includePhotos });
       const mode = includePhotos ? "with photos" : "no photos";
+      setLastPdf({ path: r.path, include_photos: includePhotos });
       setMsg(`PDF (${mode}) → ${r.path}`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "PDF failed");
+    }
+  }
+
+  async function viewPdf() {
+    if (!order.id || !lastPdf) return;
+    setErr("");
+    try {
+      const r = await api.openPdf(order.id, { include_photos: lastPdf.include_photos });
+      if (r.opened) {
+        setMsg(`Opened PDF with ${r.viewer || "system viewer"}`);
+      } else {
+        window.open(api.pdfViewUrl(order.id, lastPdf.include_photos), "_blank", "noopener");
+        setMsg("Opened PDF in browser");
+      }
+    } catch (e) {
+      // Fallback: stream in a new tab
+      try {
+        window.open(api.pdfViewUrl(order.id, lastPdf.include_photos), "_blank", "noopener");
+        setMsg("Opened PDF in browser");
+      } catch {
+        setErr(e instanceof Error ? e.message : "Could not open PDF");
+      }
     }
   }
 
@@ -234,10 +366,26 @@ export function RoEditorPage() {
             </h1>
             <p className="text-sm text-muted">
               Tech: {order.technician_name || "—"} · Updated {order.updated || "—"}
+              {order.current_tech_name
+                ? ` · Working now: ${order.current_tech_name}`
+                : ""}
             </p>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
+          {me ? (
+            <Button
+              variant={isMyCurrent ? "default" : "secondary"}
+              disabled={currentBusy || !order.id}
+              onClick={() => void toggleCurrentTask()}
+            >
+              {currentBusy
+                ? "Updating…"
+                : isMyCurrent
+                  ? "Clear current task"
+                  : "Set as my current task"}
+            </Button>
+          ) : null}
           <Button variant="secondary" onClick={() => nav(historyHref)}>
             <History className="h-4 w-4" />
             History
@@ -264,7 +412,16 @@ export function RoEditorPage() {
         </div>
       </div>
 
-      {msg ? <p className="text-sm text-accent">{msg}</p> : null}
+      {msg || lastPdf ? (
+        <div className="flex flex-wrap items-center gap-3">
+          {msg ? <p className="text-sm text-accent">{msg}</p> : null}
+          {lastPdf ? (
+            <Button type="button" size="sm" variant="secondary" onClick={() => void viewPdf()}>
+              View PDF
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       {err ? <p className="text-sm text-danger">{err}</p> : null}
 
       <section className="grid gap-6 md:grid-cols-2">
@@ -315,25 +472,226 @@ export function RoEditorPage() {
               value={order.status}
               onChange={(e) => set("status", e.target.value)}
             >
-              <option value="open">open</option>
-              <option value="in_progress">in_progress</option>
-              <option value="done">done</option>
+              {RO_STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {formatStatus(s)}
+                </option>
+              ))}
             </select>
+          </Field>
+          <Field label="Assigned tech (whole RO)">
+            <select
+              className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
+              value={order.assigned_to_id || ""}
+              onChange={(e) => setRoAssignee(e.target.value)}
+            >
+              <option value="">Unassigned</option>
+              {techs.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-muted">
+              For one tech on the car. Split work below by assigning individual items.
+            </p>
           </Field>
         </fieldset>
       </section>
 
-      <Field label="Customer concern / request">
-        <Textarea value={order.complaint} onChange={(e) => set("complaint", e.target.value)} />
-      </Field>
-      <Field label="Diagnosis & technician notes">
-        <Textarea value={order.tech_notes} onChange={(e) => set("tech_notes", e.target.value)} />
-      </Field>
+      <section className="space-y-4 rounded-2xl border border-border bg-surface p-5">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
+              Work items
+            </h2>
+            <p className="mt-1 text-xs text-muted">
+              Itemize concerns and assign each to a tech when more than one person works the car.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={itemBusy || !order.id}
+            onClick={() => {
+              setDraftItem(emptyItem());
+            }}
+          >
+            New item
+          </Button>
+        </div>
+
+        {(order.work_items || []).length === 0 ? (
+          <p className="text-sm text-muted">
+            No work items yet
+            {order.complaint || order.tech_notes
+              ? " — legacy notes will become item WI-001 on next item save."
+              : "."}
+          </p>
+        ) : (
+          <ul className="space-y-3">
+            {(order.work_items || []).map((item) => (
+              <li
+                key={item.id}
+                className="rounded-xl border border-border bg-bg/40 px-4 py-3 text-sm"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="font-mono text-xs text-muted">
+                    {item.id} · {formatStatus(item.status)}
+                    {item.assigned_to_name
+                      ? ` · ${item.assigned_to_name}`
+                      : item.assigned_to_id
+                        ? ` · ${item.assigned_to_id}`
+                        : ""}
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setDraftItem({ ...item })}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="danger"
+                      disabled={itemBusy}
+                      onClick={() =>
+                        void (async () => {
+                          setItemBusy(true);
+                          setErr("");
+                          try {
+                            const next = await api.deleteWorkItem(order.id, item.id);
+                            setOrder(next);
+                            setMsg(`Removed ${item.id}`);
+                            if (draftItem.id === item.id) setDraftItem(emptyItem());
+                          } catch (e) {
+                            setErr(e instanceof Error ? e.message : "Delete failed");
+                          } finally {
+                            setItemBusy(false);
+                          }
+                        })()
+                      }
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+                <p className="mt-2 whitespace-pre-wrap">{item.concern || "—"}</p>
+                {item.notes ? (
+                  <p className="mt-2 whitespace-pre-wrap text-muted">
+                    <span className="text-xs uppercase tracking-wide">Notes · </span>
+                    {item.notes}
+                  </p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <div className="space-y-3 border-t border-border pt-4">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted">
+            {draftItem.id ? `Edit ${draftItem.id}` : "Add work item"}
+          </div>
+          <Field label="Customer concern / request">
+            <Textarea
+              value={draftItem.concern}
+              onChange={(e) => setDraftItem((d) => ({ ...d, concern: e.target.value }))}
+              placeholder="e.g. Brake noise when cold"
+            />
+          </Field>
+          <Field label="Diagnosis / technician notes">
+            <Textarea
+              value={draftItem.notes}
+              onChange={(e) => setDraftItem((d) => ({ ...d, notes: e.target.value }))}
+              placeholder="Findings for this item"
+            />
+          </Field>
+          <Field label="Status">
+            <select
+              className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
+              value={draftItem.status || "open"}
+              onChange={(e) => setDraftItem((d) => ({ ...d, status: e.target.value }))}
+            >
+              {ITEM_STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {formatStatus(s)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Assigned tech (this item)">
+            <select
+              className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
+              value={draftItem.assigned_to_id || ""}
+              onChange={(e) => setItemAssignee(e.target.value)}
+            >
+              <option value="">Unassigned</option>
+              {techs.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Button
+            type="button"
+            disabled={itemBusy || !order.id || !draftItem.concern.trim()}
+            onClick={() =>
+              void (async () => {
+                setItemBusy(true);
+                setErr("");
+                try {
+                  // Seed from legacy blobs once if empty
+                  if (
+                    !(order.work_items || []).length &&
+                    (order.complaint || order.tech_notes)
+                  ) {
+                    await api.saveRo(order);
+                  }
+                  const next = await api.upsertWorkItem(order.id, {
+                    id: draftItem.id || undefined,
+                    concern: draftItem.concern,
+                    notes: draftItem.notes,
+                    status: draftItem.status,
+                    assigned_to_id: draftItem.assigned_to_id || "",
+                    assigned_to_name: draftItem.assigned_to_name || "",
+                  });
+                  setOrder(next);
+                  setDraftItem(emptyItem());
+                  setMsg(draftItem.id ? `Updated ${draftItem.id}` : "Work item added");
+                } catch (e) {
+                  setErr(e instanceof Error ? e.message : "Work item save failed");
+                } finally {
+                  setItemBusy(false);
+                }
+              })()
+            }
+          >
+            {itemBusy ? "Saving…" : draftItem.id ? "Update item" : "Add item"}
+          </Button>
+        </div>
+      </section>
+
       <Field label="OBD snapshot">
         <Textarea
-          className="font-mono text-xs"
+          className="min-h-[16rem] max-h-[28rem] overflow-y-auto font-mono text-sm leading-relaxed"
           value={order.obd_snapshot}
           onChange={(e) => set("obd_snapshot", e.target.value)}
+          onWheel={(e) => {
+            // Textareas often trap wheel/touchpad even when they can't scroll —
+            // pass through to the page at the edges (or when content fits).
+            const el = e.currentTarget;
+            const canScroll = el.scrollHeight > el.clientHeight + 1;
+            const atTop = el.scrollTop <= 0;
+            const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+            if (!canScroll || (e.deltaY < 0 && atTop) || (e.deltaY > 0 && atBottom)) {
+              e.preventDefault();
+              window.scrollBy({ top: e.deltaY, left: 0, behavior: "auto" });
+            }
+          }}
         />
       </Field>
 
@@ -348,7 +706,7 @@ export function RoEditorPage() {
             >
               {PHOTO_TAGS.map((t) => (
                 <option key={t} value={t}>
-                  {t}
+                  {formatPhotoTag(t)}
                 </option>
               ))}
             </select>
@@ -414,7 +772,9 @@ export function RoEditorPage() {
 
         {phoneSession ? (
           <div className="space-y-2 rounded-xl border border-border/80 bg-bg/60 p-4 text-sm">
-            <p className="font-medium capitalize">{phoneSession.mode} upload session</p>
+            <p className="font-medium">
+              {formatUploadMode(phoneSession.mode)} upload session
+            </p>
             <p className="break-all">
               <a className="text-accent underline" href={phoneSession.url} target="_blank" rel="noreferrer">
                 {phoneSession.url}
@@ -465,7 +825,7 @@ export function RoEditorPage() {
                   ) : null}
                   <div className="space-y-0.5 px-3 py-2 text-sm">
                     <div>
-                      <span className="font-medium uppercase text-muted">{tag}</span>
+                      <span className="font-medium text-muted">{formatPhotoTag(tag)}</span>
                       {" · "}
                       {String(p.filename || rel || "photo")}
                     </div>
