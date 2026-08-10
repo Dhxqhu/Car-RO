@@ -101,7 +101,8 @@ def build_assigned_board(
                 for iid, iname in item_assignees
             )
         )
-        if involves_me:
+        is_done = str(d.get("status") or "") == "done"
+        if involves_me and not is_done:
             mine.append(summary)
 
         if cur_id or cur_name:
@@ -115,6 +116,9 @@ def build_assigned_board(
             now_working.append(entry)
             if entry["is_me"]:
                 my_current = summary
+
+        if is_done:
+            continue
 
         tech_slots: list[tuple[str, str, str]] = []
         if ro_aid or ro_aname:
@@ -147,7 +151,7 @@ def build_assigned_board(
             if _matches_tech(cur_id, cur_name, me_id=tid, me_name=tname):
                 bucket["current"] = summary
 
-        if not any_assignee and str(d.get("status") or "") not in ("done",):
+        if not any_assignee:
             unassigned.append(summary)
 
     by_tech_list = sorted(by_tech.values(), key=lambda b: (b.get("name") or "").lower())

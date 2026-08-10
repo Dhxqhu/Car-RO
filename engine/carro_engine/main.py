@@ -300,6 +300,12 @@ class CurrentTaskBody(BaseModel):
     active: bool = True
 
 
+class QueueActionBody(BaseModel):
+    """Planned queue + completion for the logged-in tech."""
+
+    action: Literal["add", "remove", "complete"]
+
+
 @app.get("/assigned")
 def assigned_board() -> dict[str, Any]:
     """Assigned Work board: mine, other techs, unassigned (local + server when configured)."""
@@ -388,6 +394,42 @@ def set_current_task_route(ro_id: str, body: CurrentTaskBody) -> dict[str, Any]:
             clear_current_task(order)
         else:
             raise HTTPException(403, "This RO is not your current task")
+    store.save(order)
+    _push_ro(order)
+    return order.to_dict()
+
+
+@app.post("/ros/{ro_id}/queue")
+def queue_action_route(ro_id: str, body: QueueActionBody) -> dict[str, Any]:
+    """
+    Planned work queue for the logged-in tech:
+    - add: assign to me (status assigned) without claiming current task
+    - remove: unassign from me / clear my current if on this RO
+    - complete: mark done and clear my current task on it
+    """
+    from carro.core.assignment import (
+        add_to_my_queue,
+        complete_ro,
+        remove_from_my_queue,
+    )
+
+    tech = techmod.current_technician()
+    if not tech:
+        raise HTTPException(401, "Log in as a technician to manage your queue")
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+
+    if body.action == "add":
+        add_to_my_queue(order, tech_id=tech.id, tech_name=tech.name)
+    elif body.action == "remove":
+        if not remove_from_my_queue(order, tech_id=tech.id, tech_name=tech.name):
+            raise HTTPException(403, "This RO is not on your queue")
+    elif body.action == "complete":
+        complete_ro(order, tech_id=tech.id, tech_name=tech.name)
+    else:
+        raise HTTPException(400, f"Unknown action: {body.action}")
+
     store.save(order)
     _push_ro(order)
     return order.to_dict()

@@ -45,7 +45,7 @@ def set_current_task(
 ) -> None:
     """
     Mark this RO as the tech's current bay task.
-    Also assigns the RO to them when unassigned, and moves open/assigned → in_progress.
+    Also assigns the RO to them (planned/active queue) and moves open/assigned → in_progress.
     """
     tid = (tech_id or "").strip()
     tname = (tech_name or "").strip()
@@ -55,12 +55,64 @@ def set_current_task(
     order.current_tech_id = tid
     order.current_tech_name = tname
     order.current_since = now_iso()
-    if also_assign and not (order.assigned_to_id or "").strip() and not (
-        order.assigned_to_name or ""
-    ).strip():
+    if also_assign:
         assign_ro(order, tech_id=tid, tech_name=tname, set_status_assigned=False)
     if order.status in ("", "open", "assigned"):
         order.status = "in_progress"
+
+
+def add_to_my_queue(order: RepairOrder, *, tech_id: str, tech_name: str) -> None:
+    """Plan work: assign RO to this tech without making it the current bay task."""
+    assign_ro(order, tech_id=tech_id, tech_name=tech_name, set_status_assigned=True)
+
+
+def remove_from_my_queue(order: RepairOrder, *, tech_id: str, tech_name: str) -> bool:
+    """
+    Drop this RO from the tech's planned queue (unassign if it was theirs).
+    Also clears current-task if they were actively on it. Returns False if not theirs.
+    """
+    if not matches_tech(
+        order.assigned_to_id,
+        order.assigned_to_name,
+        me_id=tech_id,
+        me_name=tech_name,
+    ):
+        # Still allow clearing current if only current was set
+        if matches_tech(
+            order.current_tech_id,
+            order.current_tech_name,
+            me_id=tech_id,
+            me_name=tech_name,
+        ):
+            clear_current_task(order)
+            return True
+        return False
+    assign_ro(order, tech_id="", tech_name="", set_status_assigned=False)
+    if matches_tech(
+        order.current_tech_id,
+        order.current_tech_name,
+        me_id=tech_id,
+        me_name=tech_name,
+    ):
+        clear_current_task(order)
+    if order.status == "assigned":
+        order.status = "open"
+    return True
+
+
+def complete_ro(order: RepairOrder, *, tech_id: str = "", tech_name: str = "") -> None:
+    """Mark the RO done and clear current-task if this tech (or anyone) is on it."""
+    order.status = "done"
+    if tech_id or tech_name:
+        if matches_tech(
+            order.current_tech_id,
+            order.current_tech_name,
+            me_id=tech_id,
+            me_name=tech_name,
+        ):
+            clear_current_task(order)
+    else:
+        clear_current_task(order)
 
 
 def clear_tech_current_elsewhere(
@@ -239,7 +291,9 @@ def build_assigned_board(
                 item_assignees.append((iid, iname))
 
         involves_me = order_involves_tech(d, tech_id=tech_id, tech_name=tech_name)
-        if involves_me:
+        status = str(d.get("status") or "")
+        is_done = status == "done"
+        if involves_me and not is_done:
             mine.append(summary)
 
         if cur_id or cur_name:
@@ -253,6 +307,9 @@ def build_assigned_board(
             now_working.append(entry)
             if entry["is_me"]:
                 my_current = summary
+
+        if is_done:
+            continue
 
         # Collect unique tech keys for this RO (excluding me for by_tech grouping of "others")
         tech_slots: list[tuple[str, str, str]] = []
@@ -287,7 +344,7 @@ def build_assigned_board(
             if matches_tech(cur_id, cur_name, me_id=tid, me_name=tname):
                 bucket["current"] = summary
 
-        if not any_assignee and str(d.get("status") or "") not in ("done",):
+        if not any_assignee:
             unassigned.append(summary)
 
     by_tech_list = sorted(by_tech.values(), key=lambda b: (b.get("name") or "").lower())

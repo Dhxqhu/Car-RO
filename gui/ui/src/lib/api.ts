@@ -355,6 +355,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ active }),
     }),
+  queueAction: (roId: string, action: "add" | "remove" | "complete") =>
+    req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/queue`, {
+      method: "POST",
+      body: JSON.stringify({ action }),
+    }),
   listEvents: (opts?: {
     since?: string;
     since_id?: number;

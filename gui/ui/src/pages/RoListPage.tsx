@@ -45,6 +45,32 @@ export function RoListPage() {
     }
   }
 
+  async function addToQueue(id: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await api.queueAction(id, "add");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not add to queue");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function markComplete(id: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await api.queueAction(id, "complete");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not mark complete");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function create() {
     setBusy(true);
     try {
@@ -127,6 +153,11 @@ export function RoListPage() {
               !!me &&
               ((!!me.id && o.current_tech_id === me.id) ||
                 (!!me.name && o.current_tech_name === me.name));
+            const onMyQueue =
+              !!me &&
+              ((!!me.id && o.assigned_to_id === me.id) ||
+                (!!me.name && o.assigned_to_name === me.name));
+            const isDone = o.status === "done";
             return (
               <li
                 key={o.id}
@@ -147,27 +178,54 @@ export function RoListPage() {
                           {" "}
                           · {mineCurrent ? "Your current task" : `${o.current_tech_name} working`}
                         </span>
+                      ) : onMyQueue ? (
+                        <span className="text-accent"> · On your queue</span>
                       ) : null}
                     </div>
                   </Link>
                   <div className="flex shrink-0 flex-col items-end gap-1 text-right text-xs text-muted">
                     <div className="font-medium text-accent">{formatStatus(o.status)}</div>
                     <div>{o.assigned_to_name || o.technician_name || "—"}</div>
-                    {me && !mineCurrent ? (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        disabled={busy}
-                        onClick={() => void setCurrent(o.id)}
-                      >
-                        Select as current task
-                      </Button>
-                    ) : null}
-                    {mineCurrent ? (
-                      <span className="text-[10px] font-semibold uppercase tracking-wide text-accent">
-                        Current
-                      </span>
+                    {me && !isDone ? (
+                      <div className="flex flex-col items-end gap-0.5">
+                        {!onMyQueue ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={busy}
+                            onClick={() => void addToQueue(o.id)}
+                          >
+                            Add to my queue
+                          </Button>
+                        ) : null}
+                        {!mineCurrent ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={busy}
+                            onClick={() => void setCurrent(o.id)}
+                          >
+                            Select as current task
+                          </Button>
+                        ) : (
+                          <span className="text-[10px] font-semibold uppercase tracking-wide text-accent">
+                            Current
+                          </span>
+                        )}
+                        {onMyQueue || mineCurrent ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={busy}
+                            onClick={() => void markComplete(o.id)}
+                          >
+                            Mark complete
+                          </Button>
+                        ) : null}
+                      </div>
                     ) : null}
                   </div>
                 </div>

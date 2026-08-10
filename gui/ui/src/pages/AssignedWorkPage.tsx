@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import { api, type AssignedBoard, type AssignedOrderSummary } from "@/lib/api";
@@ -9,10 +9,12 @@ function OrderCard({
   o,
   meId,
   meName,
+  actions,
 }: {
   o: AssignedOrderSummary;
   meId?: string;
   meName?: string;
+  actions?: ReactNode;
 }) {
   return (
     <li className="rounded-xl border border-border bg-surface px-4 py-3">
@@ -26,7 +28,7 @@ function OrderCard({
         </div>
         <div className="text-right text-xs text-muted">
           <div className="font-medium text-fg/80">{formatStatus(o.status)}</div>
-          {o.assigned_to_name ? <div>RO → {o.assigned_to_name}</div> : null}
+          {o.assigned_to_name ? <div>Queue → {o.assigned_to_name}</div> : null}
           {o.current_tech_name ? (
             <div className="mt-0.5 font-medium text-accent">Now: {o.current_tech_name}</div>
           ) : null}
@@ -56,6 +58,7 @@ function OrderCard({
           })}
         </ul>
       ) : null}
+      {actions ? <div className="mt-3 flex flex-wrap gap-2">{actions}</div> : null}
     </li>
   );
 }
@@ -64,6 +67,7 @@ export function AssignedWorkPage() {
   const [board, setBoard] = useState<AssignedBoard | null>(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [actingId, setActingId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setBusy(true);
@@ -86,6 +90,83 @@ export function AssignedWorkPage() {
     return () => window.clearInterval(t);
   }, [refresh]);
 
+  async function runQueue(id: string, action: "add" | "remove" | "complete") {
+    setActingId(id);
+    setErr("");
+    try {
+      await api.queueAction(id, action);
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Queue update failed");
+    } finally {
+      setActingId(null);
+    }
+  }
+
+  async function runCurrent(id: string, active: boolean) {
+    setActingId(id);
+    setErr("");
+    try {
+      await api.setCurrentTask(id, active);
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not update current task");
+    } finally {
+      setActingId(null);
+    }
+  }
+
+  const meId = board?.tech_id;
+  const meName = board?.tech_name;
+  const myCurrentId = board?.my_current?.id;
+
+  function mineActions(o: AssignedOrderSummary) {
+    const isCurrent = o.id === myCurrentId;
+    const disabled = actingId === o.id || busy;
+    return (
+      <>
+        {!isCurrent ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={disabled}
+            onClick={() => void runCurrent(o.id, true)}
+          >
+            Start as current
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={disabled}
+            onClick={() => void runCurrent(o.id, false)}
+          >
+            Clear current
+          </Button>
+        )}
+        <Button
+          type="button"
+          size="sm"
+          disabled={disabled}
+          onClick={() => void runQueue(o.id, "complete")}
+        >
+          Mark complete
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          disabled={disabled}
+          onClick={() => void runQueue(o.id, "remove")}
+        >
+          Remove from queue
+        </Button>
+      </>
+    );
+  }
+
   return (
     <div className="space-y-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -94,8 +175,8 @@ export function AssignedWorkPage() {
             Assigned work
           </h1>
           <p className="mt-1 max-w-xl text-sm text-muted">
-            Who is on what car right now, plus assigned queues. On an RO, use “Set as my current
-            task” so the shop sees what you’re working on.
+            Planned queue vs what you’re on right now. Add cars for later, start one as current,
+            and mark complete when the job is finished.
           </p>
         </div>
         <Button variant="secondary" disabled={busy} onClick={() => void refresh()}>
@@ -136,7 +217,30 @@ export function AssignedWorkPage() {
                   </Link>
                   <span className="text-muted"> · {entry.order.customer}</span>
                 </div>
-                <div className="text-xs text-muted">{entry.order.id}</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="text-xs text-muted">{entry.order.id}</div>
+                  {entry.is_me ? (
+                    <>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={actingId === entry.order.id || busy}
+                        onClick={() => void runQueue(entry.order.id, "complete")}
+                      >
+                        Mark complete
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={actingId === entry.order.id || busy}
+                        onClick={() => void runCurrent(entry.order.id, false)}
+                      >
+                        Clear current
+                      </Button>
+                    </>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>
@@ -144,17 +248,22 @@ export function AssignedWorkPage() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">My queue</h2>
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
+          My queue (planned)
+        </h2>
         {(board?.mine || []).length === 0 ? (
-          <p className="text-sm text-muted">Nothing assigned to you yet.</p>
+          <p className="text-sm text-muted">
+            Nothing in your queue. Add from Unassigned below, or from the Orders list.
+          </p>
         ) : (
           <ul className="space-y-3">
             {(board?.mine || []).map((o) => (
               <OrderCard
                 key={o.id}
                 o={o}
-                meId={board?.tech_id}
-                meName={board?.tech_name}
+                meId={meId}
+                meName={meName}
+                actions={mineActions(o)}
               />
             ))}
           </ul>
@@ -197,7 +306,33 @@ export function AssignedWorkPage() {
         ) : (
           <ul className="space-y-3">
             {(board?.unassigned || []).map((o) => (
-              <OrderCard key={o.id} o={o} />
+              <OrderCard
+                key={o.id}
+                o={o}
+                actions={
+                  meId || meName ? (
+                    <>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={actingId === o.id || busy}
+                        onClick={() => void runQueue(o.id, "add")}
+                      >
+                        Add to my queue
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={actingId === o.id || busy}
+                        onClick={() => void runCurrent(o.id, true)}
+                      >
+                        Start as current
+                      </Button>
+                    </>
+                  ) : null
+                }
+              />
             ))}
           </ul>
         )}

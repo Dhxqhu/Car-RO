@@ -119,6 +119,10 @@ export function RoEditorPage() {
     !!me &&
     ((!!me.id && order.current_tech_id === me.id) ||
       (!!me.name && order.current_tech_name === me.name));
+  const onMyQueue =
+    !!me &&
+    ((!!me.id && order.assigned_to_id === me.id) ||
+      (!!me.name && order.assigned_to_name === me.name));
 
   async function toggleCurrentTask() {
     if (!order.id || !me) return;
@@ -134,6 +138,27 @@ export function RoEditorPage() {
       );
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Could not update current task");
+    } finally {
+      setCurrentBusy(false);
+    }
+  }
+
+  async function queueAction(action: "add" | "remove" | "complete") {
+    if (!order.id || !me) return;
+    setCurrentBusy(true);
+    setErr("");
+    try {
+      const next = await api.queueAction(order.id, action);
+      setOrder(next);
+      setMsg(
+        action === "add"
+          ? "Added to your planned queue"
+          : action === "remove"
+            ? "Removed from your queue"
+            : "Marked complete",
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Queue update failed");
     } finally {
       setCurrentBusy(false);
     }
@@ -371,18 +396,38 @@ export function RoEditorPage() {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          {me ? (
-            <Button
-              variant={isMyCurrent ? "default" : "secondary"}
-              disabled={currentBusy || !order.id}
-              onClick={() => void toggleCurrentTask()}
-            >
-              {currentBusy
-                ? "Updating…"
-                : isMyCurrent
-                  ? "Clear current task"
-                  : "Set as my current task"}
-            </Button>
+          {me && order.status !== "done" ? (
+            <>
+              {!onMyQueue ? (
+                <Button
+                  variant="secondary"
+                  disabled={currentBusy || !order.id}
+                  onClick={() => void queueAction("add")}
+                >
+                  Add to my queue
+                </Button>
+              ) : null}
+              <Button
+                variant={isMyCurrent ? "default" : "secondary"}
+                disabled={currentBusy || !order.id}
+                onClick={() => void toggleCurrentTask()}
+              >
+                {currentBusy
+                  ? "Updating…"
+                  : isMyCurrent
+                    ? "Clear current task"
+                    : "Set as my current task"}
+              </Button>
+              {onMyQueue || isMyCurrent ? (
+                <Button
+                  variant="secondary"
+                  disabled={currentBusy || !order.id}
+                  onClick={() => void queueAction("complete")}
+                >
+                  Mark complete
+                </Button>
+              ) : null}
+            </>
           ) : null}
           <Button variant="secondary" onClick={() => nav(historyHref)}>
             <History className="h-4 w-4" />
