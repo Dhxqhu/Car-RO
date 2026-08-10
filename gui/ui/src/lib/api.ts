@@ -23,8 +23,12 @@ export type WorkItem = {
   assigned_to_id?: string;
   assigned_to_name?: string;
   created_by?: string;
-  updated_by?: string;
+  created_by_id?: string;
   created_by_role?: string;
+  notes_by?: string;
+  notes_by_id?: string;
+  notes_by_role?: string;
+  updated_by?: string;
   updated_by_role?: string;
   created?: string;
   updated?: string;
@@ -79,6 +83,9 @@ export type AssignedOrderSummary = {
     status: string;
     assigned_to_id: string;
     assigned_to_name: string;
+    created_by?: string;
+    created_by_role?: string;
+    notes_by?: string;
   }>;
 };
 
@@ -323,8 +330,6 @@ export const api = {
       notes?: string;
       status?: string;
       priority?: number;
-      assigned_to_id?: string;
-      assigned_to_name?: string;
     },
   ) =>
     req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/work-items`, {

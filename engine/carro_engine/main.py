@@ -286,8 +286,6 @@ class WorkItemBody(BaseModel):
     notes: str | None = None
     status: str | None = None
     priority: int | None = None
-    assigned_to_id: str | None = None
-    assigned_to_name: str | None = None
 
 
 class AssignRoBody(BaseModel):
@@ -403,7 +401,8 @@ def upsert_work_item_route(ro_id: str, body: WorkItemBody) -> dict[str, Any]:
     if not order:
         raise HTTPException(404, "RO not found")
     tech = techmod.current_technician()
-    actor = tech.name if tech else (order.technician_name or "")
+    if not tech:
+        raise HTTPException(401, "Log in as a technician to edit work items")
     upsert_work_item(
         order,
         item_id=body.id,
@@ -411,9 +410,8 @@ def upsert_work_item_route(ro_id: str, body: WorkItemBody) -> dict[str, Any]:
         notes=body.notes,
         status=body.status,
         priority=body.priority,
-        assigned_to_id=body.assigned_to_id,
-        assigned_to_name=body.assigned_to_name,
-        actor=actor,
+        actor=tech.name,
+        actor_id=tech.id,
         actor_role="tech",
     )
     store.save(order)

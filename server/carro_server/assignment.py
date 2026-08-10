@@ -51,8 +51,13 @@ def _summarize(d: dict[str, Any]) -> dict[str, Any]:
                 "id": it.get("id") or "",
                 "concern": str(it.get("concern") or "")[:120],
                 "status": it.get("status") or "open",
-                "assigned_to_id": it.get("assigned_to_id") or "",
-                "assigned_to_name": it.get("assigned_to_name") or "",
+                "assigned_to_id": it.get("assigned_to_id") or it.get("notes_by_id") or "",
+                "assigned_to_name": it.get("assigned_to_name")
+                or it.get("notes_by")
+                or "",
+                "created_by": it.get("created_by") or "",
+                "created_by_role": it.get("created_by_role") or "",
+                "notes_by": it.get("notes_by") or "",
             }
             for it in items
         ],
@@ -83,8 +88,8 @@ def build_assigned_board(
         for it in d.get("work_items") or []:
             if not isinstance(it, dict):
                 continue
-            iid = str(it.get("assigned_to_id") or "")
-            iname = str(it.get("assigned_to_name") or "")
+            iid = str(it.get("assigned_to_id") or it.get("notes_by_id") or "")
+            iname = str(it.get("assigned_to_name") or it.get("notes_by") or "")
             if iid or iname:
                 item_assignees.append((iid, iname))
 

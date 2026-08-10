@@ -18,12 +18,18 @@ class WorkItem:
     notes: str = ""
     status: str = "open"
     priority: int = 0
-    # Per-item tech when multiple techs share one vehicle / RO
+    # Who entered the customer concern (advisor or tech) — set on create / first concern text
+    created_by: str = ""
+    created_by_id: str = ""
+    created_by_role: str = ""  # advisor | tech | ""
+    # Who wrote the repair / diagnosis notes — auto-stamped; not manually choosable
+    notes_by: str = ""
+    notes_by_id: str = ""
+    notes_by_role: str = ""
+    # Mirrors notes_by for Assigned board (auto). Advisors may set later via dedicated API.
     assigned_to_id: str = ""
     assigned_to_name: str = ""
-    created_by: str = ""
     updated_by: str = ""
-    created_by_role: str = ""  # advisor | tech | ""
     updated_by_role: str = ""
     created: str = ""
     updated: str = ""
@@ -163,11 +169,22 @@ def upsert_work_item(
     notes: str | None = None,
     status: str | None = None,
     priority: int | None = None,
-    assigned_to_id: str | None = None,
-    assigned_to_name: str | None = None,
     actor: str = "",
+    actor_id: str = "",
     actor_role: str = "tech",
+    # Only for future advisor app — techs never pass this; engine ignores for tech role.
+    assign_to_id: str | None = None,
+    assign_to_name: str | None = None,
+    allow_manual_assign: bool = False,
 ) -> WorkItem:
+    """
+    Create/update a work item.
+
+    Attribution is automatic from the logged-in actor:
+    - New item / first concern text → created_by (who talked to the customer / entered the request)
+    - Notes text changed → notes_by + assigned_to (who did the repair notes); techs cannot
+      pick another technician.
+    """
     items = ensure_work_items_on_order(order)
     ts = now_iso()
     target: WorkItem | None = None
@@ -176,6 +193,7 @@ def upsert_work_item(
             if w.id == item_id:
                 target = w
                 break
+    is_new = target is None
     if target is None:
         wid = item_id or new_work_item_id(items)
         target = WorkItem(
@@ -183,22 +201,49 @@ def upsert_work_item(
             priority=priority if priority is not None else (len(items) + 1),
             created=ts,
             created_by=actor,
+            created_by_id=actor_id,
             created_by_role=actor_role,
         )
         items.append(target)
+
+    old_notes = target.notes or ""
+
     if concern is not None:
         target.concern = concern
+        # First time concern is filled in — stamp who entered it (keeps original if already set)
+        if (concern or "").strip() and not (target.created_by or "").strip():
+            target.created_by = actor
+            target.created_by_id = actor_id
+            target.created_by_role = actor_role
+        elif is_new and (concern or "").strip():
+            target.created_by = actor or target.created_by
+            target.created_by_id = actor_id or target.created_by_id
+            target.created_by_role = actor_role or target.created_by_role
+
     if notes is not None:
         target.notes = notes
+        notes_changed = (notes or "") != old_notes
+        if notes_changed and (notes or "").strip() and actor:
+            # Repair notes always belong to the person who just wrote them
+            target.notes_by = actor
+            target.notes_by_id = actor_id
+            target.notes_by_role = actor_role
+            if actor_role == "tech" or not allow_manual_assign:
+                target.assigned_to_id = actor_id
+                target.assigned_to_name = actor
+
     if status is not None:
         st = status.strip().lower()
         target.status = st if st in WORK_ITEM_STATUSES else target.status
     if priority is not None:
         target.priority = int(priority)
-    if assigned_to_id is not None:
-        target.assigned_to_id = assigned_to_id.strip()
-    if assigned_to_name is not None:
-        target.assigned_to_name = assigned_to_name.strip()
+
+    if allow_manual_assign and actor_role == "advisor":
+        if assign_to_id is not None:
+            target.assigned_to_id = assign_to_id.strip()
+        if assign_to_name is not None:
+            target.assigned_to_name = assign_to_name.strip()
+
     target.updated = ts
     target.updated_by = actor
     target.updated_by_role = actor_role
@@ -330,11 +375,20 @@ def format_items_for_display(items: list[WorkItem]) -> str:
     lines = []
     for i, w in enumerate(items, 1):
         c = (w.concern or "—").replace("\n", " ")
-        if len(c) > 60:
-            c = c[:57] + "…"
-        who = (w.assigned_to_name or w.assigned_to_id or "").strip()
-        assign = f" @{who}" if who else ""
-        lines.append(f"  {i}. {w.id} [{w.status}]{assign} {c}")
+        if len(c) > 50:
+            c = c[:47] + "…"
+        concern_who = (w.created_by or "").strip()
+        notes_who = (w.notes_by or w.assigned_to_name or "").strip()
+        bits = [f"  {i}. {w.id} [{w.status}] {c}"]
+        attr = []
+        if concern_who:
+            role = f"/{w.created_by_role}" if w.created_by_role else ""
+            attr.append(f"concern:{concern_who}{role}")
+        if notes_who:
+            attr.append(f"notes:{notes_who}")
+        if attr:
+            bits.append("     (" + ", ".join(attr) + ")")
+        lines.append("\n".join(bits))
     return "\n".join(lines)
 
 

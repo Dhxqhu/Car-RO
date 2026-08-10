@@ -154,8 +154,8 @@ def order_involves_tech(order: RepairOrder | dict[str, Any], *, tech_id: str, te
         if not isinstance(it, dict):
             continue
         if matches_tech(
-            str(it.get("assigned_to_id") or ""),
-            str(it.get("assigned_to_name") or ""),
+            str(it.get("assigned_to_id") or it.get("notes_by_id") or ""),
+            str(it.get("assigned_to_name") or it.get("notes_by") or ""),
             me_id=tech_id,
             me_name=tech_name,
         ):
@@ -191,8 +191,13 @@ def summarize_order_for_board(order: RepairOrder | dict[str, Any]) -> dict[str, 
                 "id": it.get("id") or "",
                 "concern": (it.get("concern") or "")[:120],
                 "status": it.get("status") or "open",
-                "assigned_to_id": it.get("assigned_to_id") or "",
-                "assigned_to_name": it.get("assigned_to_name") or "",
+                "assigned_to_id": it.get("assigned_to_id") or it.get("notes_by_id") or "",
+                "assigned_to_name": it.get("assigned_to_name")
+                or it.get("notes_by")
+                or "",
+                "created_by": it.get("created_by") or "",
+                "created_by_role": it.get("created_by_role") or "",
+                "notes_by": it.get("notes_by") or "",
             }
             for it in items
         ],
@@ -228,8 +233,8 @@ def build_assigned_board(
         for it in d.get("work_items") or []:
             if not isinstance(it, dict):
                 continue
-            iid = str(it.get("assigned_to_id") or "")
-            iname = str(it.get("assigned_to_name") or "")
+            iid = str(it.get("assigned_to_id") or it.get("notes_by_id") or "")
+            iname = str(it.get("assigned_to_name") or it.get("notes_by") or "")
             if iid or iname:
                 item_assignees.append((iid, iname))
 

@@ -285,7 +285,10 @@ def run_ro_form(
             draft = result[1]
             tech = techmod.current_technician()
             actor = tech.name if tech else (draft.technician_name or "")
-            updated = run_work_items_form(draft, actor=actor, actor_role="tech")
+            actor_id = tech.id if tech else ""
+            updated = run_work_items_form(
+                draft, actor=actor, actor_id=actor_id, actor_role="tech"
+            )
             current = updated if updated is not None else draft
             continue
         if isinstance(result, RepairOrder):

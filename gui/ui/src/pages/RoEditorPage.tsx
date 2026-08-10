@@ -63,9 +63,20 @@ const emptyItem = (): WorkItem => ({
   concern: "",
   notes: "",
   status: "open",
-  assigned_to_id: "",
-  assigned_to_name: "",
 });
+
+function roleLabel(role?: string): string {
+  if (role === "advisor") return "advisor";
+  if (role === "tech") return "tech";
+  return "";
+}
+
+function formatRoleWho(name?: string, role?: string): string {
+  const n = (name || "").trim();
+  if (!n) return "";
+  const r = roleLabel(role);
+  return r ? `${n} (${r})` : n;
+}
 
 export function RoEditorPage() {
   const { id } = useParams();
@@ -159,19 +170,6 @@ export function RoEditorPage() {
       assigned_to_name: t?.name || "",
       assigned_at: o.assigned_at || new Date().toISOString().slice(0, 19),
       status: o.status === "open" ? "assigned" : o.status,
-    }));
-  }
-
-  function setItemAssignee(techId: string) {
-    if (!techId) {
-      setDraftItem((d) => ({ ...d, assigned_to_id: "", assigned_to_name: "" }));
-      return;
-    }
-    const t = techs.find((x) => x.id === techId);
-    setDraftItem((d) => ({
-      ...d,
-      assigned_to_id: techId,
-      assigned_to_name: t?.name || "",
     }));
   }
 
@@ -506,7 +504,8 @@ export function RoEditorPage() {
               Work items
             </h2>
             <p className="mt-1 text-xs text-muted">
-              Itemize concerns and assign each to a tech when more than one person works the car.
+              Concerns stamp who entered them; repair notes stamp you automatically when you save.
+              Multiple techs can work the same car — each item’s notes stay tied to the writer.
             </p>
           </div>
           <Button
@@ -538,11 +537,6 @@ export function RoEditorPage() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="font-mono text-xs text-muted">
                     {item.id} · {formatStatus(item.status)}
-                    {item.assigned_to_name
-                      ? ` · ${item.assigned_to_name}`
-                      : item.assigned_to_id
-                        ? ` · ${item.assigned_to_id}`
-                        : ""}
                   </div>
                   <div className="flex gap-2">
                     <Button
@@ -580,9 +574,20 @@ export function RoEditorPage() {
                   </div>
                 </div>
                 <p className="mt-2 whitespace-pre-wrap">{item.concern || "—"}</p>
+                {formatRoleWho(item.created_by, item.created_by_role) ? (
+                  <p className="mt-1 text-xs text-muted">
+                    Concern entered by {formatRoleWho(item.created_by, item.created_by_role)}
+                  </p>
+                ) : null}
                 {item.notes ? (
                   <p className="mt-2 whitespace-pre-wrap text-muted">
-                    <span className="text-xs uppercase tracking-wide">Notes · </span>
+                    <span className="text-xs uppercase tracking-wide">
+                      Notes
+                      {item.notes_by || item.assigned_to_name
+                        ? ` · ${item.notes_by || item.assigned_to_name}`
+                        : ""}{" "}
+                      ·{" "}
+                    </span>
                     {item.notes}
                   </p>
                 ) : null}
@@ -622,20 +627,20 @@ export function RoEditorPage() {
               ))}
             </select>
           </Field>
-          <Field label="Assigned tech (this item)">
-            <select
-              className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
-              value={draftItem.assigned_to_id || ""}
-              onChange={(e) => setItemAssignee(e.target.value)}
-            >
-              <option value="">Unassigned</option>
-              {techs.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          </Field>
+          {draftItem.id && (draftItem.created_by || draftItem.notes_by) ? (
+            <p className="text-xs text-muted">
+              {draftItem.created_by
+                ? `Concern: ${formatRoleWho(draftItem.created_by, draftItem.created_by_role)}. `
+                : ""}
+              {draftItem.notes_by
+                ? `Notes last saved by ${draftItem.notes_by}.`
+                : "Notes will stamp you when you save them."}
+            </p>
+          ) : (
+            <p className="text-xs text-muted">
+              Saving notes stamps you as the tech who did the repair work on this item.
+            </p>
+          )}
           <Button
             type="button"
             disabled={itemBusy || !order.id || !draftItem.concern.trim()}
@@ -656,8 +661,6 @@ export function RoEditorPage() {
                     concern: draftItem.concern,
                     notes: draftItem.notes,
                     status: draftItem.status,
-                    assigned_to_id: draftItem.assigned_to_id || "",
-                    assigned_to_name: draftItem.assigned_to_name || "",
                   });
                   setOrder(next);
                   setDraftItem(emptyItem());

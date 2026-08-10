@@ -36,12 +36,20 @@ function OrderCard({
         <ul className="mt-2 space-y-1 border-t border-border/60 pt-2 text-xs text-muted">
           {o.work_items.map((w) => {
             const mine =
-              (!!meId && w.assigned_to_id === meId) ||
-              (!!meName && w.assigned_to_name === meName);
+              (!!meId && (w.assigned_to_id === meId || w.notes_by === meName)) ||
+              (!!meName &&
+                (w.assigned_to_name === meName || w.notes_by === meName));
+            const notesWho = w.notes_by || w.assigned_to_name;
+            const concernWho = w.created_by
+              ? w.created_by_role
+                ? `${w.created_by} (${w.created_by_role})`
+                : w.created_by
+              : "";
             return (
               <li key={w.id} className={mine ? "text-fg" : undefined}>
                 <span className="font-mono">{w.id}</span> · {formatStatus(w.status)}
-                {w.assigned_to_name ? ` · ${w.assigned_to_name}` : " · Unassigned"}
+                {notesWho ? ` · notes: ${notesWho}` : " · no notes yet"}
+                {concernWho ? ` · concern: ${concernWho}` : ""}
                 {w.concern ? ` — ${w.concern}` : ""}
               </li>
             );

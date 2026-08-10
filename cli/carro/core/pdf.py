@@ -364,9 +364,27 @@ def export_pdf(
             notes = (w.notes or "").strip()
             body_txt = concern
             if notes:
-                body_txt = f"{concern}\n\nDiagnosis / notes [{w.status}]:\n{notes}"
+                who = (w.notes_by or w.assigned_to_name or "").strip()
+                entered = (w.created_by or "").strip()
+                head = f"Diagnosis / notes [{w.status}]"
+                if who:
+                    head += f" — {who}"
+                body_txt = f"{concern}"
+                if entered:
+                    body_txt += f"\n(Concern entered by {entered}"
+                    if w.created_by_role:
+                        body_txt += f", {w.created_by_role}"
+                    body_txt += ")"
+                body_txt += f"\n\n{head}:\n{notes}"
             else:
-                body_txt = f"{concern}\n\n({w.status})"
+                entered = (w.created_by or "").strip()
+                body_txt = concern
+                if entered:
+                    body_txt += f"\n(Concern entered by {entered}"
+                    if w.created_by_role:
+                        body_txt += f", {w.created_by_role}"
+                    body_txt += ")"
+                body_txt += f"\n\n({w.status})"
             box = _section_box(
                 f"WORK ITEM {i} · {w.id}",
                 body_txt,

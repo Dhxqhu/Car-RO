@@ -41,10 +41,18 @@ class WorkItemsForm(CarroThemeApp[RepairOrder | None]):
         Binding("ctrl+n", "add_item", "Add", show=True),
     ]
 
-    def __init__(self, order: RepairOrder, *, actor: str = "", actor_role: str = "tech"):
+    def __init__(
+        self,
+        order: RepairOrder,
+        *,
+        actor: str = "",
+        actor_id: str = "",
+        actor_role: str = "tech",
+    ):
         super().__init__()
         self.order = order
         self.actor = actor
+        self.actor_id = actor_id
         self.actor_role = actor_role
         self._done = False
         ensure_work_items_on_order(self.order)
@@ -66,8 +74,10 @@ class WorkItemsForm(CarroThemeApp[RepairOrder | None]):
             with Horizontal():
                 yield Label("Status", classes="label")
                 yield Select(STATUS_OPTIONS, value="open", id="status", allow_blank=False)
-            yield Label("Assigned tech (name; blank = unassigned)", classes="label")
-            yield Input(placeholder="Tech name for this item only", id="assigned_to_name")
+            yield Label(
+                "Attribution is automatic — concern = who enters it; notes = logged-in tech",
+                classes="label",
+            )
             yield Label("Quick paste (creates one new item from concern text)", classes="label")
             yield TextArea("", id="quick_paste")
         with Horizontal(id="actions"):
@@ -109,17 +119,7 @@ class WorkItemsForm(CarroThemeApp[RepairOrder | None]):
         self.query_one("#status", Select).value = (
             target.status if target.status in WORK_ITEM_STATUSES else "open"
         )
-        self.query_one("#assigned_to_name", Input).value = target.assigned_to_name or ""
         self.notify(f"Loaded {target.id}", severity="information")
-
-    def _resolve_assignee(self, name: str) -> tuple[str, str]:
-        name = (name or "").strip()
-        if not name:
-            return "", ""
-        from carro.core import technicians as techmod
-
-        match = next((t for t in techmod.list_technicians() if t.name == name), None)
-        return (match.id if match else "", name)
 
     def _save_item(self) -> None:
         quick = self.query_one("#quick_paste", TextArea).text.strip()
@@ -130,6 +130,7 @@ class WorkItemsForm(CarroThemeApp[RepairOrder | None]):
                 notes="",
                 status="open",
                 actor=self.actor,
+                actor_id=self.actor_id,
                 actor_role=self.actor_role,
             )
             self.query_one("#quick_paste", TextArea).load_text("")
@@ -141,18 +142,14 @@ class WorkItemsForm(CarroThemeApp[RepairOrder | None]):
         notes = self.query_one("#notes", TextArea).text
         status = self.query_one("#status", Select).value
         st = status if isinstance(status, str) else "open"
-        aid, aname = self._resolve_assignee(
-            self.query_one("#assigned_to_name", Input).value
-        )
         item = upsert_work_item(
             self.order,
             item_id=wid,
             concern=concern,
             notes=notes,
             status=st,
-            assigned_to_id=aid,
-            assigned_to_name=aname,
             actor=self.actor,
+            actor_id=self.actor_id,
             actor_role=self.actor_role,
         )
         self.query_one("#pick", Input).value = item.id
@@ -166,6 +163,7 @@ class WorkItemsForm(CarroThemeApp[RepairOrder | None]):
             notes="",
             status="open",
             actor=self.actor,
+            actor_id=self.actor_id,
             actor_role=self.actor_role,
         )
         self.query_one("#pick", Input).value = item.id
@@ -224,6 +222,9 @@ def run_work_items_form(
     order: RepairOrder,
     *,
     actor: str = "",
+    actor_id: str = "",
     actor_role: str = "tech",
 ) -> RepairOrder | None:
-    return WorkItemsForm(order, actor=actor, actor_role=actor_role).run()
+    return WorkItemsForm(
+        order, actor=actor, actor_id=actor_id, actor_role=actor_role
+    ).run()
