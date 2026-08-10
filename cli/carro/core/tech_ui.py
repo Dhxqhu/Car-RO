@@ -275,6 +275,7 @@ def run_technicians_config_menu() -> None:
         return False
 
     while True:
+        CONSOLE.clear()
         roster = techmod.load_roster()
         techs = techmod.list_technicians(roster)
         table = Table(show_header=False, box=None, padding=(0, 2))
@@ -288,7 +289,6 @@ def run_technicians_config_menu() -> None:
         table.add_row("[bold cyan]8[/]", "Pull roster from server")
         table.add_row("[bold cyan]9[/]", "Push roster to server")
         table.add_row("[bold cyan]b[/]", "Back")
-        CONSOLE.print()
         unlock = "admin unlocked" if admin_ok else "admin required for edits"
         CONSOLE.print(
             Panel(
@@ -333,8 +333,10 @@ def run_technicians_config_menu() -> None:
                     CONSOLE.print("[yellow]Push skipped (server not configured or failed).[/]")
             else:
                 CONSOLE.print("[yellow]Unknown option[/]")
+                continue
         except (ValueError, RuntimeError, OSError) as exc:
             CONSOLE.print(f"[red]{exc}[/]")
+        Prompt.ask("[dim]Press Enter for menu[/]", default="")
 
 
 def _list_techs() -> None:

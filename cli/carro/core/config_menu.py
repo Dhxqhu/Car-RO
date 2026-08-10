@@ -44,6 +44,7 @@ def run_config_menu() -> None:
     """Numbered settings menu; loops until back."""
     ensure_dirs()
     while True:
+        CONSOLE.clear()
         cfg = load_config()
         ro_keep = resolve_local_keep(cfg)
         photo_keep = resolve_local_photo_keep(cfg)

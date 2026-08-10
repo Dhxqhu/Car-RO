@@ -205,7 +205,7 @@ def interactive_menu(store: LocalStore) -> None:
 
 def _interactive_menu_loop(store: LocalStore, current: str | None) -> None:
     while True:
-        CONSOLE.print()
+        CONSOLE.clear()
         tech = techmod.current_technician()
         title = "Car-RO"
         if tech:
@@ -237,6 +237,7 @@ def _interactive_menu_loop(store: LocalStore, current: str | None) -> None:
         choice = Prompt.ask("Select", default="2").strip().lower()
         if choice in {"q", "quit", "b"}:
             return
+        nested = choice in {"c", "t"}
         try:
             if choice == "1":
                 order = cmd_new(
@@ -276,8 +277,11 @@ def _interactive_menu_loop(store: LocalStore, current: str | None) -> None:
                 run_config_menu()
             else:
                 CONSOLE.print("[yellow]Unknown option[/]")
+                continue
         except (RuntimeError, ValueError) as exc:
             CONSOLE.print(f"[red]{exc}[/]")
+        if not nested:
+            Prompt.ask("[dim]Press Enter for menu[/]", default="")
 
 
 def _need(current: str | None) -> str:
