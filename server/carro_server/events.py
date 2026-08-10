@@ -138,7 +138,92 @@ def diff_ro_events(
                     }
                 )
 
-        for key in ("vin", "mileage", "year", "make", "model", "plate", "status"):
+        b_status = str(before.get("status") or "")
+        a_status = str(after.get("status") or "")
+        if b_status != a_status:
+            if a_status == "waiting_customer":
+                who = str(
+                    after.get("approval_requested_by")
+                    or after.get("approval_requested_by_id")
+                    or actor
+                    or ""
+                ).strip()
+                events.append(
+                    {
+                        "type": "ro_approval_requested",
+                        "ro_id": ro_id,
+                        "item_id": "",
+                        "actor": actor,
+                        "at": at,
+                        "summary": who or "Customer approval requested",
+                    }
+                )
+            elif a_status == "done":
+                events.append(
+                    {
+                        "type": "ro_ready_to_bill",
+                        "ro_id": ro_id,
+                        "item_id": "",
+                        "actor": actor,
+                        "at": at,
+                        "summary": "Ready for advisor billing",
+                    }
+                )
+            elif a_status == "billed_out":
+                events.append(
+                    {
+                        "type": "ro_billed_out",
+                        "ro_id": ro_id,
+                        "item_id": "",
+                        "actor": actor,
+                        "at": at,
+                        "summary": "Billed out / closed",
+                    }
+                )
+            elif b_status in ("done", "billed_out") and a_status not in (
+                "done",
+                "billed_out",
+            ):
+                events.append(
+                    {
+                        "type": "ro_reopened",
+                        "ro_id": ro_id,
+                        "item_id": "",
+                        "actor": actor,
+                        "at": at,
+                        "summary": f"Reopened ({b_status} → {a_status})",
+                    }
+                )
+            elif a_status == "waiting_parts":
+                who = str(
+                    after.get("parts_requested_by")
+                    or after.get("parts_requested_by_id")
+                    or actor
+                    or ""
+                ).strip()
+                events.append(
+                    {
+                        "type": "ro_parts_requested",
+                        "ro_id": ro_id,
+                        "item_id": "",
+                        "actor": actor,
+                        "at": at,
+                        "summary": who or "Parts order requested",
+                    }
+                )
+            else:
+                events.append(
+                    {
+                        "type": "ro_status_changed",
+                        "ro_id": ro_id,
+                        "item_id": "",
+                        "actor": actor,
+                        "at": at,
+                        "summary": f"{b_status or '—'} → {a_status or '—'}",
+                    }
+                )
+
+        for key in ("vin", "mileage", "year", "make", "model", "plate"):
             if str(before.get(key) or "") != str(after.get(key) or ""):
                 events.append(
                     {
@@ -234,6 +319,66 @@ def diff_ro_events(
                     "actor": actor,
                     "at": at,
                     "summary": wid,
+                }
+            )
+
+    def _fi_map(raw: object) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        if not isinstance(raw, list):
+            return out
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            fid = str(entry.get("id") or "").strip()
+            if fid:
+                out[fid] = entry
+        return out
+
+    b_fi = _fi_map((before or {}).get("found_issues") if before else None)
+    a_fi = _fi_map(after.get("found_issues"))
+    for fid, fi in a_fi.items():
+        if fid not in b_fi:
+            events.append(
+                {
+                    "type": "found_issue_created",
+                    "ro_id": ro_id,
+                    "item_id": fid,
+                    "actor": actor,
+                    "at": at,
+                    "summary": str(fi.get("description") or fid)[:120],
+                }
+            )
+            continue
+        old = b_fi[fid]
+        old_st = str(old.get("status") or "")
+        new_st = str(fi.get("status") or "")
+        if old_st != new_st and new_st == "converted":
+            events.append(
+                {
+                    "type": "found_issue_approved",
+                    "ro_id": ro_id,
+                    "item_id": fid,
+                    "actor": actor,
+                    "at": at,
+                    "summary": (
+                        f"Customer approved: {str(fi.get('description') or fid)[:80]}"
+                        + (
+                            f" → {fi.get('work_item_id')}"
+                            if fi.get("work_item_id")
+                            else ""
+                        )
+                    ),
+                }
+            )
+        elif old_st != new_st and new_st == "declined":
+            events.append(
+                {
+                    "type": "found_issue_declined",
+                    "ro_id": ro_id,
+                    "item_id": fid,
+                    "actor": actor,
+                    "at": at,
+                    "summary": str(fi.get("description") or fid)[:120],
                 }
             )
 

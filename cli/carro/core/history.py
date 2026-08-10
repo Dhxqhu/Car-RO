@@ -38,6 +38,7 @@ def vehicle_history(
     """
     Prior ROs for a vehicle (VIN) or, if none, by customer name.
     Merges local + server when remote is enabled (default: when server_url set).
+    Includes billed_out jobs — closing an RO does not remove it from history.
     """
     vin_n = normalize_vin(vin)
     name_q = (name or "").strip()

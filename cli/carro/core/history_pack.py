@@ -107,7 +107,12 @@ def _text_ro_block(order: RepairOrder) -> list[str]:
         )
     else:
         for i, w in enumerate(items, 1):
-            lines.append(f"  {i}. {w.id} [{w.status}]")
+            from carro.core.work_items import format_worked_minutes
+
+            time_bit = ""
+            if w.worked_minutes:
+                time_bit = f" · worked {format_worked_minutes(w.worked_minutes)}"
+            lines.append(f"  {i}. {w.id} [{w.status}]{time_bit}")
             lines.append(f"     Concern: {(w.concern or '—').strip() or '—'}")
             notes = (w.notes or "").strip()
             if notes:

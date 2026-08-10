@@ -18,7 +18,10 @@ from carro.config import (
     keep_presets,
     load_config,
     photo_keep_presets,
+    resolve_local_billed_keep,
     resolve_local_keep,
+    resolve_local_parts_received_keep_hours,
+    resolve_idle_nudge_hours,
     resolve_local_photo_keep,
     save_config,
 )
@@ -75,37 +78,56 @@ def run_config_menu() -> None:
         )
         table.add_row(
             "[bold cyan]6[/]",
+            "Local billed-out keep",
+            str(resolve_local_billed_keep(cfg)),
+        )
+        table.add_row(
+            "[bold cyan]7[/]",
+            "Received parts keep (hours)",
+            f"{resolve_local_parts_received_keep_hours(cfg):g}",
+        )
+        table.add_row(
+            "[bold cyan]8[/]",
+            "Idle nudge (hours)",
+            (
+                "off"
+                if resolve_idle_nudge_hours(cfg) <= 0
+                else f"{resolve_idle_nudge_hours(cfg):g}"
+            ),
+        )
+        table.add_row(
+            "[bold cyan]9[/]",
             "Shop logo (PDF)",
             logo_status(cfg)[0],
         )
         table.add_row(
-            "[bold cyan]7[/]",
+            "[bold cyan]10[/]",
             "Photos directory",
             str(photos.get("dir") or ""),
         )
         table.add_row(
-            "[bold cyan]8[/]",
+            "[bold cyan]11[/]",
             "Inbox directory",
             str(photos.get("inbox_dir") or ""),
         )
         table.add_row(
-            "[bold cyan]9[/]",
+            "[bold cyan]12[/]",
             "Apply disk recommendation",
             recommend_pair(),
         )
         table.add_row(
-            "[bold cyan]10[/]",
+            "[bold cyan]13[/]",
             "Textual theme",
             str(cfg.get("textual_theme") or "ansi-dark"),
         )
         table.add_row(
-            "[bold cyan]11[/]",
+            "[bold cyan]14[/]",
             "Technicians",
             _tech_status_summary(),
         )
         mins = int(cfg.get("autosync_minutes") or 0)
         table.add_row(
-            "[bold cyan]12[/]",
+            "[bold cyan]15[/]",
             "Autosync (minutes)",
             "off" if mins <= 0 else f"every {mins} min",
         )
@@ -138,26 +160,32 @@ def run_config_menu() -> None:
             elif choice == "5":
                 _edit_keep(cfg, key="local_photo_keep")
             elif choice == "6":
+                _edit_billed_keep(cfg)
+            elif choice == "7":
+                _edit_parts_received_keep(cfg)
+            elif choice == "8":
+                _edit_idle_nudge(cfg)
+            elif choice == "9":
                 from carro.core.logo_setup import run_logo_setup
 
                 run_logo_setup()
-            elif choice == "7":
-                _edit_photos_path(cfg, "dir", "Photos directory")
-            elif choice == "8":
-                _edit_photos_path(cfg, "inbox_dir", "Inbox directory")
-            elif choice == "9":
-                _apply_disk_recommendation(cfg)
             elif choice == "10":
+                _edit_photos_path(cfg, "dir", "Photos directory")
+            elif choice == "11":
+                _edit_photos_path(cfg, "inbox_dir", "Inbox directory")
+            elif choice == "12":
+                _apply_disk_recommendation(cfg)
+            elif choice == "13":
                 _edit_str(
                     cfg,
                     "textual_theme",
                     "Textual theme (e.g. ansi-dark, textual-dark, nord)",
                 )
-            elif choice == "11":
+            elif choice == "14":
                 from carro.core.tech_ui import run_technicians_config_menu
 
                 run_technicians_config_menu()
-            elif choice == "12":
+            elif choice == "15":
                 _edit_autosync(cfg)
             else:
                 CONSOLE.print("[yellow]Unknown option[/]")
@@ -240,8 +268,9 @@ def _edit_keep(cfg: dict, *, key: str) -> None:
         presets = keep_presets()
         title = "Local RO keep"
         help_txt = (
-            "How many recent repair orders stay on this machine. "
-            "Older ones are pruned on sync (server still has them if configured)."
+            "How many recent active (not billed-out) repair orders stay on this machine. "
+            "Older ones are pruned on sync (server still has them if configured). "
+            "Billed-out keep is a separate setting."
         )
     else:
         presets = photo_keep_presets(ro_keep=ro_keep)
@@ -278,12 +307,66 @@ def _edit_keep(cfg: dict, *, key: str) -> None:
     _save(cfg)
     if key == "local_keep":
         CONSOLE.print(
-            f"[dim]Effective now:[/] {resolve_local_keep(cfg)} ROs"
+            f"[dim]Effective now:[/] {resolve_local_keep(cfg)} active ROs"
         )
     else:
         CONSOLE.print(
             f"[dim]Effective now:[/] {resolve_local_photo_keep(cfg)} ROs with local photos"
         )
+
+
+def _edit_billed_keep(cfg: dict) -> None:
+    cur = resolve_local_billed_keep(cfg)
+    CONSOLE.print(
+        "[dim]Newest billed-out ROs kept on this bay after sync. Older closed jobs "
+        "stay on the shop server — use Orders → Server search or History to pull them back.[/]"
+    )
+    raw = Prompt.ask("Billed-out ROs to keep locally", default=str(cur)).strip()
+    n = int(raw)
+    if n < 0:
+        raise ValueError("Must be >= 0")
+    cfg["local_billed_keep"] = n
+    _save(cfg)
+    CONSOLE.print(f"[dim]Local billed-out keep:[/] {n}")
+
+
+def _edit_parts_received_keep(cfg: dict) -> None:
+    cur = resolve_local_parts_received_keep_hours(cfg)
+    CONSOLE.print(
+        "[dim]After a part is marked received, keep it on the local RO for this many hours "
+        "after sync, then strip it from the bay cache (server archive still has the RO).[/]"
+    )
+    raw = Prompt.ask(
+        "Hours to keep received parts locally",
+        default=f"{cur:g}",
+    ).strip()
+    hours = float(raw)
+    if hours < 0:
+        raise ValueError("Must be >= 0")
+    cfg["local_parts_received_keep_hours"] = hours
+    _save(cfg)
+    CONSOLE.print(f"[dim]Received parts keep:[/] {hours:g} hours")
+
+
+def _edit_idle_nudge(cfg: dict) -> None:
+    cur = resolve_idle_nudge_hours(cfg)
+    CONSOLE.print(
+        "[dim]Bell / CLI nudge when a work item (open / in progress / waiting parts) "
+        "or a part (new request / ordered) has had no activity this long. 0 = off.[/]"
+    )
+    raw = Prompt.ask(
+        "Idle nudge hours (0 = off)",
+        default=f"{cur:g}",
+    ).strip()
+    hours = float(raw)
+    if hours < 0:
+        raise ValueError("Must be >= 0")
+    cfg["idle_nudge_hours"] = hours
+    _save(cfg)
+    if hours <= 0:
+        CONSOLE.print("[dim]Idle nudge:[/] off")
+    else:
+        CONSOLE.print(f"[dim]Idle nudge:[/] {hours:g} hours")
 
 
 def _apply_disk_recommendation(cfg: dict) -> None:
@@ -316,6 +399,10 @@ def print_config_summary() -> None:
             f"local_keep: {format_keep_setting(cfg.get('local_keep'), resolve_local_keep(cfg))}\n"
             f"local_photo_keep: "
             f"{format_keep_setting(cfg.get('local_photo_keep'), resolve_local_photo_keep(cfg))}\n"
+            f"local_billed_keep: {resolve_local_billed_keep(cfg)}\n"
+            f"local_parts_received_keep_hours: "
+            f"{resolve_local_parts_received_keep_hours(cfg):g}\n"
+            f"idle_nudge_hours: {resolve_idle_nudge_hours(cfg):g}\n"
             f"autosync_minutes: "
             f"{'off' if int(cfg.get('autosync_minutes') or 0) <= 0 else int(cfg.get('autosync_minutes') or 0)}\n"
             f"logo: {logo_status(cfg)[0]}\n"

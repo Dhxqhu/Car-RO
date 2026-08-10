@@ -5,7 +5,7 @@ import { api, type RepairOrder } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { formatPackKind } from "@/lib/utils";
+import { formatPackKind, formatShopTime, formatStatus } from "@/lib/utils";
 
 function matchLabel(matchedBy: string, remote: boolean): string {
   const base =
@@ -25,6 +25,13 @@ export function HistoryPage() {
   const [vin, setVin] = useState(params.get("vin") || "");
   const [name, setName] = useState(params.get("name") || "");
   const [excludeId] = useState(params.get("exclude") || "");
+  const [statusFilter, setStatusFilter] = useState<"all" | "billed_out" | "active">(
+    params.get("status") === "billed_out"
+      ? "billed_out"
+      : params.get("status") === "active"
+        ? "active"
+        : "all",
+  );
   const [orders, setOrders] = useState<RepairOrder[]>([]);
   const [matchedBy, setMatchedBy] = useState("");
   const [remote, setRemote] = useState(false);
@@ -33,6 +40,12 @@ export function HistoryPage() {
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [lastPdfPath, setLastPdfPath] = useState<string | null>(null);
+
+  const visibleOrders = orders.filter((o) => {
+    if (statusFilter === "billed_out") return o.status === "billed_out";
+    if (statusFilter === "active") return o.status !== "billed_out";
+    return true;
+  });
 
   async function lookup() {
     setBusy(true);
@@ -111,8 +124,9 @@ export function HistoryPage() {
           Vehicle history
         </h1>
         <p className="mt-1 text-sm text-muted">
-          VIN-first lookup against local cache and the shop server (when configured). Name
-          is used only if VIN is blank or finds nothing.
+          VIN-first lookup against local cache and the shop server (when configured). Includes
+          billed-out jobs — closing an RO does not remove VIN, work items, or notes from history.
+          Name is used only if VIN is blank or finds nothing.
         </p>
       </div>
 
@@ -173,9 +187,7 @@ export function HistoryPage() {
             onClick={() => {
               if (
                 orders.length > 0 &&
-                !confirm(
-                  "Full PDF includes photos and can be long. Continue?",
-                )
+                !confirm("Full PDF includes photos and can be long. Continue?")
               ) {
                 return;
               }
@@ -201,46 +213,80 @@ export function HistoryPage() {
 
       {searched && orders.length > 0 ? (
         <div className="space-y-3">
-          <p className="flex items-center gap-2 text-sm text-muted">
-            <History className="h-4 w-4 text-accent" />
-            {orders.length} prior job(s) · {matchLabel(matchedBy, remote)}
-          </p>
-          <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">
-            {orders.map((o) => (
-              <li key={o.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
-                <div className="min-w-0 flex-1">
-                  <div className="font-medium">
-                    {o.last_name || o.first_name
-                      ? `${o.last_name}${o.last_name && o.first_name ? ", " : ""}${o.first_name}`
-                      : "(no customer)"}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="flex items-center gap-2 text-sm text-muted">
+              <History className="h-4 w-4 text-accent" />
+              {visibleOrders.length} of {orders.length} job(s) · {matchLabel(matchedBy, remote)}
+            </p>
+            <div className="flex flex-wrap gap-1">
+              {(
+                [
+                  ["all", "All"],
+                  ["billed_out", "Billed out"],
+                  ["active", "Not billed"],
+                ] as const
+              ).map(([key, label]) => (
+                <Button
+                  key={key}
+                  type="button"
+                  size="sm"
+                  variant={statusFilter === key ? "default" : "secondary"}
+                  onClick={() => setStatusFilter(key)}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
+          </div>
+          {visibleOrders.length === 0 ? (
+            <p className="text-sm text-muted">No jobs match this status filter.</p>
+          ) : (
+            <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">
+              {visibleOrders.map((o) => (
+                <li
+                  key={o.id}
+                  className="flex flex-wrap items-center justify-between gap-3 px-5 py-4"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium">
+                        {o.last_name || o.first_name
+                          ? `${o.last_name}${o.last_name && o.first_name ? ", " : ""}${o.first_name}`
+                          : "(no customer)"}
+                      </span>
+                      <span className="text-xs font-medium text-accent">
+                        {formatStatus(o.status)}
+                      </span>
+                    </div>
+                    <div className="text-sm text-muted">
+                      {[o.year, o.make, o.model].filter(Boolean).join(" ") || "—"} ·{" "}
+                      {o.vin || "no VIN"} · {o.id}
+                      {o.billed_out_at
+                        ? ` · billed ${formatShopTime(o.billed_out_at)}`
+                        : o.done_at
+                          ? ` · done ${formatShopTime(o.done_at)}`
+                          : ""}
+                    </div>
+                    {o.complaint ? (
+                      <p className="mt-1 line-clamp-2 text-sm text-muted">{o.complaint}</p>
+                    ) : null}
                   </div>
-                  <div className="text-sm text-muted">
-                    {[o.year, o.make, o.model].filter(Boolean).join(" ") || "—"} ·{" "}
-                    {o.vin || "no VIN"} · {o.id}
+                  <div className="flex flex-wrap gap-2">
+                    <Link
+                      to={`/ro/${o.id}`}
+                      className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-surface px-3 text-xs font-medium hover:bg-border/40"
+                    >
+                      Open
+                    </Link>
+                    <Button size="sm" disabled={busy} onClick={() => void newFrom(o.id)}>
+                      <Plus className="h-3.5 w-3.5" />
+                      New from vehicle
+                    </Button>
                   </div>
-                  {o.complaint ? (
-                    <p className="mt-1 line-clamp-2 text-sm text-muted">{o.complaint}</p>
-                  ) : null}
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Link
-                    to={`/ro/${o.id}`}
-                    className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-surface px-3 text-xs font-medium hover:bg-border/40"
-                  >
-                    Open
-                  </Link>
-                  <Button
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => void newFrom(o.id)}
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    New from vehicle
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       ) : null}
     </div>

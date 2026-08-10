@@ -17,7 +17,9 @@ from carro.core.models import now_iso
 
 TECHNICIANS_FILE = CONFIG_DIR / "technicians.json"
 SESSION_FILE = CONFIG_DIR / "session.json"
+ADMIN_SESSION_FILE = CONFIG_DIR / "admin_session.json"
 SESSION_TTL = timedelta(hours=8)
+ADMIN_SESSION_TTL = timedelta(hours=2)
 
 _PIN_RE = re.compile(r"^\d{4}$")
 
@@ -315,6 +317,58 @@ def set_admin_pin(pin: str, *, roster: dict[str, Any] | None = None) -> None:
 def verify_admin_pin(pin: str, *, roster: dict[str, Any] | None = None) -> bool:
     roster = roster or load_roster()
     return verify_pin(pin, str(roster.get("admin_pin_hash") or ""))
+
+
+def has_admin_pin(*, roster: dict[str, Any] | None = None) -> bool:
+    roster = roster or load_roster()
+    return bool(str(roster.get("admin_pin_hash") or "").strip())
+
+
+def unlock_admin(pin: str, *, roster: dict[str, Any] | None = None) -> None:
+    """Start an admin session (shop management / time corrections)."""
+    if not has_admin_pin(roster=roster):
+        raise ValueError("No admin PIN set — finish technician setup first")
+    if not verify_admin_pin(pin, roster=roster):
+        raise ValueError("Incorrect admin PIN")
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {"unlocked_at": now_iso()}
+    ADMIN_SESSION_FILE.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def lock_admin() -> None:
+    if ADMIN_SESSION_FILE.is_file():
+        try:
+            ADMIN_SESSION_FILE.unlink()
+        except OSError:
+            pass
+
+
+def admin_unlocked() -> bool:
+    if not ADMIN_SESSION_FILE.is_file():
+        return False
+    try:
+        raw = json.loads(ADMIN_SESSION_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        lock_admin()
+        return False
+    if not isinstance(raw, dict):
+        lock_admin()
+        return False
+    unlocked = str(raw.get("unlocked_at") or "")
+    try:
+        when = datetime.fromisoformat(unlocked)
+    except ValueError:
+        lock_admin()
+        return False
+    if datetime.now() - when > ADMIN_SESSION_TTL:
+        lock_admin()
+        return False
+    return True
+
+
+def require_admin_session() -> None:
+    if not admin_unlocked():
+        raise PermissionError("Admin unlock required")
 
 
 # --- session -----------------------------------------------------------------

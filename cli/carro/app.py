@@ -220,6 +220,7 @@ def _interactive_menu_loop(store: LocalStore, current: str | None) -> None:
         table.add_row("[bold cyan]7[/]", "Pull OBD / Saved Codes into current")
         table.add_row("[bold cyan]8[/]", "Add photos (file / inbox / iPhone / Shortcut)")
         table.add_row("[bold cyan]9[/]", "Export customer PDF (with / without photos)")
+        table.add_row("[bold cyan]p[/]", "Parts order sheet")
         table.add_row("[bold cyan]d[/]", "Delete repair order (mistakes)")
         table.add_row("[bold cyan]s[/]", "Sync to server + prune local cache")
         table.add_row("[bold cyan]t[/]", "Technician (switch / add techs / logout)")
@@ -234,10 +235,24 @@ def _interactive_menu_loop(store: LocalStore, current: str | None) -> None:
                     f"[magenta]Current:[/] {order.id} · {order.customer_label()} · "
                     f"{order.vehicle_label()}"
                 )
+        try:
+            from carro.config import resolve_idle_nudge_hours
+            from carro.core.idle_nudge import collect_idle_nudges
+
+            idle_h = resolve_idle_nudge_hours()
+            if idle_h > 0:
+                idle_rows = collect_idle_nudges(store.list_orders(), idle_hours=idle_h)
+                if idle_rows:
+                    CONSOLE.print(
+                        f"[yellow]Idle nudge:[/] {len(idle_rows)} work item(s)/part(s) "
+                        f"untouched ≥ {idle_h:g}h — open the GUI bell or edit those ROs"
+                    )
+        except Exception:
+            pass
         choice = Prompt.ask("Select", default="2").strip().lower()
         if choice in {"q", "quit", "b"}:
             return
-        nested = choice in {"c", "t"}
+        nested = choice in {"c", "t", "p"}
         try:
             if choice == "1":
                 order = cmd_new(
@@ -265,6 +280,10 @@ def _interactive_menu_loop(store: LocalStore, current: str | None) -> None:
             elif choice == "9":
                 current = _need(current)
                 cmd_pdf(store, current)
+            elif choice == "p":
+                from carro.core.parts_sheet import run_parts_sheet_menu
+
+                run_parts_sheet_menu(store)
             elif choice == "d":
                 deleted = cmd_delete(store, current)
                 if deleted and current == deleted:
@@ -966,12 +985,13 @@ def cmd_sync(store: LocalStore) -> None:
     removed = result.get("pruned") or []
     keep_n = result.get("local_keep")
     photo_n = result.get("local_photo_keep")
+    billed_n = result.get("local_billed_keep")
     if removed:
         CONSOLE.print(f"[dim]Pruned local cache:[/] {', '.join(removed)}")
     else:
         CONSOLE.print(
             f"[dim]Local cache within limits "
-            f"(keep {keep_n} ROs, {photo_n} with photos).[/]"
+            f"(keep {keep_n} active, {billed_n} billed-out, {photo_n} with photos).[/]"
         )
 
 
@@ -1042,6 +1062,12 @@ def cmd_config(args: argparse.Namespace) -> None:
                 cfg[key] = "match" if v == "match" else "auto"
             else:
                 cfg[key] = int(value)
+        elif key == "local_billed_keep":
+            cfg[key] = max(0, int(value))
+        elif key == "local_parts_received_keep_hours":
+            cfg[key] = max(0.0, float(value))
+        elif key == "idle_nudge_hours":
+            cfg[key] = max(0.0, float(value))
         elif key == "autosync_minutes":
             cfg[key] = max(0, int(value))
         else:

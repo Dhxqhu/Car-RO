@@ -20,9 +20,9 @@ const STATUS_LABELS: Record<string, string> = {
   open: "Open",
   assigned: "Assigned",
   in_progress: "In progress",
-  waiting_parts: "Waiting on parts",
-  waiting_customer: "Waiting on customer",
-  done: "Done",
+  waiting_parts: "Waiting on parts (advisor)",
+  waiting_customer: "Awaiting customer approval",
+  done: "Done — ready to bill",
   billed_out: "Billed out",
   declined: "Declined",
 };
@@ -87,6 +87,37 @@ export function formatUploadMode(mode: string | undefined | null): string {
   const raw = (mode || "").trim();
   if (!raw) return "—";
   return lookup(UPLOAD_MODE_LABELS, raw) ?? formatLabel(raw);
+}
+
+/** Shop-only worked time (efficiency — not billed hours). */
+export function formatWorkedMinutes(minutes: number | undefined | null): string {
+  const m = Math.max(0, Math.floor(Number(minutes) || 0));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem ? `${h}h ${rem}m` : `${h}h`;
+}
+
+/** Wall-clock / stage duration (waiting can be days–weeks). Not worked time. */
+export function formatDurationMinutes(minutes: number | undefined | null): string {
+  const m = Math.max(0, Math.round(Number(minutes) || 0));
+  if (m >= 48 * 60) {
+    const days = Math.floor(m / (24 * 60));
+    const rem = m % (24 * 60);
+    const hours = Math.floor(rem / 60);
+    const mins = rem % 60;
+    if (hours && mins) return `${days}d ${hours}h ${mins}m`;
+    if (hours) return `${days}d ${hours}h`;
+    if (mins) return `${days}d ${mins}m`;
+    return `${days}d`;
+  }
+  return formatWorkedMinutes(m);
+}
+
+/** Worked minutes as hours with two decimal places (e.g. 1.50h). */
+export function formatWorkedHours(minutes: number | undefined | null): string {
+  const m = Math.max(0, Number(minutes) || 0);
+  return `${(m / 60).toFixed(2)}h`;
 }
 
 /** Short shop-only timestamp for efficiency (never on customer PDF). */

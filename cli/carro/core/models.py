@@ -58,19 +58,30 @@ class RepairOrder:
     assigned_to_id: str = ""
     assigned_to_name: str = ""
     assigned_at: str = ""
-    # Who is actively working this car right now (bay / current task).
+    # Who is actively working this car right now (bay) — scoped to current_item_id.
     current_tech_id: str = ""
     current_tech_name: str = ""
     current_since: str = ""
+    current_item_id: str = ""  # work item being timed / worked now
     # Internal efficiency stamps — never print on customer PDF.
     started_at: str = ""  # first in_progress
-    done_at: str = ""  # work finished (still in shop)
-    billed_out_at: str = ""  # left / billed
+    done_at: str = ""  # work finished → advisor billing queue
+    billed_out_at: str = ""  # left / billed (final close)
     waiting_since: str = ""  # entered waiting_parts or waiting_customer
+    # Tech → advisor: order parts (advisor typically sources / orders)
+    parts_requested_at: str = ""
+    parts_requested_by: str = ""
+    parts_requested_by_id: str = ""
+    # Tech → advisor: push for customer approval
+    approval_requested_at: str = ""
+    approval_requested_by: str = ""
+    approval_requested_by_id: str = ""
     status: str = "open"
     obd_snapshot: str = ""
     photos: list[dict[str, Any]] = field(default_factory=list)
     work_items: list[dict[str, Any]] = field(default_factory=list)
+    # Tech discoveries awaiting advisor / customer approval (sibling of work_items).
+    found_issues: list[dict[str, Any]] = field(default_factory=list)
     created: str = ""
     updated: str = ""
 
@@ -88,8 +99,11 @@ class RepairOrder:
         clean = {k: v for k, v in data.items() if k in known}
         clean.setdefault("photos", [])
         clean.setdefault("work_items", [])
+        clean.setdefault("found_issues", [])
         if not isinstance(clean.get("work_items"), list):
             clean["work_items"] = []
+        if not isinstance(clean.get("found_issues"), list):
+            clean["found_issues"] = []
         order = cls(**clean)
         items = ensure_work_items_from_legacy(
             work_items=order.work_items,
@@ -97,8 +111,14 @@ class RepairOrder:
             tech_notes=order.tech_notes,
         )
         order.work_items = [w.to_dict() for w in items]
+        from carro.core.found_issues import normalize_found_issues
+
+        order.found_issues = normalize_found_issues(order.found_issues)
         if items:
             apply_rollups(order)
+        from carro.core.work_items import sanitize_open_time_segments
+
+        sanitize_open_time_segments(order)
         return order
 
     def customer_label(self) -> str:

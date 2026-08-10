@@ -33,7 +33,10 @@ from carro.config import (  # noqa: E402
     photo_keep_presets,
     recommend_local_keep,
     recommend_local_photo_keep,
+    resolve_local_billed_keep,
     resolve_local_keep,
+    resolve_local_parts_received_keep_hours,
+    resolve_idle_nudge_hours,
     resolve_local_photo_keep,
     save_config,
 )
@@ -84,7 +87,7 @@ class LoginBody(BaseModel):
 class AddTechBody(BaseModel):
     name: str
     pin: str
-    admin_pin: str = Field(alias="admin_pin")
+    admin_pin: str | None = Field(default=None, alias="admin_pin")
 
     model_config = {"populate_by_name": True}
 
@@ -99,6 +102,9 @@ class ConfigBody(BaseModel):
     logo_path: str | None = None
     local_keep: str | int | None = None
     local_photo_keep: str | int | None = None
+    local_billed_keep: int | None = None
+    local_parts_received_keep_hours: float | None = None
+    idle_nudge_hours: float | None = None
     autosync_minutes: int | None = None
     photos_dir: str | None = None
     photos_inbox_dir: str | None = None
@@ -198,20 +204,27 @@ def list_technicians() -> dict[str, Any]:
 
 @app.post("/technicians")
 def add_technician(body: AddTechBody) -> dict[str, str]:
-    if not techmod.verify_admin_pin(body.admin_pin):
-        raise HTTPException(403, "Incorrect admin PIN")
+    if techmod.admin_unlocked():
+        pass
+    elif body.admin_pin and techmod.verify_admin_pin(body.admin_pin):
+        pass
+    else:
+        raise HTTPException(403, "Admin unlock or correct admin PIN required")
     try:
         tech = techmod.add_technician(body.name, body.pin)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    # Best-effort push
+    _push_technicians()
+    return {"id": tech.id, "name": tech.name}
+
+
+def _push_technicians() -> None:
     try:
         remote = RemoteClient()
         if remote.enabled:
             remote.put_technicians(techmod.roster_for_sync())
     except Exception:
         pass
-    return {"id": tech.id, "name": tech.name}
 
 
 @app.get("/session")
@@ -234,7 +247,184 @@ def login(body: LoginBody) -> dict[str, Any]:
 @app.post("/session/logout")
 def logout() -> dict[str, bool]:
     techmod.clear_session()
+    techmod.lock_admin()
     return {"ok": True}
+
+
+class AdminUnlockBody(BaseModel):
+    admin_pin: str = Field(alias="admin_pin")
+
+
+class AdminChangePinBody(BaseModel):
+    admin_pin: str = Field(alias="admin_pin")
+    new_pin: str = Field(alias="new_pin")
+
+
+class AdminTechPinBody(BaseModel):
+    tech_id: str
+    new_pin: str = Field(alias="new_pin")
+    admin_pin: str | None = Field(default=None, alias="admin_pin")
+
+
+class AdminTechRenameBody(BaseModel):
+    tech_id: str
+    name: str
+
+
+class AdminTimeBody(BaseModel):
+    """Correct forgotten/mistaken clocks — requires admin session."""
+
+    action: Literal["set", "add", "clear"]
+    minutes: int | None = None
+    note: str = ""
+
+
+def _require_admin() -> None:
+    try:
+        techmod.require_admin_session()
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+
+
+@app.get("/admin/session")
+def admin_session() -> dict[str, Any]:
+    return {
+        "active": techmod.admin_unlocked(),
+        "has_admin_pin": techmod.has_admin_pin(),
+    }
+
+
+@app.post("/admin/unlock")
+def admin_unlock(body: AdminUnlockBody) -> dict[str, Any]:
+    try:
+        techmod.unlock_admin(body.admin_pin)
+    except ValueError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    return {"ok": True, "active": True}
+
+
+@app.post("/admin/lock")
+def admin_lock() -> dict[str, bool]:
+    techmod.lock_admin()
+    return {"ok": True}
+
+
+@app.post("/admin/change-pin")
+def admin_change_pin(body: AdminChangePinBody) -> dict[str, bool]:
+    if not techmod.verify_admin_pin(body.admin_pin):
+        raise HTTPException(403, "Incorrect admin PIN")
+    try:
+        techmod.set_admin_pin(body.new_pin)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    techmod.unlock_admin(body.new_pin)
+    _push_technicians()
+    return {"ok": True}
+
+
+@app.post("/admin/technicians/{tech_id}/reset-pin")
+def admin_reset_tech_pin(tech_id: str, body: AdminTechPinBody) -> dict[str, bool]:
+    _require_admin()
+    try:
+        techmod.update_technician_pin(tech_id, body.new_pin)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    _push_technicians()
+    return {"ok": True}
+
+
+@app.post("/admin/technicians/{tech_id}/rename")
+def admin_rename_tech(tech_id: str, body: AdminTechRenameBody) -> dict[str, bool]:
+    _require_admin()
+    try:
+        techmod.rename_technician(tech_id, body.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    _push_technicians()
+    return {"ok": True}
+
+
+@app.delete("/admin/technicians/{tech_id}")
+def admin_remove_tech(tech_id: str) -> dict[str, bool]:
+    _require_admin()
+    try:
+        techmod.remove_technician(tech_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    _push_technicians()
+    return {"ok": True}
+
+
+@app.post("/ros/{ro_id}/work-items/{item_id}/time/admin")
+def admin_work_item_time(ro_id: str, item_id: str, body: AdminTimeBody) -> dict[str, Any]:
+    """Edit item worked time (mistaken/forgotten clocks). Admin session required."""
+    _require_admin()
+    from carro.core.work_items import (
+        add_worked_minutes,
+        admin_clear_time_log,
+        admin_set_worked_minutes,
+    )
+
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+    try:
+        if body.action == "set":
+            mins = int(body.minutes if body.minutes is not None else -1)
+            if mins < 0:
+                raise HTTPException(400, "minutes required for set")
+            admin_set_worked_minutes(
+                order,
+                item_id,
+                mins,
+                note=body.note or "",
+                actor="admin",
+            )
+        elif body.action == "add":
+            mins = int(body.minutes or 0)
+            if mins == 0:
+                raise HTTPException(400, "minutes must be non-zero")
+            if mins < 0:
+                items = order.work_items or []
+                cur = next(
+                    (
+                        int(it.get("worked_minutes") or 0)
+                        for it in items
+                        if isinstance(it, dict) and it.get("id") == item_id
+                    ),
+                    0,
+                )
+                admin_set_worked_minutes(
+                    order,
+                    item_id,
+                    max(0, cur + mins),
+                    note=body.note or f"admin adjust {mins}m",
+                    actor="admin",
+                )
+            else:
+                add_worked_minutes(
+                    order,
+                    item_id,
+                    mins,
+                    tech_id="",
+                    tech_name="admin",
+                    note=body.note or "admin correction",
+                    source="admin",
+                )
+        elif body.action == "clear":
+            admin_clear_time_log(
+                order,
+                item_id,
+                note=body.note or "",
+                actor="admin",
+            )
+        else:
+            raise HTTPException(400, f"Unknown action: {body.action}")
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    store.save(order)
+    _push_ro(order)
+    return order.to_dict()
 
 
 @app.get("/ros")
@@ -244,6 +434,71 @@ def list_ros(q: str = "") -> dict[str, Any]:
     else:
         orders = store.list_orders(limit=50)
     return {"orders": [o.to_dict() for o in orders]}
+
+
+@app.get("/ros/extended-search")
+def extended_search(
+    q: str = "",
+    name: str = "",
+    vin: str = "",
+    plate: str = "",
+    make: str = "",
+    model: str = "",
+    year: str = "",
+    status: str = "",
+) -> dict[str, Any]:
+    """
+    Search local cache + shop server archive (for billed-out history past local keep).
+    Server-only hits are cached locally so the RO editor can open them.
+    """
+    if not any(
+        s.strip() for s in (q, name, vin, plate, make, model, year, status)
+    ):
+        raise HTTPException(400, "Enter at least one search field")
+    remote = RemoteClient()
+    local_hits = store.search(
+        q,
+        make=make,
+        model=model,
+        year=year,
+        name=name,
+        vin=vin,
+        status=status,
+        plate=plate,
+    )
+    local_ids = {o.id for o in local_hits}
+    sources: dict[str, str] = {o.id: "local" for o in local_hits}
+    remote_only = 0
+    if remote.enabled:
+        try:
+            raw = remote.search_ros(
+                q,
+                make=make,
+                model=model,
+                year=year,
+                name=name,
+                vin=vin,
+                status=status,
+                plate=plate,
+            )
+            for row in raw:
+                order = RepairOrder.from_dict(row)
+                if order.id in local_ids:
+                    sources[order.id] = "both"
+                    continue
+                store.save(order)
+                local_hits.append(order)
+                local_ids.add(order.id)
+                sources[order.id] = "server"
+                remote_only += 1
+        except Exception as exc:
+            raise HTTPException(502, f"Server search failed: {exc}") from exc
+    return {
+        "orders": [o.to_dict() for o in local_hits],
+        "remote_enabled": remote.enabled,
+        "remote_only": remote_only,
+        "sources": sources,
+    }
 
 
 @app.post("/ros")
@@ -261,7 +516,16 @@ def create_ro() -> dict[str, Any]:
 def get_ro(ro_id: str) -> dict[str, Any]:
     order = store.get(ro_id)
     if not order:
-        raise HTTPException(404, "RO not found")
+        remote = RemoteClient()
+        if remote.enabled:
+            try:
+                raw = remote.get_ro(ro_id)
+                order = RepairOrder.from_dict(raw)
+                store.save(order)
+            except Exception:
+                order = None
+        if not order:
+            raise HTTPException(404, "RO not found")
     return order.to_dict()
 
 
@@ -284,8 +548,51 @@ class WorkItemBody(BaseModel):
     id: str | None = None
     concern: str | None = None
     notes: str | None = None
+    private_notes: str | None = None
+    item_type: str | None = None
     status: str | None = None
     priority: int | None = None
+
+
+class FoundIssueComposeBody(BaseModel):
+    item_id: str | None = None
+
+
+class FoundIssueCreateBody(BaseModel):
+    description: str
+    notes: str = ""
+    source_work_item_id: str | None = None
+    finish_compose: bool = True
+
+
+class FoundIssueApproveBody(BaseModel):
+    item_type: str = "repair"
+
+
+class FoundIssueDeclineBody(BaseModel):
+    reason: str = "customer_declined"
+
+
+class PartBody(BaseModel):
+    description: str = ""
+    part_number: str = ""
+    manufacturer: str | None = None
+
+
+class PartPatchBody(BaseModel):
+    description: str | None = None
+    part_number: str | None = None
+    manufacturer: str | None = None
+    status: str | None = None
+    wrong_note: str = ""
+
+
+class WorkItemTimeBody(BaseModel):
+    """Shop-only efficiency time on a work item (not billed hours)."""
+
+    action: Literal["add", "start", "stop", "checkpoint"]
+    minutes: int | None = None
+    note: str = ""
 
 
 class AssignRoBody(BaseModel):
@@ -295,22 +602,30 @@ class AssignRoBody(BaseModel):
 
 
 class CurrentTaskBody(BaseModel):
-    """Set active=true to claim this RO as the logged-in tech's current bay task."""
+    """Claim current bay work on a specific work item (item_id required when active)."""
 
     active: bool = True
+    item_id: str | None = None
 
 
 class QueueActionBody(BaseModel):
-    """Planned queue + completion / waiting / billed-out for the logged-in tech."""
+    """Queue/current actions. Item actions require item_id (work item, not RO)."""
 
     action: Literal[
         "add",
         "remove",
         "complete",
+        "complete_item",
         "billed_out",
+        "reopen",
         "waiting_parts",
+        "request_parts",
+        "item_waiting_parts",
         "waiting_customer",
+        "request_approval",
+        "item_waiting_customer",
     ]
+    item_id: str | None = None
 
 
 @app.get("/assigned")
@@ -392,7 +707,7 @@ def assign_ro_route(ro_id: str, body: AssignRoBody) -> dict[str, Any]:
 
 @app.post("/ros/{ro_id}/current")
 def set_current_task_route(ro_id: str, body: CurrentTaskBody) -> dict[str, Any]:
-    """Claim or release this RO as the logged-in tech's current task (visible on Assigned)."""
+    """Claim or release current work on a work item (timer + Assigned 'working now')."""
     from carro.core.assignment import (
         clear_current_task,
         clear_tech_current_elsewhere,
@@ -402,7 +717,7 @@ def set_current_task_route(ro_id: str, body: CurrentTaskBody) -> dict[str, Any]:
 
     tech = techmod.current_technician()
     if not tech:
-        raise HTTPException(401, "Log in as a technician to set current task")
+        raise HTTPException(401, "Log in as a technician to set current work")
     order = store.get(ro_id)
     if not order:
         raise HTTPException(404, "RO not found")
@@ -416,7 +731,16 @@ def set_current_task_route(ro_id: str, body: CurrentTaskBody) -> dict[str, Any]:
         ):
             store.save(other)
             _push_ro(other)
-        set_current_task(order, tech_id=tech.id, tech_name=tech.name, also_assign=True)
+        try:
+            set_current_task(
+                order,
+                tech_id=tech.id,
+                tech_name=tech.name,
+                item_id=(body.item_id or "").strip(),
+                also_assign=True,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
     else:
         if matches_tech(
             order.current_tech_id,
@@ -426,7 +750,7 @@ def set_current_task_route(ro_id: str, body: CurrentTaskBody) -> dict[str, Any]:
         ):
             clear_current_task(order)
         else:
-            raise HTTPException(403, "This RO is not your current task")
+            raise HTTPException(403, "This is not your current work")
     store.save(order)
     _push_ro(order)
     return order.to_dict()
@@ -436,16 +760,21 @@ def set_current_task_route(ro_id: str, body: CurrentTaskBody) -> dict[str, Any]:
 def queue_action_route(ro_id: str, body: QueueActionBody) -> dict[str, Any]:
     """
     Planned work queue for the logged-in tech:
-    - add / remove / complete (work finished)
-    - billed_out (car left)
-    - waiting_parts / waiting_customer (parked)
+    - add / remove
+    - complete → advisor ready-to-bill queue
+    - reopen → undo done / billed out back onto the floor
+    - billed_out → final close (advisor after accounting)
     """
     from carro.core.assignment import (
         add_to_my_queue,
         bill_out_ro,
         complete_ro,
+        complete_work_item,
         remove_from_my_queue,
-        set_waiting,
+        reopen_ro,
+        request_customer_approval,
+        request_parts,
+        set_work_item_waiting,
     )
 
     tech = techmod.current_technician()
@@ -455,21 +784,84 @@ def queue_action_route(ro_id: str, body: QueueActionBody) -> dict[str, Any]:
     if not order:
         raise HTTPException(404, "RO not found")
 
+    item_id = (body.item_id or "").strip()
+
     if body.action == "add":
-        add_to_my_queue(order, tech_id=tech.id, tech_name=tech.name)
+        try:
+            add_to_my_queue(
+                order,
+                tech_id=tech.id,
+                tech_name=tech.name,
+                item_id=item_id,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
     elif body.action == "remove":
-        if not remove_from_my_queue(order, tech_id=tech.id, tech_name=tech.name):
-            raise HTTPException(403, "This RO is not on your queue")
-    elif body.action == "complete":
-        complete_ro(order, tech_id=tech.id, tech_name=tech.name)
-    elif body.action == "billed_out":
-        bill_out_ro(order, tech_id=tech.id, tech_name=tech.name)
-    elif body.action in ("waiting_parts", "waiting_customer"):
-        set_waiting(
+        if not remove_from_my_queue(
             order,
-            kind=body.action,
             tech_id=tech.id,
             tech_name=tech.name,
+            item_id=item_id,
+        ):
+            raise HTTPException(403, "This work item is not on your queue")
+    elif body.action == "complete_item":
+        try:
+            complete_work_item(
+                order,
+                item_id or (order.current_item_id or ""),
+                tech_id=tech.id,
+                tech_name=tech.name,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+    elif body.action == "complete":
+        # Prefer item when item_id / current item present
+        wid = item_id or (order.current_item_id or "").strip()
+        if wid:
+            try:
+                complete_work_item(
+                    order, wid, tech_id=tech.id, tech_name=tech.name
+                )
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+        else:
+            complete_ro(order, tech_id=tech.id, tech_name=tech.name)
+    elif body.action == "reopen":
+        try:
+            reopen_ro(order, tech_id=tech.id, tech_name=tech.name)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+    elif body.action == "billed_out":
+        bill_out_ro(order, tech_id=tech.id, tech_name=tech.name)
+    elif body.action in ("item_waiting_customer",):
+        try:
+            set_work_item_waiting(
+                order,
+                item_id or (order.current_item_id or ""),
+                kind="waiting_customer",
+                tech_id=tech.id,
+                tech_name=tech.name,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+    elif body.action in ("item_waiting_parts",):
+        try:
+            set_work_item_waiting(
+                order,
+                item_id or (order.current_item_id or ""),
+                kind="waiting_parts",
+                tech_id=tech.id,
+                tech_name=tech.name,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+    elif body.action == "request_approval" or body.action == "waiting_customer":
+        request_customer_approval(
+            order, tech_id=tech.id, tech_name=tech.name, item_id=item_id
+        )
+    elif body.action == "request_parts" or body.action == "waiting_parts":
+        request_parts(
+            order, tech_id=tech.id, tech_name=tech.name, item_id=item_id
         )
     else:
         raise HTTPException(400, f"Unknown action: {body.action}")
@@ -489,17 +881,350 @@ def upsert_work_item_route(ro_id: str, body: WorkItemBody) -> dict[str, Any]:
     tech = techmod.current_technician()
     if not tech:
         raise HTTPException(401, "Log in as a technician to edit work items")
-    upsert_work_item(
-        order,
-        item_id=body.id,
-        concern=body.concern,
-        notes=body.notes,
-        status=body.status,
-        priority=body.priority,
-        actor=tech.name,
-        actor_id=tech.id,
-        actor_role="tech",
+    try:
+        upsert_work_item(
+            order,
+            item_id=body.id,
+            concern=body.concern,
+            notes=body.notes,
+            private_notes=body.private_notes,
+            item_type=body.item_type,
+            status=body.status,
+            priority=body.priority,
+            actor=tech.name,
+            actor_id=tech.id,
+            actor_role="tech",
+            require_item_type=not body.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    store.save(order)
+    _push_ro(order)
+    return order.to_dict()
+
+
+@app.post("/ros/{ro_id}/found-issues/compose")
+def found_issue_compose_begin(ro_id: str, body: FoundIssueComposeBody) -> dict[str, Any]:
+    from carro.core.found_issues import begin_found_issue_compose
+
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+    tech = techmod.current_technician()
+    if not tech:
+        raise HTTPException(401, "Log in as a technician")
+    try:
+        begin_found_issue_compose(
+            order,
+            tech_id=tech.id,
+            tech_name=tech.name,
+            item_id=body.item_id or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    store.save(order)
+    _push_ro(order)
+    return order.to_dict()
+
+
+@app.post("/ros/{ro_id}/found-issues/compose/cancel")
+def found_issue_compose_cancel(ro_id: str, body: FoundIssueComposeBody) -> dict[str, Any]:
+    from carro.core.found_issues import cancel_found_issue_compose
+
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+    tech = techmod.current_technician()
+    if not tech:
+        raise HTTPException(401, "Log in as a technician")
+    try:
+        cancel_found_issue_compose(
+            order,
+            tech_id=tech.id,
+            tech_name=tech.name,
+            item_id=body.item_id or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    store.save(order)
+    _push_ro(order)
+    return order.to_dict()
+
+
+@app.post("/ros/{ro_id}/found-issues")
+def found_issue_create(ro_id: str, body: FoundIssueCreateBody) -> dict[str, Any]:
+    from carro.core.found_issues import create_found_issue
+
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+    tech = techmod.current_technician()
+    if not tech:
+        raise HTTPException(401, "Log in as a technician")
+    try:
+        create_found_issue(
+            order,
+            description=body.description,
+            notes=body.notes,
+            tech_id=tech.id,
+            tech_name=tech.name,
+            source_work_item_id=body.source_work_item_id or "",
+            finish_compose=body.finish_compose,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    store.save(order)
+    _push_ro(order)
+    return order.to_dict()
+
+
+@app.post("/ros/{ro_id}/found-issues/{fi_id}/approve")
+def found_issue_approve(
+    ro_id: str, fi_id: str, body: FoundIssueApproveBody
+) -> dict[str, Any]:
+    from carro.core.found_issues import approve_found_issue
+
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+    tech = techmod.current_technician()
+    if not tech:
+        raise HTTPException(401, "Log in as a technician")
+    try:
+        approve_found_issue(
+            order,
+            fi_id,
+            item_type=body.item_type or "repair",
+            actor=tech.name,
+            actor_id=tech.id,
+            actor_role="advisor",
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    store.save(order)
+    _push_ro(order)
+    return order.to_dict()
+
+
+@app.post("/ros/{ro_id}/found-issues/{fi_id}/decline")
+def found_issue_decline(
+    ro_id: str, fi_id: str, body: FoundIssueDeclineBody
+) -> dict[str, Any]:
+    from carro.core.found_issues import decline_found_issue
+
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+    tech = techmod.current_technician()
+    if not tech:
+        raise HTTPException(401, "Log in as a technician")
+    try:
+        decline_found_issue(
+            order,
+            fi_id,
+            reason=body.reason or "customer_declined",
+            actor=tech.name,
+            actor_id=tech.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    store.save(order)
+    _push_ro(order)
+    return order.to_dict()
+
+
+@app.get("/parts")
+def parts_sheet(
+    status: str = "",
+    manufacturer: str = "",
+    part_number: str = "",
+    ro_id: str = "",
+    include_received: bool = False,
+) -> dict[str, Any]:
+    """Shop parts order sheet compiled from local ROs."""
+    from carro.core.work_items import collect_parts_sheet
+
+    rows = collect_parts_sheet(
+        store.list_orders(),
+        status=status,
+        manufacturer=manufacturer,
+        part_number=part_number,
+        ro_id=ro_id,
+        include_received=include_received,
     )
+    return {"parts": rows, "count": len(rows)}
+
+
+@app.get("/notifications/idle")
+def idle_notifications() -> dict[str, Any]:
+    """Work items / parts with no activity for idle_nudge_hours (default 24)."""
+    from carro.core.idle_nudge import collect_idle_nudges
+
+    cfg = load_config()
+    hours = resolve_idle_nudge_hours(cfg)
+    rows = collect_idle_nudges(store.list_orders(), idle_hours=hours)
+    return {
+        "idle": rows,
+        "count": len(rows),
+        "idle_nudge_hours": hours,
+        "enabled": hours > 0,
+    }
+
+
+@app.post("/ros/{ro_id}/work-items/{item_id}/parts")
+def add_part_route(ro_id: str, item_id: str, body: PartBody) -> dict[str, Any]:
+    from carro.core.work_items import add_part
+
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+    tech = techmod.current_technician()
+    if not tech:
+        raise HTTPException(401, "Log in as a technician to edit parts")
+    try:
+        add_part(
+            order,
+            item_id,
+            description=body.description,
+            part_number=body.part_number,
+            manufacturer=body.manufacturer,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    store.save(order)
+    _push_ro(order)
+    return order.to_dict()
+
+
+@app.patch("/ros/{ro_id}/work-items/{item_id}/parts/{part_id}")
+def patch_part_route(
+    ro_id: str, item_id: str, part_id: str, body: PartPatchBody
+) -> dict[str, Any]:
+    from carro.core.work_items import set_part_status, update_part
+
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+    tech = techmod.current_technician()
+    if not tech:
+        raise HTTPException(401, "Log in as a technician to edit parts")
+    try:
+        if (
+            body.description is not None
+            or body.part_number is not None
+            or body.manufacturer is not None
+        ):
+            update_part(
+                order,
+                item_id,
+                part_id,
+                description=body.description,
+                part_number=body.part_number,
+                manufacturer=body.manufacturer,
+            )
+        if body.status is not None:
+            set_part_status(
+                order,
+                item_id,
+                part_id,
+                body.status,
+                wrong_note=body.wrong_note or "",
+                actor=tech.name,
+                actor_id=tech.id,
+            )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    store.save(order)
+    _push_ro(order)
+    return order.to_dict()
+
+
+@app.delete("/ros/{ro_id}/work-items/{item_id}/parts/{part_id}")
+def delete_part_route(ro_id: str, item_id: str, part_id: str) -> dict[str, Any]:
+    from carro.core.work_items import remove_part
+
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+    tech = techmod.current_technician()
+    if not tech:
+        raise HTTPException(401, "Log in as a technician to edit parts")
+    if not remove_part(order, item_id, part_id):
+        raise HTTPException(404, "Part not found")
+    store.save(order)
+    _push_ro(order)
+    return order.to_dict()
+
+
+@app.post("/ros/{ro_id}/work-items/{item_id}/time")
+def work_item_time_route(ro_id: str, item_id: str, body: WorkItemTimeBody) -> dict[str, Any]:
+    from carro.core.assignment import (
+        clear_current_task,
+        clear_tech_current_elsewhere,
+        matches_tech,
+        set_current_task,
+    )
+    from carro.core.work_items import add_worked_minutes, checkpoint_work_timer, stop_work_timer
+
+    order = store.get(ro_id)
+    if not order:
+        raise HTTPException(404, "RO not found")
+    tech = techmod.current_technician()
+    if not tech:
+        raise HTTPException(401, "Log in as a technician to log time")
+    try:
+        if body.action == "add":
+            mins = int(body.minutes or 0)
+            if mins <= 0:
+                raise HTTPException(400, "minutes must be > 0")
+            add_worked_minutes(
+                order,
+                item_id,
+                mins,
+                tech_id=tech.id,
+                tech_name=tech.name,
+                note=body.note or "",
+            )
+        elif body.action == "start":
+            for other in clear_tech_current_elsewhere(
+                store.list_orders(),
+                tech_id=tech.id,
+                tech_name=tech.name,
+                except_id=ro_id,
+            ):
+                store.save(other)
+                _push_ro(other)
+            set_current_task(
+                order,
+                tech_id=tech.id,
+                tech_name=tech.name,
+                item_id=item_id,
+                also_assign=True,
+            )
+        elif body.action == "stop":
+            stop_work_timer(order, item_id)
+            if (order.current_item_id or "") == item_id and matches_tech(
+                order.current_tech_id,
+                order.current_tech_name,
+                me_id=tech.id,
+                me_name=tech.name,
+            ):
+                # clear_current would double-stop; already stopped this item
+                order.current_tech_id = ""
+                order.current_tech_name = ""
+                order.current_since = ""
+                order.current_item_id = ""
+        elif body.action == "checkpoint":
+            checkpoint_work_timer(
+                order,
+                item_id,
+                tech_id=tech.id,
+                tech_name=tech.name,
+            )
+        else:
+            raise HTTPException(400, f"Unknown action: {body.action}")
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
     store.save(order)
     _push_ro(order)
     return order.to_dict()
@@ -914,6 +1639,7 @@ def _config_public(cfg: dict | None = None) -> dict[str, Any]:
     photos = cfg.get("photos") or {}
     ro_keep = resolve_local_keep(cfg)
     photo_keep = resolve_local_photo_keep(cfg)
+    billed_keep = resolve_local_billed_keep(cfg)
     info = disk_info()
     logo_label, _ok = logo_status(cfg)
     return {
@@ -933,6 +1659,9 @@ def _config_public(cfg: dict | None = None) -> dict[str, Any]:
         "local_photo_keep_display": format_keep_setting(
             cfg.get("local_photo_keep"), photo_keep
         ),
+        "local_billed_keep": billed_keep,
+        "local_parts_received_keep_hours": resolve_local_parts_received_keep_hours(cfg),
+        "idle_nudge_hours": resolve_idle_nudge_hours(cfg),
         "photos_dir": str(photos.get("dir") or ""),
         "photos_inbox_dir": str(photos.get("inbox_dir") or ""),
         "photos_provider": str(photos.get("provider") or "local"),
@@ -986,6 +1715,20 @@ def put_config(body: ConfigBody) -> dict[str, Any]:
         cfg["local_keep"] = _parse_keep(body.local_keep)
     if body.local_photo_keep is not None:
         cfg["local_photo_keep"] = _parse_keep(body.local_photo_keep, allow_match=True)
+    if body.local_billed_keep is not None:
+        if body.local_billed_keep < 0:
+            raise HTTPException(400, "local_billed_keep must be >= 0")
+        cfg["local_billed_keep"] = int(body.local_billed_keep)
+    if body.local_parts_received_keep_hours is not None:
+        if body.local_parts_received_keep_hours < 0:
+            raise HTTPException(400, "local_parts_received_keep_hours must be >= 0")
+        cfg["local_parts_received_keep_hours"] = float(
+            body.local_parts_received_keep_hours
+        )
+    if body.idle_nudge_hours is not None:
+        if body.idle_nudge_hours < 0:
+            raise HTTPException(400, "idle_nudge_hours must be >= 0 (0 = off)")
+        cfg["idle_nudge_hours"] = float(body.idle_nudge_hours)
     if body.autosync_minutes is not None:
         if body.autosync_minutes < 0:
             raise HTTPException(400, "autosync_minutes must be >= 0 (0 = off)")

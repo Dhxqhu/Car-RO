@@ -1,16 +1,36 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Bell } from "lucide-react";
-import { api, type RoEvent } from "@/lib/api";
+import { api, type IdleNudge, type RoEvent } from "@/lib/api";
 import { eventLabel, filterOthersEvents, formatEventSummary } from "@/lib/notifications";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { cn, formatShopTime, formatStatus } from "@/lib/utils";
 
 const SEEN_KEY = "carro.notifications.seen_id";
+const IDLE_SEEN_KEY = "carro.notifications.idle_seen";
+
+function loadIdleSeen(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(IDLE_SEEN_KEY) || "[]");
+    return new Set(Array.isArray(raw) ? raw.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveIdleSeen(seen: Set<string>) {
+  localStorage.setItem(IDLE_SEEN_KEY, JSON.stringify([...seen].slice(-200)));
+}
+
+function idleKindLabel(kind: string): string {
+  if (kind === "part") return "Idle part";
+  if (kind === "work_item") return "Idle work item";
+  if (kind === "ro") return "Idle RO";
+  return "Idle";
+}
 
 /**
- * Tech↔tech live feed (assignment / item updates from others).
- * Engine/server already drop the maker's own events; we also filter client-side.
+ * Tech↔tech live feed + local idle nudges (forgotten work / parts).
  */
 export function TechNotifications({
   techName,
@@ -21,27 +41,50 @@ export function TechNotifications({
 }) {
   const [open, setOpen] = useState(false);
   const [events, setEvents] = useState<RoEvent[]>([]);
+  const [idle, setIdle] = useState<IdleNudge[]>([]);
+  const [idleHours, setIdleHours] = useState(24);
   const [unread, setUnread] = useState(0);
   const [note, setNote] = useState<string | null>(null);
   const lastId = useRef(0);
   const seenId = useRef(Number(localStorage.getItem(SEEN_KEY) || 0));
+  const idleSeen = useRef(loadIdleSeen());
+  const idleBadgeCounted = useRef(new Set<string>());
   const self = { name: techName, id: techId };
 
-  const mergeEvents = useCallback((batch: RoEvent[], replace: boolean) => {
-    const others = filterOthersEvents(batch, self);
-    if (!others.length && !replace) return { others, maxId: lastId.current };
-    setEvents((prev) => {
-      const merged = replace ? others.slice().reverse() : [...others.slice().reverse(), ...prev];
-      const byId = new Map<string, RoEvent>();
-      for (const e of merged) {
-        byId.set(String(e.id ?? `${e.at}-${e.type}-${e.ro_id}`), e);
-      }
-      return Array.from(byId.values()).slice(0, 40);
-    });
-    const maxId = others.reduce((m, e) => Math.max(m, Number(e.id) || 0), lastId.current);
-    if (maxId > lastId.current) lastId.current = maxId;
-    return { others, maxId };
-  }, [techName, techId]);
+  const mergeEvents = useCallback(
+    (batch: RoEvent[], replace: boolean) => {
+      const others = filterOthersEvents(batch, self);
+      if (!others.length && !replace) return { others, maxId: lastId.current };
+      setEvents((prev) => {
+        const merged = replace ? others.slice().reverse() : [...others.slice().reverse(), ...prev];
+        const byId = new Map<string, RoEvent>();
+        for (const e of merged) {
+          byId.set(String(e.id ?? `${e.at}-${e.type}-${e.ro_id}`), e);
+        }
+        return Array.from(byId.values()).slice(0, 40);
+      });
+      const maxId = others.reduce((m, e) => Math.max(m, Number(e.id) || 0), lastId.current);
+      if (maxId > lastId.current) lastId.current = maxId;
+      return { others, maxId };
+    },
+    [techName, techId],
+  );
+
+  const mergeIdle = useCallback((rows: IdleNudge[]) => {
+    setIdle(rows.slice(0, 40));
+    const active = new Set(rows.map((r) => r.fingerprint).filter(Boolean));
+    for (const fp of [...idleBadgeCounted.current]) {
+      if (!active.has(fp)) idleBadgeCounted.current.delete(fp);
+    }
+    let fresh = 0;
+    for (const row of rows) {
+      const fp = row.fingerprint;
+      if (!fp || idleSeen.current.has(fp) || idleBadgeCounted.current.has(fp)) continue;
+      idleBadgeCounted.current.add(fp);
+      fresh += 1;
+    }
+    return fresh;
+  }, []);
 
   const poll = useCallback(async () => {
     try {
@@ -60,7 +103,19 @@ export function TechNotifications({
     } catch {
       /* offline / no server — quiet */
     }
-  }, [mergeEvents, techName, techId, open]);
+    try {
+      const r = await api.listIdleNotifications();
+      setIdleHours(r.idle_nudge_hours ?? 24);
+      if (!r.enabled) {
+        setIdle([]);
+        return;
+      }
+      const fresh = mergeIdle(r.idle || []);
+      if (fresh > 0 && !open) setUnread((u) => u + fresh);
+    } catch {
+      /* engine older / offline */
+    }
+  }, [mergeEvents, mergeIdle, techName, techId, open]);
 
   useEffect(() => {
     void (async () => {
@@ -79,6 +134,16 @@ export function TechNotifications({
       } catch {
         /* ignore */
       }
+      try {
+        const r = await api.listIdleNotifications();
+        setIdleHours(r.idle_nudge_hours ?? 24);
+        if (r.enabled) {
+          const fresh = mergeIdle(r.idle || []);
+          if (fresh > 0) setUnread((u) => u + fresh);
+        }
+      } catch {
+        /* ignore */
+      }
     })();
   }, [techName, techId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -92,8 +157,14 @@ export function TechNotifications({
       seenId.current = lastId.current;
       localStorage.setItem(SEEN_KEY, String(seenId.current));
     }
+    for (const row of idle) {
+      if (row.fingerprint) idleSeen.current.add(row.fingerprint);
+    }
+    saveIdleSeen(idleSeen.current);
     setUnread(0);
   }
+
+  const empty = events.length === 0 && idle.length === 0;
 
   return (
     <div className="relative">
@@ -128,14 +199,63 @@ export function TechNotifications({
               "absolute right-0 z-40 mt-2 w-80 max-w-[min(20rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-surface shadow-lg",
             )}
           >
+            {idle.length ? (
+              <>
+                <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted">
+                  Needs attention
+                  {idleHours > 0 ? ` · ≥ ${idleHours}h idle` : ""}
+                </div>
+                <ul className="max-h-56 overflow-y-auto border-b border-border">
+                  {idle.map((row) => (
+                    <li
+                      key={row.fingerprint}
+                      className="border-b border-border/60 px-3 py-2 text-sm last:border-0"
+                    >
+                      <div className="flex justify-between gap-2 text-xs text-muted">
+                        <span>{idleKindLabel(row.kind)}</span>
+                        <span className="shrink-0">
+                          {row.idle_hours != null ? `${row.idle_hours}h` : ""}
+                        </span>
+                      </div>
+                      <Link
+                        to={`/ro/${row.ro_id}`}
+                        className="font-medium text-accent hover:underline"
+                        onClick={() => setOpen(false)}
+                      >
+                        {row.ro_id}
+                      </Link>
+                      {row.work_item_id ? (
+                        <span className="text-muted"> · {row.work_item_id}</span>
+                      ) : null}
+                      {row.part_id ? (
+                        <span className="text-muted"> · {row.part_id}</span>
+                      ) : null}
+                      {row.status ? (
+                        <div className="text-xs text-muted">{formatStatus(row.status)}</div>
+                      ) : null}
+                      {row.summary ? (
+                        <p className="mt-0.5 line-clamp-2 text-xs text-muted">{row.summary}</p>
+                      ) : null}
+                      {row.idle_since ? (
+                        <p className="mt-0.5 text-[11px] text-muted">
+                          Last activity {formatShopTime(row.idle_since)}
+                        </p>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
             <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted">
               Team updates
             </div>
             {note ? <p className="px-3 py-2 text-xs text-muted">{note}</p> : null}
-            {events.length === 0 ? (
+            {empty ? (
               <p className="px-3 py-4 text-sm text-muted">
-                No updates from other techs yet. Your own edits stay silent.
+                No idle work and no updates from other techs. Your own edits stay silent.
               </p>
+            ) : events.length === 0 ? (
+              <p className="px-3 py-4 text-sm text-muted">No team updates yet.</p>
             ) : (
               <ul className="max-h-80 overflow-y-auto">
                 {events.map((e) => (

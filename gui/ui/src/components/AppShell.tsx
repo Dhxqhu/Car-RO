@@ -16,9 +16,11 @@ const workspaces = [
       p === "/" ||
       p.startsWith("/ro") ||
       p.startsWith("/assigned") ||
+      p.startsWith("/parts") ||
       p.startsWith("/history") ||
       p.startsWith("/settings") ||
-      p.startsWith("/techs"),
+      p.startsWith("/techs") ||
+      p.startsWith("/admin"),
   },
   { to: "/scan", label: "Scanner", match: (p: string) => p.startsWith("/scan") },
 ];
@@ -26,9 +28,11 @@ const workspaces = [
 const orderLinks = [
   { to: "/", label: "Orders", end: true },
   { to: "/assigned", label: "Assigned" },
+  { to: "/parts", label: "Parts" },
   { to: "/history", label: "History" },
   { to: "/settings", label: "Config" },
   { to: "/techs", label: "Technicians" },
+  { to: "/admin", label: "Admin" },
 ];
 
 export function AppShell({

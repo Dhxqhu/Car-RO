@@ -14,25 +14,117 @@ export type Technician = {
   name: string;
 };
 
+export type WorkItemTimeEntry = {
+  minutes: number;
+  tech_id?: string;
+  tech_name?: string;
+  at?: string;
+  note?: string;
+  source?: string;
+};
+
+export type WorkItemPart = {
+  id: string;
+  description: string;
+  part_number?: string;
+  manufacturer?: string;
+  status: string;
+  requested_at?: string;
+  ordered_at?: string;
+  received_at?: string;
+  wrong_note?: string;
+  updated_at?: string;
+};
+
 export type WorkItem = {
   id: string;
   concern: string;
   notes: string;
+  private_notes?: string;
+  item_type?: string;
   status: string;
   priority?: number;
   assigned_to_id?: string;
   assigned_to_name?: string;
+  assigned_at?: string;
   created_by?: string;
   created_by_id?: string;
   created_by_role?: string;
   notes_by?: string;
   notes_by_id?: string;
   notes_by_role?: string;
+  worked_minutes?: number;
+  time_log?: WorkItemTimeEntry[];
+  worked_first_at?: string;
+  worked_last_at?: string;
+  timer_started_at?: string;
+  timer_tech_id?: string;
+  timer_tech_name?: string;
+  stage_entered_at?: string;
+  stage_totals?: {
+    waiting_parts_minutes?: number;
+    waiting_customer_minutes?: number;
+    in_progress_calendar_minutes?: number;
+    open_minutes?: number;
+  };
+  stage_log?: Array<{
+    stage: string;
+    started_at?: string;
+    ended_at?: string;
+    minutes?: number;
+  }>;
+  downtime_minutes?: number;
+  downtime_log?: Array<{
+    reason: string;
+    started_at?: string;
+    ended_at?: string;
+    minutes?: number;
+  }>;
+  downtime_started_at?: string;
+  downtime_reason?: string;
   updated_by?: string;
   updated_by_role?: string;
   created?: string;
   updated?: string;
   linked_photo_ids?: string[];
+  parts?: WorkItemPart[];
+};
+
+export type PartsSheetRow = {
+  ro_id: string;
+  work_item_id: string;
+  item_type?: string;
+  concern?: string;
+  customer?: string;
+  vehicle?: string;
+  make?: string;
+  part_id: string;
+  description: string;
+  part_number?: string;
+  manufacturer?: string;
+  status: string;
+  requested_at?: string;
+  ordered_at?: string;
+  received_at?: string;
+  wrong_note?: string;
+  updated_at?: string;
+};
+
+export type IdleNudge = {
+  kind: "ro" | "work_item" | "part" | string;
+  ro_id: string;
+  work_item_id?: string;
+  part_id?: string;
+  status?: string;
+  item_type?: string;
+  summary?: string;
+  customer?: string;
+  vehicle?: string;
+  assigned_to_name?: string;
+  manufacturer?: string;
+  idle_since?: string;
+  idle_hours?: number;
+  fingerprint: string;
 };
 
 export type RepairOrder = {
@@ -56,16 +148,87 @@ export type RepairOrder = {
   current_tech_id?: string;
   current_tech_name?: string;
   current_since?: string;
+  current_item_id?: string;
   started_at?: string;
   done_at?: string;
   billed_out_at?: string;
   waiting_since?: string;
+  parts_requested_at?: string;
+  parts_requested_by?: string;
+  approval_requested_at?: string;
+  approval_requested_by?: string;
   status: string;
   obd_snapshot: string;
   photos: Array<Record<string, unknown>>;
   work_items?: WorkItem[];
+  found_issues?: FoundIssue[];
   created: string;
   updated: string;
+};
+
+export type FoundIssue = {
+  id: string;
+  description: string;
+  notes?: string;
+  status: string;
+  decline_reason?: string;
+  found_by?: string;
+  found_by_id?: string;
+  found_at?: string;
+  resolved_by?: string;
+  resolved_by_id?: string;
+  resolved_at?: string;
+  work_item_id?: string;
+  source_work_item_id?: string;
+  compose_downtime_minutes?: number;
+  updated?: string;
+};
+
+export type FoundIssueSummary = {
+  id: string;
+  ro_id: string;
+  description: string;
+  status: string;
+  found_by?: string;
+  found_by_id?: string;
+  found_at?: string;
+  source_work_item_id?: string;
+  customer: string;
+  vehicle: string;
+  vin?: string;
+};
+
+/** Itemized job on the Assigned board (work item + car context). */
+export type AssignedJobSummary = {
+  id: string;
+  ro_id: string;
+  item_id: string;
+  concern: string;
+  item_status: string;
+  item_type?: string;
+  customer: string;
+  vehicle: string;
+  vin: string;
+  ro_status: string;
+  assigned_to_id?: string;
+  assigned_to_name?: string;
+  assigned_at?: string;
+  worked_minutes?: number;
+  worked_first_at?: string;
+  worked_last_at?: string;
+  timer_started_at?: string;
+  timer_tech_name?: string;
+  stage_entered_at?: string;
+  stage_totals?: Record<string, number>;
+  waiting_parts_minutes?: number;
+  waiting_customer_minutes?: number;
+  stage_live_minutes?: number;
+  downtime_minutes?: number;
+  is_current?: boolean;
+  current_tech_id?: string;
+  current_tech_name?: string;
+  current_since?: string;
+  updated?: string;
 };
 
 export type AssignedOrderSummary = {
@@ -80,10 +243,16 @@ export type AssignedOrderSummary = {
   current_tech_id?: string;
   current_tech_name?: string;
   current_since?: string;
+  current_item_id?: string;
   started_at?: string;
   done_at?: string;
   billed_out_at?: string;
   waiting_since?: string;
+  parts_requested_at?: string;
+  parts_requested_by?: string;
+  approval_requested_at?: string;
+  approval_requested_by?: string;
+  worked_minutes?: number;
   created?: string;
   updated: string;
   work_items: Array<{
@@ -95,6 +264,10 @@ export type AssignedOrderSummary = {
     created_by?: string;
     created_by_role?: string;
     notes_by?: string;
+    worked_minutes?: number;
+    worked_first_at?: string;
+    worked_last_at?: string;
+    timer_started_at?: string;
   }>;
 };
 
@@ -102,24 +275,29 @@ export type NowWorkingEntry = {
   tech_id: string;
   tech_name: string;
   since: string;
+  item_id?: string;
   order: AssignedOrderSummary;
+  job?: AssignedJobSummary;
   is_me?: boolean;
 };
 
 export type AssignedBoard = {
-  mine: AssignedOrderSummary[];
-  waiting_parts?: AssignedOrderSummary[];
-  waiting_customer?: AssignedOrderSummary[];
+  mine: AssignedJobSummary[];
+  waiting_parts?: AssignedJobSummary[];
+  waiting_customer?: AssignedJobSummary[];
+  found_issues_pending?: FoundIssueSummary[];
   ready_to_bill?: AssignedOrderSummary[];
+  billed_out?: AssignedOrderSummary[];
   by_tech: Array<{
     id: string;
     name: string;
     orders: AssignedOrderSummary[];
-    current?: AssignedOrderSummary | null;
+    jobs?: AssignedJobSummary[];
+    current?: AssignedJobSummary | AssignedOrderSummary | null;
   }>;
-  unassigned: AssignedOrderSummary[];
+  unassigned: AssignedJobSummary[];
   now_working?: NowWorkingEntry[];
-  my_current?: AssignedOrderSummary | null;
+  my_current?: AssignedJobSummary | null;
   tech_id?: string;
   tech_name?: string;
   source?: string;
@@ -152,6 +330,9 @@ export type ConfigSnapshot = {
   local_photo_keep: string | number;
   local_photo_keep_resolved: number;
   local_photo_keep_display: string;
+  local_billed_keep: number;
+  local_parts_received_keep_hours: number;
+  idle_nudge_hours: number;
   photos_dir: string;
   photos_inbox_dir: string;
   photos_provider: string;
@@ -222,6 +403,27 @@ export const api = {
   logout: () => req<{ ok: boolean }>("/session/logout", { method: "POST" }),
   listRos: (q = "") =>
     req<{ orders: RepairOrder[] }>(`/ros${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  extendedSearch: (opts: {
+    q?: string;
+    name?: string;
+    vin?: string;
+    plate?: string;
+    make?: string;
+    model?: string;
+    year?: string;
+    status?: string;
+  }) => {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(opts)) {
+      if (typeof v === "string" && v.trim()) params.set(k, v.trim());
+    }
+    return req<{
+      orders: RepairOrder[];
+      remote_enabled: boolean;
+      remote_only: number;
+      sources: Record<string, string>;
+    }>(`/ros/extended-search?${params.toString()}`);
+  },
   getRo: (id: string) => req<RepairOrder>(`/ros/${encodeURIComponent(id)}`),
   createRo: () => req<RepairOrder>("/ros", { method: "POST", body: "{}" }),
   saveRo: (order: RepairOrder) =>
@@ -340,6 +542,8 @@ export const api = {
       id?: string;
       concern?: string;
       notes?: string;
+      private_notes?: string;
+      item_type?: string;
       status?: string;
       priority?: number;
     },
@@ -348,6 +552,64 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  listParts: (opts?: {
+    status?: string;
+    manufacturer?: string;
+    part_number?: string;
+    ro_id?: string;
+    include_received?: boolean;
+  }) => {
+    const params = new URLSearchParams();
+    if (opts?.status) params.set("status", opts.status);
+    if (opts?.manufacturer) params.set("manufacturer", opts.manufacturer);
+    if (opts?.part_number) params.set("part_number", opts.part_number);
+    if (opts?.ro_id) params.set("ro_id", opts.ro_id);
+    if (opts?.include_received) params.set("include_received", "true");
+    const q = params.toString();
+    return req<{ parts: PartsSheetRow[]; count: number }>(`/parts${q ? `?${q}` : ""}`);
+  },
+  addPart: (
+    roId: string,
+    itemId: string,
+    body: { description: string; part_number?: string; manufacturer?: string | null },
+  ) =>
+    req<RepairOrder>(
+      `/ros/${encodeURIComponent(roId)}/work-items/${encodeURIComponent(itemId)}/parts`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  patchPart: (
+    roId: string,
+    itemId: string,
+    partId: string,
+    body: {
+      description?: string;
+      part_number?: string;
+      manufacturer?: string;
+      status?: string;
+      wrong_note?: string;
+    },
+  ) =>
+    req<RepairOrder>(
+      `/ros/${encodeURIComponent(roId)}/work-items/${encodeURIComponent(itemId)}/parts/${encodeURIComponent(partId)}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
+  deletePart: (roId: string, itemId: string, partId: string) =>
+    req<RepairOrder>(
+      `/ros/${encodeURIComponent(roId)}/work-items/${encodeURIComponent(itemId)}/parts/${encodeURIComponent(partId)}`,
+      { method: "DELETE" },
+    ),
+  workItemTime: (
+    roId: string,
+    itemId: string,
+    body: { action: "add" | "start" | "stop" | "checkpoint"; minutes?: number; note?: string },
+  ) =>
+    req<RepairOrder>(
+      `/ros/${encodeURIComponent(roId)}/work-items/${encodeURIComponent(itemId)}/time`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
   deleteWorkItem: (roId: string, itemId: string) =>
     req<RepairOrder>(
       `/ros/${encodeURIComponent(roId)}/work-items/${encodeURIComponent(itemId)}`,
@@ -362,10 +624,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  setCurrentTask: (roId: string, active = true) =>
+  setCurrentTask: (roId: string, active = true, itemId?: string) =>
     req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/current`, {
       method: "POST",
-      body: JSON.stringify({ active }),
+      body: JSON.stringify({ active, item_id: itemId || null }),
     }),
   queueAction: (
     roId: string,
@@ -373,14 +635,63 @@ export const api = {
       | "add"
       | "remove"
       | "complete"
+      | "complete_item"
       | "billed_out"
+      | "reopen"
       | "waiting_parts"
-      | "waiting_customer",
+      | "request_parts"
+      | "item_waiting_parts"
+      | "waiting_customer"
+      | "request_approval"
+      | "item_waiting_customer",
+    itemId?: string,
   ) =>
     req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/queue`, {
       method: "POST",
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ action, item_id: itemId || null }),
     }),
+  beginFoundIssueCompose: (roId: string, itemId?: string) =>
+    req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/found-issues/compose`, {
+      method: "POST",
+      body: JSON.stringify({ item_id: itemId || null }),
+    }),
+  cancelFoundIssueCompose: (roId: string, itemId?: string) =>
+    req<RepairOrder>(
+      `/ros/${encodeURIComponent(roId)}/found-issues/compose/cancel`,
+      {
+        method: "POST",
+        body: JSON.stringify({ item_id: itemId || null }),
+      },
+    ),
+  createFoundIssue: (
+    roId: string,
+    body: {
+      description: string;
+      notes?: string;
+      source_work_item_id?: string;
+      finish_compose?: boolean;
+    },
+  ) =>
+    req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/found-issues`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  approveFoundIssue: (roId: string, fiId: string, itemType = "repair") =>
+    req<RepairOrder>(
+      `/ros/${encodeURIComponent(roId)}/found-issues/${encodeURIComponent(fiId)}/approve`,
+      {
+        method: "POST",
+        body: JSON.stringify({ item_type: itemType }),
+      },
+    ),
+  declineFoundIssue: (roId: string, fiId: string, reason = "customer_declined") =>
+    req<RepairOrder>(
+      `/ros/${encodeURIComponent(roId)}/found-issues/${encodeURIComponent(fiId)}/decline`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      },
+    ),
   listEvents: (opts?: {
     since?: string;
     since_id?: number;
@@ -401,6 +712,13 @@ export const api = {
     params.set("limit", String(opts?.limit ?? 50));
     return req<{ events: RoEvent[]; note?: string }>(`/events?${params.toString()}`);
   },
+  listIdleNotifications: () =>
+    req<{
+      idle: IdleNudge[];
+      count: number;
+      idle_nudge_hours: number;
+      enabled: boolean;
+    }>("/notifications/idle"),
   getConfig: () => req<ConfigSnapshot>("/config"),
   setConfig: (body: Record<string, unknown>) =>
     req<{ ok: boolean } & ConfigSnapshot>("/config", {
@@ -415,9 +733,52 @@ export const api = {
     req<{ ok: boolean } & ConfigSnapshot>("/config/apply-disk-recommendation", {
       method: "POST",
     }),
-  addTech: (name: string, pin: string, adminPin: string) =>
+  addTech: (name: string, pin: string, adminPin?: string) =>
     req<Technician>("/technicians", {
       method: "POST",
-      body: JSON.stringify({ name, pin, admin_pin: adminPin }),
+      body: JSON.stringify({
+        name,
+        pin,
+        ...(adminPin ? { admin_pin: adminPin } : {}),
+      }),
     }),
+  adminSession: () =>
+    req<{ active: boolean; has_admin_pin: boolean }>("/admin/session"),
+  adminUnlock: (adminPin: string) =>
+    req<{ ok: boolean; active: boolean }>("/admin/unlock", {
+      method: "POST",
+      body: JSON.stringify({ admin_pin: adminPin }),
+    }),
+  adminLock: () => req<{ ok: boolean }>("/admin/lock", { method: "POST" }),
+  adminChangePin: (adminPin: string, newPin: string) =>
+    req<{ ok: boolean }>("/admin/change-pin", {
+      method: "POST",
+      body: JSON.stringify({ admin_pin: adminPin, new_pin: newPin }),
+    }),
+  adminResetTechPin: (techId: string, newPin: string) =>
+    req<{ ok: boolean }>(`/admin/technicians/${encodeURIComponent(techId)}/reset-pin`, {
+      method: "POST",
+      body: JSON.stringify({ tech_id: techId, new_pin: newPin }),
+    }),
+  adminRenameTech: (techId: string, name: string) =>
+    req<{ ok: boolean }>(`/admin/technicians/${encodeURIComponent(techId)}/rename`, {
+      method: "POST",
+      body: JSON.stringify({ tech_id: techId, name }),
+    }),
+  adminRemoveTech: (techId: string) =>
+    req<{ ok: boolean }>(`/admin/technicians/${encodeURIComponent(techId)}`, {
+      method: "DELETE",
+    }),
+  adminWorkItemTime: (
+    roId: string,
+    itemId: string,
+    body: { action: "set" | "add" | "clear"; minutes?: number; note?: string },
+  ) =>
+    req<RepairOrder>(
+      `/ros/${encodeURIComponent(roId)}/work-items/${encodeURIComponent(itemId)}/time/admin`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
 };

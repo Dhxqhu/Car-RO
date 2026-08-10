@@ -49,6 +49,26 @@ export function eventLabel(type: string): string {
       return "Started working";
     case "ro_current_cleared":
       return "Stopped working";
+    case "ro_approval_requested":
+      return "Customer approval requested";
+    case "ro_parts_requested":
+      return "Parts order requested";
+    case "ro_ready_to_bill":
+      return "Ready to bill";
+    case "ro_billed_out":
+      return "Billed out";
+    case "ro_reopened":
+      return "Reopened";
+    case "ro_waiting_parts":
+      return "Waiting on parts";
+    case "ro_status_changed":
+      return "Status changed";
+    case "found_issue_created":
+      return "Found issue reported";
+    case "found_issue_approved":
+      return "Found issue approved";
+    case "found_issue_declined":
+      return "Found issue declined";
     default:
       return formatLabel(type);
   }

@@ -45,10 +45,20 @@ def _summarize(d: dict[str, Any]) -> dict[str, Any]:
         "current_tech_id": d.get("current_tech_id") or "",
         "current_tech_name": d.get("current_tech_name") or "",
         "current_since": d.get("current_since") or "",
+        "current_item_id": d.get("current_item_id") or "",
         "started_at": d.get("started_at") or "",
         "done_at": d.get("done_at") or "",
         "billed_out_at": d.get("billed_out_at") or "",
         "waiting_since": d.get("waiting_since") or "",
+        "parts_requested_at": d.get("parts_requested_at") or "",
+        "parts_requested_by": d.get("parts_requested_by") or "",
+        "approval_requested_at": d.get("approval_requested_at") or "",
+        "approval_requested_by": d.get("approval_requested_by") or "",
+        "worked_minutes": sum(
+            max(0, int(it.get("worked_minutes") or 0))
+            for it in items
+            if isinstance(it, dict)
+        ),
         "created": d.get("created") or "",
         "updated": d.get("updated") or d.get("created") or "",
         "work_items": [
@@ -63,6 +73,10 @@ def _summarize(d: dict[str, Any]) -> dict[str, Any]:
                 "created_by": it.get("created_by") or "",
                 "created_by_role": it.get("created_by_role") or "",
                 "notes_by": it.get("notes_by") or "",
+                "worked_minutes": int(it.get("worked_minutes") or 0),
+                "worked_first_at": it.get("worked_first_at") or "",
+                "worked_last_at": it.get("worked_last_at") or "",
+                "timer_started_at": it.get("timer_started_at") or "",
             }
             for it in items
         ],
@@ -79,6 +93,7 @@ def build_assigned_board(
     waiting_parts: list[dict[str, Any]] = []
     waiting_customer: list[dict[str, Any]] = []
     ready_to_bill: list[dict[str, Any]] = []
+    billed_out: list[dict[str, Any]] = []
     by_tech: dict[str, dict[str, Any]] = {}
     unassigned: list[dict[str, Any]] = []
     now_working: list[dict[str, Any]] = []
@@ -117,7 +132,9 @@ def build_assigned_board(
             waiting_customer.append(summary)
         elif status == "done":
             ready_to_bill.append(summary)
-        elif status != "billed_out" and involves_me:
+        elif status == "billed_out":
+            billed_out.append(summary)
+        elif involves_me:
             mine.append(summary)
 
         if cur_id or cur_name:
@@ -132,6 +149,7 @@ def build_assigned_board(
             if entry["is_me"]:
                 my_current = summary
 
+        # Closed / parked jobs never appear under Unassigned
         if status in ("done", "billed_out", "waiting_parts", "waiting_customer"):
             continue
 
@@ -172,6 +190,10 @@ def build_assigned_board(
     by_tech_list = sorted(by_tech.values(), key=lambda b: (b.get("name") or "").lower())
     for lst in (mine, waiting_parts, waiting_customer, ready_to_bill, unassigned):
         lst.sort(key=lambda o: o.get("updated") or "", reverse=True)
+    billed_out.sort(
+        key=lambda o: o.get("billed_out_at") or o.get("updated") or "",
+        reverse=True,
+    )
     now_working.sort(key=lambda e: (e.get("tech_name") or "").lower())
     for b in by_tech_list:
         b["orders"].sort(key=lambda o: o.get("updated") or "", reverse=True)
@@ -181,6 +203,7 @@ def build_assigned_board(
         "waiting_parts": waiting_parts,
         "waiting_customer": waiting_customer,
         "ready_to_bill": ready_to_bill,
+        "billed_out": billed_out,
         "by_tech": by_tech_list,
         "unassigned": unassigned,
         "now_working": now_working,

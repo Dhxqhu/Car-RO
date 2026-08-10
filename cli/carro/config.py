@@ -30,6 +30,12 @@ DEFAULTS: dict = {
     # "auto" sizes from free disk on the photos volume; or an int count
     "local_keep": "auto",
     "local_photo_keep": "auto",
+    # Closed (billed_out) ROs kept locally for quick reopen / recent history
+    "local_billed_keep": 20,
+    # Hours to keep received part lines locally before stripping (server still has RO)
+    "local_parts_received_keep_hours": 24,
+    # Nudge when a work item or part sits untouched this long (0 = off)
+    "idle_nudge_hours": 24,
     # Background push to shop server while engine/CLI menu is open. 0 = off.
     "autosync_minutes": 0,
     # Textual TUI theme (search / history / RO forms). Ctrl+P changes persist here.
@@ -214,6 +220,38 @@ def resolve_local_photo_keep(cfg: dict | None = None) -> int:
     return max(0, min(int(raw), ro_keep if ro_keep else int(raw)))
 
 
+def resolve_local_billed_keep(cfg: dict | None = None) -> int:
+    """How many newest billed_out ROs to retain locally (default 20)."""
+    cfg = cfg or load_config()
+    raw = cfg.get("local_billed_keep", 20)
+    if _is_auto(raw):
+        return 20
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 20
+
+
+def resolve_local_parts_received_keep_hours(cfg: dict | None = None) -> float:
+    """Hours to keep received part lines locally before stripping (default 24)."""
+    cfg = cfg or load_config()
+    raw = cfg.get("local_parts_received_keep_hours", 24)
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 24.0
+
+
+def resolve_idle_nudge_hours(cfg: dict | None = None) -> float:
+    """Hours before an untouched work item / part shows an idle nudge (0 = off)."""
+    cfg = cfg or load_config()
+    raw = cfg.get("idle_nudge_hours", 24)
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 24.0
+
+
 def format_keep_setting(raw: object, resolved: int) -> str:
     if isinstance(raw, str) and raw.strip().lower() == "match":
         return f"match (→ {resolved})"
@@ -240,6 +278,9 @@ def save_config(cfg: dict) -> Path:
         f'token = {_toml_str(cfg.get("token", ""))}',
         f'local_keep = {_keep_toml(cfg.get("local_keep", "auto"))}',
         f'local_photo_keep = {_keep_toml(cfg.get("local_photo_keep", "auto"))}',
+        f"local_billed_keep = {int(resolve_local_billed_keep(cfg))}",
+        f"local_parts_received_keep_hours = {resolve_local_parts_received_keep_hours(cfg):g}",
+        f"idle_nudge_hours = {resolve_idle_nudge_hours(cfg):g}",
         f"autosync_minutes = {_parse_autosync_minutes(cfg.get('autosync_minutes', 0))}",
         f'textual_theme = {_toml_str(cfg.get("textual_theme", "ansi-dark"))}',
         "",

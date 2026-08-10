@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, type Technician } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,7 +49,12 @@ export function TechsPage() {
           Technicians
         </h1>
         <p className="mt-1 text-sm text-muted">
-          Roster is shared via the shop server when configured. Admin PIN required to add.
+          Roster is shared via the shop server when configured. Admin PIN required to add. For
+          PIN reset, rename, remove, and time corrections, use{" "}
+          <Link to="/admin" className="text-accent hover:underline">
+            Admin
+          </Link>
+          .
         </p>
       </div>
 

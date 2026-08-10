@@ -355,21 +355,22 @@ def export_pdf(
     )
     _append_kept(story, grid, min_remain_inch=1.8)
 
-    from carro.core.work_items import ensure_work_items_on_order
+    from carro.core.work_items import ensure_work_items_on_order, item_type_label
 
     items = ensure_work_items_on_order(order)
     if items:
         for i, w in enumerate(items, 1):
             concern = (w.concern or "—").strip() or "—"
             notes = (w.notes or "").strip()
-            # Customer PDF: concern + diagnosis only — no waiting/status stamps or
-            # internal who-entered attribution (efficiency data stays shop-side).
+            # Customer PDF: concern + diagnosis only — no waiting/status stamps,
+            # private tech notes, or shop parts-order data.
+            type_bit = item_type_label(getattr(w, "item_type", "") or "other")
             if notes:
                 body_txt = f"{concern}\n\nDiagnosis / notes:\n{notes}"
             else:
                 body_txt = concern
             box = _section_box(
-                f"WORK ITEM {i} · {w.id}",
+                f"WORK ITEM {i} · {w.id} · {type_bit}",
                 body_txt,
                 head_style=box_head,
                 body_style=box_body,
@@ -391,6 +392,27 @@ def export_pdf(
             body_style=box_body,
         )
         _append_kept(story, Spacer(1, 0.12 * inch), notes_box, min_remain_inch=1.2)
+
+    from carro.core.found_issues import decline_reason_label, normalize_found_issues
+
+    declined_fis = [
+        fi
+        for fi in normalize_found_issues(getattr(order, "found_issues", None))
+        if str(fi.get("status") or "") == "declined"
+    ]
+    if declined_fis:
+        lines: list[str] = []
+        for fi in declined_fis:
+            desc = (fi.get("description") or "—").strip() or "—"
+            label = decline_reason_label(str(fi.get("decline_reason") or ""))
+            lines.append(f"• {desc}\n  ({label})")
+        box = _section_box(
+            "ADDITIONAL FINDINGS (NOT AUTHORIZED)",
+            "\n\n".join(lines),
+            head_style=box_head,
+            body_style=box_body,
+        )
+        _append_kept(story, Spacer(1, 0.12 * inch), box, min_remain_inch=1.0)
 
     if order.obd_snapshot.strip():
         obd_html = _xml_escape(order.obd_snapshot).replace("\n", "<br/>")

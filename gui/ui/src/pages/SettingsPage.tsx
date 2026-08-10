@@ -19,6 +19,9 @@ const emptyCfg = (): ConfigSnapshot => ({
   local_photo_keep: "auto",
   local_photo_keep_resolved: 0,
   local_photo_keep_display: "",
+  local_billed_keep: 20,
+  local_parts_received_keep_hours: 24,
+  idle_nudge_hours: 24,
   photos_dir: "",
   photos_inbox_dir: "",
   photos_provider: "local",
@@ -40,6 +43,9 @@ export function SettingsPage() {
   const [localKeepCustom, setLocalKeepCustom] = useState("");
   const [photoKeep, setPhotoKeep] = useState<string>("auto");
   const [photoKeepCustom, setPhotoKeepCustom] = useState("");
+  const [billedKeep, setBilledKeep] = useState("20");
+  const [partsKeepHours, setPartsKeepHours] = useState("24");
+  const [idleNudgeHours, setIdleNudgeHours] = useState("24");
   const [photosDir, setPhotosDir] = useState("");
   const [inboxDir, setInboxDir] = useState("");
   const [autosyncMinutes, setAutosyncMinutes] = useState("0");
@@ -56,6 +62,9 @@ export function SettingsPage() {
     setPhotosDir(c.photos_dir);
     setInboxDir(c.photos_inbox_dir);
     setAutosyncMinutes(String(c.autosync_minutes ?? 0));
+    setBilledKeep(String(c.local_billed_keep ?? 20));
+    setPartsKeepHours(String(c.local_parts_received_keep_hours ?? 24));
+    setIdleNudgeHours(String(c.idle_nudge_hours ?? 24));
     const lk = String(c.local_keep);
     const presetVals = new Set(
       c.keep_presets.map((p) => String(p.value)).filter((v) => v !== "custom"),
@@ -105,6 +114,18 @@ export function SettingsPage() {
       if (Number.isNaN(mins) || mins < 0) {
         throw new Error("Autosync minutes must be 0 (off) or a positive number");
       }
+      const billed = parseInt(billedKeep, 10);
+      if (Number.isNaN(billed) || billed < 0) {
+        throw new Error("Billed-out keep must be 0 or a positive number");
+      }
+      const partsHours = parseFloat(partsKeepHours);
+      if (Number.isNaN(partsHours) || partsHours < 0) {
+        throw new Error("Received parts keep hours must be 0 or positive");
+      }
+      const idleHours = parseFloat(idleNudgeHours);
+      if (Number.isNaN(idleHours) || idleHours < 0) {
+        throw new Error("Idle nudge hours must be 0 (off) or positive");
+      }
       const body: Record<string, unknown> = {
         shop_name: shop,
         server_url: serverUrl,
@@ -112,6 +133,9 @@ export function SettingsPage() {
         logo_path: logoPath,
         local_keep: keepValue(localKeep, localKeepCustom),
         local_photo_keep: keepValue(photoKeep, photoKeepCustom),
+        local_billed_keep: billed,
+        local_parts_received_keep_hours: partsHours,
+        idle_nudge_hours: idleHours,
         autosync_minutes: mins,
         photos_dir: photosDir,
         photos_inbox_dir: inboxDir,
@@ -259,10 +283,11 @@ export function SettingsPage() {
           Local cache keep
         </h2>
         <p className="text-sm text-muted">
-          How many recent ROs (and photo files) stay on this machine. Older ones prune on sync;
-          the server still has them when configured.
+          Active jobs stay under local RO keep; billed-out jobs have their own limit (default 20).
+          Older closed work stays on the shop server — use Orders → Server search or History when a
+          repeat customer needs prior context.
         </p>
-        <Field label={`Local RO keep — now ${cfg.local_keep_display || "…"}`}>
+        <Field label={`Local RO keep (active) — now ${cfg.local_keep_display || "…"}`}>
           <select
             className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
             value={localKeep}
@@ -285,6 +310,46 @@ export function SettingsPage() {
               onChange={(e) => setLocalKeepCustom(e.target.value)}
             />
           ) : null}
+        </Field>
+        <Field label={`Local billed-out keep — now ${cfg.local_billed_keep ?? 20}`}>
+          <Input
+            type="number"
+            min={0}
+            step={1}
+            value={billedKeep}
+            onChange={(e) => setBilledKeep(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-muted">
+            Newest closed ROs kept on this bay after sync. Use server search for older history.
+          </p>
+        </Field>
+        <Field
+          label={`Received parts keep (hours) — now ${cfg.local_parts_received_keep_hours ?? 24}`}
+        >
+          <Input
+            type="number"
+            min={0}
+            step={1}
+            value={partsKeepHours}
+            onChange={(e) => setPartsKeepHours(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-muted">
+            After a part is marked received, keep it on the local RO this long after sync, then strip
+            it from the bay cache (server still has the full RO).
+          </p>
+        </Field>
+        <Field label={`Idle nudge (hours) — now ${cfg.idle_nudge_hours ?? 24} (0 = off)`}>
+          <Input
+            type="number"
+            min={0}
+            step={1}
+            value={idleNudgeHours}
+            onChange={(e) => setIdleNudgeHours(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-muted">
+            Bell badge when a work item (open / in progress / waiting parts) or part (new request /
+            ordered) has had no activity this long. Helps catch forgotten jobs.
+          </p>
         </Field>
         <Field label={`Local photo keep — now ${cfg.local_photo_keep_display || "…"}`}>
           <select

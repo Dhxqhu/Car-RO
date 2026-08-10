@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from carro.config import load_config, resolve_local_keep, resolve_local_photo_keep
+from carro.config import (
+    load_config,
+    resolve_local_billed_keep,
+    resolve_local_keep,
+    resolve_local_photo_keep,
+)
 from carro.core.db import LocalStore
 from carro.storage.remote import RemoteClient
 
@@ -61,6 +66,7 @@ def perform_sync(store: LocalStore | None = None) -> dict[str, Any]:
     cfg = load_config()
     keep_n = resolve_local_keep(cfg)
     photo_n = resolve_local_photo_keep(cfg)
+    billed_n = resolve_local_billed_keep(cfg)
     return {
         "ok": True,
         "skipped": False,
@@ -70,4 +76,5 @@ def perform_sync(store: LocalStore | None = None) -> dict[str, Any]:
         "roster": roster_status,
         "local_keep": keep_n,
         "local_photo_keep": photo_n,
+        "local_billed_keep": billed_n,
     }

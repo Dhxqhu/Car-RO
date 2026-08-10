@@ -32,10 +32,10 @@ STATUS_OPTIONS = [
     ("open", "open"),
     ("assigned", "assigned"),
     ("in_progress", "in_progress"),
-    ("waiting_parts", "waiting_parts"),
-    ("waiting_customer", "waiting_customer"),
-    ("done", "done"),
-    ("billed_out", "billed_out"),
+    ("waiting_parts", "waiting on parts (advisor)"),
+    ("waiting_customer", "awaiting customer approval"),
+    ("done", "done — ready to bill"),
+    ("billed_out", "billed out"),
 ]
 
 

@@ -10,7 +10,9 @@ import { RoListPage } from "@/pages/RoListPage";
 import { AssignedWorkPage } from "@/pages/AssignedWorkPage";
 import { HistoryPage } from "@/pages/HistoryPage";
 import { SettingsPage } from "@/pages/SettingsPage";
+import { PartsPage } from "@/pages/PartsPage";
 import { TechsPage } from "@/pages/TechsPage";
+import { AdminPage } from "@/pages/AdminPage";
 import { ScanAdaptersPage } from "@/pages/scan/ScanAdaptersPage";
 import { ScanCodesPage } from "@/pages/scan/ScanCodesPage";
 import { ScanConnectPage } from "@/pages/scan/ScanConnectPage";
@@ -137,9 +139,11 @@ export default function App() {
               <Route index element={<RoListPage />} />
               <Route path="ro/:id" element={<RoEditorPage />} />
               <Route path="assigned" element={<AssignedWorkPage />} />
+              <Route path="parts" element={<PartsPage />} />
               <Route path="history" element={<HistoryPage />} />
               <Route path="settings" element={<SettingsPage />} />
               <Route path="techs" element={<TechsPage />} />
+              <Route path="admin" element={<AdminPage />} />
               {scanRoutes()}
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
