@@ -22,6 +22,7 @@ const emptyCfg = (): ConfigSnapshot => ({
   photos_dir: "",
   photos_inbox_dir: "",
   photos_provider: "local",
+  autosync_minutes: 0,
   disk: { path: "", free_gb: 0, total_gb: 0 },
   recommend: { local_keep: 0, local_photo_keep: 0 },
   keep_presets: [],
@@ -41,6 +42,7 @@ export function SettingsPage() {
   const [photoKeepCustom, setPhotoKeepCustom] = useState("");
   const [photosDir, setPhotosDir] = useState("");
   const [inboxDir, setInboxDir] = useState("");
+  const [autosyncMinutes, setAutosyncMinutes] = useState("0");
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [generatedToken, setGeneratedToken] = useState("");
@@ -53,6 +55,7 @@ export function SettingsPage() {
     setLogoPath(c.logo_path);
     setPhotosDir(c.photos_dir);
     setInboxDir(c.photos_inbox_dir);
+    setAutosyncMinutes(String(c.autosync_minutes ?? 0));
     const lk = String(c.local_keep);
     const presetVals = new Set(
       c.keep_presets.map((p) => String(p.value)).filter((v) => v !== "custom"),
@@ -98,6 +101,10 @@ export function SettingsPage() {
     setMsg("");
     setGeneratedToken("");
     try {
+      const mins = parseInt(autosyncMinutes, 10);
+      if (Number.isNaN(mins) || mins < 0) {
+        throw new Error("Autosync minutes must be 0 (off) or a positive number");
+      }
       const body: Record<string, unknown> = {
         shop_name: shop,
         server_url: serverUrl,
@@ -105,6 +112,7 @@ export function SettingsPage() {
         logo_path: logoPath,
         local_keep: keepValue(localKeep, localKeepCustom),
         local_photo_keep: keepValue(photoKeep, photoKeepCustom),
+        autosync_minutes: mins,
         photos_dir: photosDir,
         photos_inbox_dir: inboxDir,
       };
@@ -217,6 +225,32 @@ export function SettingsPage() {
             value={textualTheme}
             onChange={(e) => setTextualTheme(e.target.value)}
           />
+        </Field>
+        <Field label="Autosync interval (minutes, 0 = off)">
+          <Input
+            type="number"
+            min={0}
+            step={1}
+            placeholder="0"
+            value={autosyncMinutes}
+            onChange={(e) => setAutosyncMinutes(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-muted">
+            While the engine (GUI) or CLI menu is open, push local ROs to the shop server on
+            this timer. Default off. Built for a future advisor desk that pulls recent jobs.
+          </p>
+          {cfg.autosync ? (
+            <p className="mt-1 text-xs text-muted">
+              Status:{" "}
+              {cfg.autosync.enabled
+                ? `on · every ${cfg.autosync.interval_minutes} min`
+                : "off"}
+              {cfg.autosync.last_run_at
+                ? ` · last ${cfg.autosync.last_ok === false ? "failed" : "ok"} ${cfg.autosync.last_run_at}`
+                : ""}
+              {cfg.autosync.last_error ? ` · ${cfg.autosync.last_error}` : ""}
+            </p>
+          ) : null}
         </Field>
       </section>
 

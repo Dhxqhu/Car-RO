@@ -86,11 +86,12 @@ export function RoEditorPage() {
     }
   }
 
-  async function pdf() {
+  async function pdf(includePhotos: boolean) {
     setErr("");
     try {
-      const r = await api.exportPdf(order.id);
-      setMsg(`PDF → ${r.path}`);
+      const r = await api.exportPdf(order.id, { include_photos: includePhotos });
+      const mode = includePhotos ? "with photos" : "no photos";
+      setMsg(`PDF (${mode}) → ${r.path}`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "PDF failed");
     }
@@ -245,9 +246,13 @@ export function RoEditorPage() {
             <Cable className="h-4 w-4" />
             Pull OBD
           </Button>
-          <Button variant="secondary" onClick={() => void pdf()}>
+          <Button variant="secondary" onClick={() => void pdf(true)}>
             <FileDown className="h-4 w-4" />
-            PDF
+            PDF + photos
+          </Button>
+          <Button variant="secondary" onClick={() => void pdf(false)}>
+            <FileDown className="h-4 w-4" />
+            PDF (no photos)
           </Button>
           <Button variant="danger" onClick={() => void remove()}>
             <Trash2 className="h-4 w-4" />

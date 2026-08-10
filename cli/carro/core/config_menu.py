@@ -102,6 +102,12 @@ def run_config_menu() -> None:
             "Technicians",
             _tech_status_summary(),
         )
+        mins = int(cfg.get("autosync_minutes") or 0)
+        table.add_row(
+            "[bold cyan]12[/]",
+            "Autosync (minutes)",
+            "off" if mins <= 0 else f"every {mins} min",
+        )
         table.add_row("[bold cyan]b[/]", "Back", "")
 
         CONSOLE.print()
@@ -150,6 +156,8 @@ def run_config_menu() -> None:
                 from carro.core.tech_ui import run_technicians_config_menu
 
                 run_technicians_config_menu()
+            elif choice == "12":
+                _edit_autosync(cfg)
             else:
                 CONSOLE.print("[yellow]Unknown option[/]")
         except (ValueError, OSError) as exc:
@@ -162,6 +170,29 @@ def recommend_pair() -> str:
     rk = recommend_local_keep()
     pk = recommend_local_photo_keep(ro_keep=rk)
     return f"{rk} ROs / {pk} with photos"
+
+
+def _edit_autosync(cfg: dict) -> None:
+    """0 = off; otherwise minutes between background syncs."""
+    cur = str(int(cfg.get("autosync_minutes") or 0))
+    CONSOLE.print(
+        "[dim]Push local ROs to the shop server on a timer while the engine or "
+        "CLI menu is open. 0 = off (default). Useful later for an advisor desk "
+        "pulling recent jobs.[/]"
+    )
+    raw = Prompt.ask("Autosync interval in minutes (0 = off)", default=cur).strip()
+    try:
+        n = int(raw)
+    except ValueError as exc:
+        raise ValueError("Enter a whole number of minutes (0 to turn off)") from exc
+    if n < 0:
+        raise ValueError("Minutes must be >= 0")
+    cfg["autosync_minutes"] = n
+    _save(cfg)
+    if n <= 0:
+        CONSOLE.print("[dim]Autosync off.[/]")
+    else:
+        CONSOLE.print(f"[dim]Autosync every {n} minute(s) when engine/CLI menu is running.[/]")
 
 
 def _save(cfg: dict) -> None:
@@ -284,6 +315,8 @@ def print_config_summary() -> None:
             f"local_keep: {format_keep_setting(cfg.get('local_keep'), resolve_local_keep(cfg))}\n"
             f"local_photo_keep: "
             f"{format_keep_setting(cfg.get('local_photo_keep'), resolve_local_photo_keep(cfg))}\n"
+            f"autosync_minutes: "
+            f"{'off' if int(cfg.get('autosync_minutes') or 0) <= 0 else int(cfg.get('autosync_minutes') or 0)}\n"
             f"logo: {logo_status(cfg)[0]}\n"
             f"photos.provider: {(cfg.get('photos') or {}).get('provider')}\n"
             f"photos.dir: {(cfg.get('photos') or {}).get('dir')}\n"

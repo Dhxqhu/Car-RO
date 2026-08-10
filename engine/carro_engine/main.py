@@ -6,6 +6,7 @@ import secrets
 import shutil
 import sys
 import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -46,10 +47,24 @@ from carro.obd.provider import pull_vehicle_fields  # noqa: E402
 from carro.photos.providers.local import LocalPhotoIngress  # noqa: E402
 from carro.storage.photos import attach_photos, ensure_local_photos  # noqa: E402
 from carro.storage.remote import RemoteClient  # noqa: E402
+from carro.core.autosync import autosync_status, start_autosync, stop_autosync  # noqa: E402
+from carro.core.sync_ops import perform_sync  # noqa: E402
 from obd_engine.doip_routes import router as doip_router  # noqa: E402
 from obd_engine.main import router as obd_router  # noqa: E402
 
-app = FastAPI(title="carro-engine", version="0.1.0")
+store = LocalStore()
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    start_autosync(store)
+    try:
+        yield
+    finally:
+        stop_autosync()
+
+
+app = FastAPI(title="carro-engine", version="0.1.0", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -59,8 +74,6 @@ app.add_middleware(
 )
 app.include_router(obd_router)
 app.include_router(doip_router)
-
-store = LocalStore()
 
 
 class LoginBody(BaseModel):
@@ -86,6 +99,7 @@ class ConfigBody(BaseModel):
     logo_path: str | None = None
     local_keep: str | int | None = None
     local_photo_keep: str | int | None = None
+    autosync_minutes: int | None = None
     photos_dir: str | None = None
     photos_inbox_dir: str | None = None
     photos_provider: str | None = None
@@ -235,12 +249,16 @@ def delete_ro(ro_id: str) -> dict[str, Any]:
 
 
 @app.post("/ros/{ro_id}/pdf")
-def pdf_ro(ro_id: str) -> dict[str, str]:
+def pdf_ro(ro_id: str, include_photos: bool = True) -> dict[str, str | bool]:
+    """Customer PDF. Set include_photos=false for ink-saving / B&W (no job photos)."""
     order = store.get(ro_id)
     if not order:
         raise HTTPException(404, "RO not found")
-    path = export_pdf(order)
-    return {"path": str(path)}
+    path = export_pdf(order, include_photos=include_photos)
+    return {
+        "path": str(path),
+        "include_photos": include_photos,
+    }
 
 
 @app.post("/ros/{ro_id}/pull-obd")
@@ -513,21 +531,16 @@ def sync() -> dict[str, Any]:
         remote.health()
     except Exception as exc:
         raise HTTPException(502, f"Server unreachable: {exc}") from exc
-    # Roster sync
     try:
-        from carro.core.tech_ui import sync_roster_with_server
-
-        roster_status = sync_roster_with_server()
-    except Exception:
-        roster_status = "skipped"
-    n = 0
-    for order in store.list_orders():
-        remote.upsert_ro(order)
-        n += 1
-    store.prune()
+        result = perform_sync(store)
+    except Exception as exc:
+        raise HTTPException(502, f"Sync failed: {exc}") from exc
     return {
         "ok": True,
-        "message": f"Pushed {n} RO(s); technician roster: {roster_status}",
+        "message": result.get("message") or "Synced",
+        "pushed": result.get("pushed"),
+        "roster": result.get("roster"),
+        "autosync": autosync_status(),
     }
 
 
@@ -558,6 +571,8 @@ def _config_public(cfg: dict | None = None) -> dict[str, Any]:
         "photos_dir": str(photos.get("dir") or ""),
         "photos_inbox_dir": str(photos.get("inbox_dir") or ""),
         "photos_provider": str(photos.get("provider") or "local"),
+        "autosync_minutes": int(cfg.get("autosync_minutes") or 0),
+        "autosync": autosync_status(),
         "disk": {
             "path": info["path"],
             "free_gb": round(info["free_gb"], 1),
@@ -606,6 +621,10 @@ def put_config(body: ConfigBody) -> dict[str, Any]:
         cfg["local_keep"] = _parse_keep(body.local_keep)
     if body.local_photo_keep is not None:
         cfg["local_photo_keep"] = _parse_keep(body.local_photo_keep, allow_match=True)
+    if body.autosync_minutes is not None:
+        if body.autosync_minutes < 0:
+            raise HTTPException(400, "autosync_minutes must be >= 0 (0 = off)")
+        cfg["autosync_minutes"] = int(body.autosync_minutes)
     photos = cfg.setdefault("photos", {})
     if body.photos_dir is not None:
         photos["dir"] = str(Path(body.photos_dir).expanduser()) if body.photos_dir else ""

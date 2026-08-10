@@ -30,6 +30,8 @@ DEFAULTS: dict = {
     # "auto" sizes from free disk on the photos volume; or an int count
     "local_keep": "auto",
     "local_photo_keep": "auto",
+    # Background push to shop server while engine/CLI menu is open. 0 = off.
+    "autosync_minutes": 0,
     # Textual TUI theme (search / history / RO forms). Ctrl+P changes persist here.
     "textual_theme": "ansi-dark",
     "photos": {
@@ -66,7 +68,23 @@ def load_config() -> dict:
     if cfg.get("logo_path"):
         cfg["logo_path"] = str(Path(cfg["logo_path"]).expanduser())
     cfg["server_url"] = str(cfg.get("server_url") or "").rstrip("/")
+    cfg["autosync_minutes"] = _parse_autosync_minutes(cfg.get("autosync_minutes", 0))
     return cfg
+
+
+def _parse_autosync_minutes(raw: object) -> int:
+    try:
+        n = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        n = 0
+    return max(0, min(n, 24 * 60))  # cap at 24h
+
+
+def resolve_autosync_minutes(cfg: dict | None = None) -> int:
+    """Minutes between background syncs. 0 (default) means off."""
+    if cfg is None:
+        return int(load_config().get("autosync_minutes") or 0)
+    return _parse_autosync_minutes(cfg.get("autosync_minutes", 0))
 
 
 def photos_dir(cfg: dict | None = None) -> Path:
@@ -222,6 +240,7 @@ def save_config(cfg: dict) -> Path:
         f'token = {_toml_str(cfg.get("token", ""))}',
         f'local_keep = {_keep_toml(cfg.get("local_keep", "auto"))}',
         f'local_photo_keep = {_keep_toml(cfg.get("local_photo_keep", "auto"))}',
+        f"autosync_minutes = {_parse_autosync_minutes(cfg.get('autosync_minutes', 0))}",
         f'textual_theme = {_toml_str(cfg.get("textual_theme", "ansi-dark"))}',
         "",
         "[photos]",

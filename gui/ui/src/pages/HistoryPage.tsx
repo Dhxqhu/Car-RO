@@ -144,7 +144,7 @@ export function HistoryPage() {
             disabled={busy || orders.length === 0}
             onClick={() => void pack("pdf-lite")}
           >
-            PDF lite
+            PDF (no photos)
           </Button>
           <Button
             type="button"

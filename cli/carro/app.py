@@ -37,7 +37,6 @@ from carro.core.tech_ui import (
     prompt_login,
     require_admin,
     switch_technician,
-    sync_roster_with_server,
 )
 from carro.core import technicians as techmod
 from carro.obd.provider import pull_vehicle_fields
@@ -63,7 +62,11 @@ def main(argv: list[str] | None = None) -> None:
         "open": lambda: cmd_open(store, args.id),
         "edit": lambda: cmd_edit(store, args.id),
         "pull-obd": lambda: cmd_pull_obd(store, args.id),
-        "pdf": lambda: cmd_pdf(store, args.id),
+        "pdf": lambda: cmd_pdf(
+            store,
+            args.id,
+            include_photos=False if getattr(args, "no_photos", False) else None,
+        ),
         "delete": lambda: cmd_delete(store, args.id),
         "sync": lambda: cmd_sync(store),
         "logo": lambda: run_logo_setup(),
@@ -114,8 +117,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("id", nargs="?")
     s = sub.add_parser("pull-obd", help="Autofill from obdscan / Saved Codes")
     s.add_argument("id", nargs="?")
-    s = sub.add_parser("pdf", help="Export customer PDF")
+    s = sub.add_parser("pdf", help="Export customer PDF (with or without photos)")
     s.add_argument("id", nargs="?")
+    s.add_argument(
+        "--no-photos",
+        "--lite",
+        action="store_true",
+        help="Skip job photos (B&W printer / less ink); text + OBD only",
+    )
     s = sub.add_parser("delete", help="Delete a repair order (local + server)")
     s.add_argument("id", nargs="?", help="RO id to delete")
     sub.add_parser("sync", help="Push local ROs to server + prune cache")
@@ -175,6 +184,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def interactive_menu(store: LocalStore) -> None:
+    from carro.core.autosync import start_autosync, stop_autosync
+
     while True:
         try:
             ensure_technician_session()
@@ -184,7 +195,15 @@ def interactive_menu(store: LocalStore) -> None:
             if not Confirm.ask("Try login again?", default=True):
                 CONSOLE.print("[dim]Continuing without a logged-in technician.[/]")
                 break
+    start_autosync(store)
     current: str | None = None
+    try:
+        _interactive_menu_loop(store, current)
+    finally:
+        stop_autosync()
+
+
+def _interactive_menu_loop(store: LocalStore, current: str | None) -> None:
     while True:
         CONSOLE.print()
         tech = techmod.current_technician()
@@ -200,7 +219,7 @@ def interactive_menu(store: LocalStore) -> None:
         table.add_row("[bold cyan]6[/]", "Edit current (form)")
         table.add_row("[bold cyan]7[/]", "Pull OBD / Saved Codes into current")
         table.add_row("[bold cyan]8[/]", "Add photos (file / inbox / iPhone / Shortcut)")
-        table.add_row("[bold cyan]9[/]", "Export customer PDF")
+        table.add_row("[bold cyan]9[/]", "Export customer PDF (with / without photos)")
         table.add_row("[bold cyan]d[/]", "Delete repair order (mistakes)")
         table.add_row("[bold cyan]s[/]", "Sync to server + prune local cache")
         table.add_row("[bold cyan]t[/]", "Technician (switch / add techs / logout)")
@@ -621,7 +640,7 @@ def _history_flow(store: LocalStore, result: HistoryResult) -> str | None:
         return None
 
     action = Prompt.ask(
-        "Action",
+        "Action (pdf=with photos, pdf-lite=no photos / less ink)",
         choices=["text", "pdf", "pdf-lite", "pick", "back"],
         default="text",
     )
@@ -803,14 +822,30 @@ def cmd_pull_obd(store: LocalStore, ro_id: str | None) -> None:
         _open_ro_form(store, order)
 
 
-def cmd_pdf(store: LocalStore, ro_id: str | None) -> None:
+def cmd_pdf(
+    store: LocalStore,
+    ro_id: str | None,
+    *,
+    include_photos: bool | None = None,
+) -> None:
     if not ro_id:
         ro_id = Prompt.ask("RO id").strip()
     order = store.get(ro_id)
     if not order:
         raise ValueError(f"RO not found: {ro_id}")
-    path = export_pdf(order)
-    CONSOLE.print(f"[green]PDF[/] → {path}")
+    if include_photos is None:
+        if sys.stdin.isatty():
+            kind = Prompt.ask(
+                "PDF type",
+                choices=["photos", "no-photos"],
+                default="photos",
+            ).strip().lower()
+            include_photos = kind != "no-photos"
+        else:
+            include_photos = True
+    path = export_pdf(order, include_photos=include_photos)
+    mode = "with photos" if include_photos else "no photos (ink-saving)"
+    CONSOLE.print(f"[green]PDF[/] ({mode}) → {path}")
     if sys.stdin.isatty() and Confirm.ask("Open in PDF viewer?", default=True):
         _open_pdf(path)
 
@@ -893,33 +928,36 @@ def _open_pdf(path: Path) -> None:
 
 
 def cmd_sync(store: LocalStore) -> None:
-    from carro.config import resolve_local_keep, resolve_local_photo_keep
+    from carro.core.sync_ops import perform_sync
 
     remote = RemoteClient()
     if not remote.enabled:
         CONSOLE.print("[yellow]No server_url configured — local only.[/]")
         CONSOLE.print("[dim]Set with: carro config set server_url http://YOUR_SERVER:8787[/]")
-    else:
-        try:
-            health = remote.health()
-            CONSOLE.print(f"[green]Server OK[/] default volume={health.get('default_volume')}")
-        except Exception as exc:
-            CONSOLE.print(f"[red]Server unreachable:[/] {exc}")
-            return
-        roster_status = sync_roster_with_server()
-        if roster_status == "pulled":
-            CONSOLE.print("[dim]Technician roster:[/] pulled from server")
-        elif roster_status == "pushed":
-            CONSOLE.print("[dim]Technician roster:[/] pushed to server")
-        elif roster_status.startswith("error:"):
-            CONSOLE.print(f"[yellow]Technician roster sync skipped:[/] {roster_status[7:]}")
-        for order in store.list_orders():
-            remote.upsert_ro(order)
-            CONSOLE.print(f"  pushed {order.id}")
-    removed = store.prune()
-    cfg = load_config()
-    keep_n = resolve_local_keep(cfg)
-    photo_n = resolve_local_photo_keep(cfg)
+        store.prune()
+        return
+    try:
+        health = remote.health()
+        CONSOLE.print(f"[green]Server OK[/] default volume={health.get('default_volume')}")
+    except Exception as exc:
+        CONSOLE.print(f"[red]Server unreachable:[/] {exc}")
+        return
+    try:
+        result = perform_sync(store)
+    except Exception as exc:
+        CONSOLE.print(f"[red]Sync failed:[/] {exc}")
+        return
+    roster_status = str(result.get("roster") or "")
+    if roster_status == "pulled":
+        CONSOLE.print("[dim]Technician roster:[/] pulled from server")
+    elif roster_status == "pushed":
+        CONSOLE.print("[dim]Technician roster:[/] pushed to server")
+    elif roster_status.startswith("error:"):
+        CONSOLE.print(f"[yellow]Technician roster sync skipped:[/] {roster_status[7:]}")
+    CONSOLE.print(f"[green]Pushed {result.get('pushed', 0)} RO(s)[/]")
+    removed = result.get("pruned") or []
+    keep_n = result.get("local_keep")
+    photo_n = result.get("local_photo_keep")
     if removed:
         CONSOLE.print(f"[dim]Pruned local cache:[/] {', '.join(removed)}")
     else:
@@ -996,6 +1034,8 @@ def cmd_config(args: argparse.Namespace) -> None:
                 cfg[key] = "match" if v == "match" else "auto"
             else:
                 cfg[key] = int(value)
+        elif key == "autosync_minutes":
+            cfg[key] = max(0, int(value))
         else:
             cfg[key] = value
         save_config(cfg)

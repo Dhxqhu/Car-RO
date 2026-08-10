@@ -124,12 +124,25 @@ def _append_kept(
     story.append(KeepTogether(list(bits)))
 
 
-def export_pdf(order: RepairOrder, dest: Path | None = None) -> Path:
+def export_pdf(
+    order: RepairOrder,
+    dest: Path | None = None,
+    *,
+    include_photos: bool = True,
+) -> Path:
+    """
+    Customer-facing PDF.
+
+    include_photos=False skips image embeds (B&W printers / less ink). Shop logo
+    in the header is still included when configured — it is not job photos.
+    """
     cfg = load_config()
     shop = cfg.get("shop_name") or "(shop name here)"
     out_dir = DATA_DIR / "pdf"
     out_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest or (out_dir / f"{order.id}.pdf")
+    if dest is None:
+        suffix = "" if include_photos else "-lite"
+        dest = out_dir / f"{order.id}{suffix}.pdf"
 
     styles = getSampleStyleSheet()
     shop_style = ParagraphStyle(
@@ -371,65 +384,80 @@ def export_pdf(order: RepairOrder, dest: Path | None = None) -> Path:
             min_remain_inch=1.4,
         )
 
-    photo_paths = []
-    ensure_local_photos(order)
-    for meta in order.photos:
-        rel = meta.get("relpath") or meta.get("filename")
-        if not rel:
-            continue
-        p = photos_dir() / order.id / Path(rel).name
-        if p.is_file():
-            photo_paths.append({**meta, "_path": p})
-
-    caption = ParagraphStyle(
-        "PhotoCaption",
-        parent=body,
-        fontSize=8,
-        leading=10,
-        alignment=TA_CENTER,
-        spaceBefore=3,
-        textColor=MUTED,
-    )
-
-    if photo_paths:
-        rows: list = []
-        row: list = []
-        for meta in photo_paths[:8]:
-            path = meta["_path"]
-            try:
-                img = Image(str(path), width=2.2 * inch, height=1.6 * inch, kind="proportional")
-            except Exception:
+    if include_photos:
+        photo_paths = []
+        ensure_local_photos(order)
+        for meta in order.photos:
+            rel = meta.get("relpath") or meta.get("filename")
+            if not rel:
                 continue
-            tag = _xml_escape(str(meta.get("tag") or "other")).upper()
-            note = _xml_escape(str(meta.get("notes") or meta.get("note") or "").strip())
-            bits = [f"<b>{tag}</b>"]
-            if note:
-                bits.append(note.replace("\n", "<br/>"))
-            cell = [img, Paragraph("<br/>".join(bits), caption)]
-            row.append(cell)
-            if len(row) == 2:
+            p = photos_dir() / order.id / Path(rel).name
+            if p.is_file():
+                photo_paths.append({**meta, "_path": p})
+
+        caption = ParagraphStyle(
+            "PhotoCaption",
+            parent=body,
+            fontSize=8,
+            leading=10,
+            alignment=TA_CENTER,
+            spaceBefore=3,
+            textColor=MUTED,
+        )
+
+        if photo_paths:
+            rows: list = []
+            row: list = []
+            for meta in photo_paths[:8]:
+                path = meta["_path"]
+                try:
+                    img = Image(
+                        str(path), width=2.2 * inch, height=1.6 * inch, kind="proportional"
+                    )
+                except Exception:
+                    continue
+                tag = _xml_escape(str(meta.get("tag") or "other")).upper()
+                note = _xml_escape(str(meta.get("notes") or meta.get("note") or "").strip())
+                bits = [f"<b>{tag}</b>"]
+                if note:
+                    bits.append(note.replace("\n", "<br/>"))
+                cell = [img, Paragraph("<br/>".join(bits), caption)]
+                row.append(cell)
+                if len(row) == 2:
+                    rows.append(Table([row], colWidths=[3.2 * inch, 3.2 * inch]))
+                    row = []
+            if row:
+                while len(row) < 2:
+                    row.append("")
                 rows.append(Table([row], colWidths=[3.2 * inch, 3.2 * inch]))
-                row = []
-        if row:
-            while len(row) < 2:
-                row.append("")
-            rows.append(Table([row], colWidths=[3.2 * inch, 3.2 * inch]))
-        if rows:
+            if rows:
+                _append_kept(
+                    story,
+                    Paragraph("PHOTOS", h2),
+                    rows[0],
+                    min_remain_inch=2.4,
+                )
+                for extra in rows[1:]:
+                    story.append(extra)
+        elif order.photos:
             _append_kept(
                 story,
                 Paragraph("PHOTOS", h2),
-                rows[0],
-                min_remain_inch=2.4,
+                Paragraph(
+                    f"{len(order.photos)} on file but image bytes were not available locally "
+                    "(try sync / phone refresh).",
+                    body,
+                ),
+                min_remain_inch=0.9,
             )
-            for extra in rows[1:]:
-                story.append(extra)
     elif order.photos:
+        n = len(order.photos)
         _append_kept(
             story,
             Paragraph("PHOTOS", h2),
             Paragraph(
-                f"{len(order.photos)} on file but image bytes were not available locally "
-                "(try sync / phone refresh).",
+                f"{n} photo{'s' if n != 1 else ''} on file — omitted from this print "
+                "(ink-saving / B&W export). Use PDF with photos for the full copy.",
                 body,
             ),
             min_remain_inch=0.9,

@@ -54,6 +54,17 @@ export type ConfigSnapshot = {
   photos_dir: string;
   photos_inbox_dir: string;
   photos_provider: string;
+  autosync_minutes: number;
+  autosync?: {
+    enabled: boolean;
+    interval_minutes: number;
+    running: boolean;
+    last_run_at?: string | null;
+    last_ok?: boolean | null;
+    last_message?: string | null;
+    last_error?: string | null;
+    next_due_at?: string | null;
+  };
   disk: { path: string; free_gb: number; total_gb: number };
   recommend: { local_keep: number; local_photo_keep: number };
   keep_presets: Array<{ label: string; value: string | number; detail: string }>;
@@ -119,8 +130,14 @@ export const api = {
     }),
   deleteRo: (id: string) =>
     req<{ ok: boolean }>(`/ros/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  exportPdf: (id: string) =>
-    req<{ path: string }>(`/ros/${encodeURIComponent(id)}/pdf`, { method: "POST" }),
+  exportPdf: (id: string, opts?: { include_photos?: boolean }) => {
+    const photos = opts?.include_photos !== false;
+    const q = photos ? "" : "?include_photos=false";
+    return req<{ path: string; include_photos?: boolean }>(
+      `/ros/${encodeURIComponent(id)}/pdf${q}`,
+      { method: "POST" },
+    );
+  },
   pullObd: (id: string) =>
     req<RepairOrder>(`/ros/${encodeURIComponent(id)}/pull-obd`, { method: "POST" }),
   listPhotos: (id: string) =>
