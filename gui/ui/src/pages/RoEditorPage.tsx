@@ -23,7 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { formatPhotoTag, formatStatus, formatUploadMode } from "@/lib/utils";
+import { formatPhotoTag, formatShopTime, formatStatus, formatUploadMode } from "@/lib/utils";
 
 const empty: RepairOrder = {
   id: "",
@@ -46,6 +46,10 @@ const empty: RepairOrder = {
   current_tech_id: "",
   current_tech_name: "",
   current_since: "",
+  started_at: "",
+  done_at: "",
+  billed_out_at: "",
+  waiting_since: "",
   status: "open",
   obd_snapshot: "",
   photos: [],
@@ -55,8 +59,22 @@ const empty: RepairOrder = {
 };
 
 const PHOTO_TAGS = ["intake", "diag", "other"] as const;
-const ITEM_STATUSES = ["open", "in_progress", "waiting_parts", "done", "declined"] as const;
-const RO_STATUSES = ["open", "assigned", "in_progress", "done"] as const;
+const ITEM_STATUSES = [
+  "open",
+  "in_progress",
+  "waiting_parts",
+  "done",
+  "declined",
+] as const;
+const RO_STATUSES = [
+  "open",
+  "assigned",
+  "in_progress",
+  "waiting_parts",
+  "waiting_customer",
+  "done",
+  "billed_out",
+] as const;
 
 const emptyItem = (): WorkItem => ({
   id: "",
@@ -143,20 +161,30 @@ export function RoEditorPage() {
     }
   }
 
-  async function queueAction(action: "add" | "remove" | "complete") {
+  async function queueAction(
+    action:
+      | "add"
+      | "remove"
+      | "complete"
+      | "billed_out"
+      | "waiting_parts"
+      | "waiting_customer",
+  ) {
     if (!order.id || !me) return;
     setCurrentBusy(true);
     setErr("");
     try {
       const next = await api.queueAction(order.id, action);
       setOrder(next);
-      setMsg(
-        action === "add"
-          ? "Added to your planned queue"
-          : action === "remove"
-            ? "Removed from your queue"
-            : "Marked complete",
-      );
+      const labels: Record<string, string> = {
+        add: "Added to your planned queue",
+        remove: "Removed from your queue",
+        complete: "Marked done (ready to bill)",
+        billed_out: "Marked billed out",
+        waiting_parts: "Parked — waiting on parts",
+        waiting_customer: "Parked — waiting on customer",
+      };
+      setMsg(labels[action] || "Updated");
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Queue update failed");
     } finally {
@@ -393,12 +421,29 @@ export function RoEditorPage() {
                 ? ` · Working now: ${order.current_tech_name}`
                 : ""}
             </p>
+            {(order.started_at ||
+              order.waiting_since ||
+              order.done_at ||
+              order.billed_out_at) && (
+              <p className="mt-0.5 text-xs text-muted">
+                Shop timing
+                {order.started_at ? ` · started ${formatShopTime(order.started_at)}` : ""}
+                {order.waiting_since
+                  ? ` · waiting since ${formatShopTime(order.waiting_since)}`
+                  : ""}
+                {order.done_at ? ` · done ${formatShopTime(order.done_at)}` : ""}
+                {order.billed_out_at
+                  ? ` · billed out ${formatShopTime(order.billed_out_at)}`
+                  : ""}
+                <span className="text-muted/80"> (shop only — not on customer PDF)</span>
+              </p>
+            )}
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          {me && order.status !== "done" ? (
+          {me && order.status !== "billed_out" ? (
             <>
-              {!onMyQueue ? (
+              {order.status !== "done" && !onMyQueue ? (
                 <Button
                   variant="secondary"
                   disabled={currentBusy || !order.id}
@@ -407,24 +452,52 @@ export function RoEditorPage() {
                   Add to my queue
                 </Button>
               ) : null}
-              <Button
-                variant={isMyCurrent ? "default" : "secondary"}
-                disabled={currentBusy || !order.id}
-                onClick={() => void toggleCurrentTask()}
-              >
-                {currentBusy
-                  ? "Updating…"
-                  : isMyCurrent
-                    ? "Clear current task"
-                    : "Set as my current task"}
-              </Button>
-              {onMyQueue || isMyCurrent ? (
+              {order.status !== "done" ? (
+                <Button
+                  variant={isMyCurrent ? "default" : "secondary"}
+                  disabled={currentBusy || !order.id}
+                  onClick={() => void toggleCurrentTask()}
+                >
+                  {currentBusy
+                    ? "Updating…"
+                    : isMyCurrent
+                      ? "Clear current task"
+                      : "Set as my current task"}
+                </Button>
+              ) : null}
+              {order.status !== "done" ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    disabled={currentBusy || !order.id}
+                    onClick={() => void queueAction("waiting_parts")}
+                  >
+                    Waiting on parts
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    disabled={currentBusy || !order.id}
+                    onClick={() => void queueAction("waiting_customer")}
+                  >
+                    Waiting on customer
+                  </Button>
+                </>
+              ) : null}
+              {order.status !== "done" && (onMyQueue || isMyCurrent) ? (
                 <Button
                   variant="secondary"
                   disabled={currentBusy || !order.id}
                   onClick={() => void queueAction("complete")}
                 >
-                  Mark complete
+                  Mark done
+                </Button>
+              ) : null}
+              {order.status === "done" ? (
+                <Button
+                  disabled={currentBusy || !order.id}
+                  onClick={() => void queueAction("billed_out")}
+                >
+                  Mark billed out
                 </Button>
               ) : null}
             </>

@@ -7,7 +7,22 @@ from datetime import datetime
 from typing import Any
 
 
-STATUSES = ("open", "assigned", "in_progress", "done")
+STATUSES = (
+    "open",
+    "assigned",
+    "in_progress",
+    "waiting_parts",
+    "waiting_customer",
+    "done",
+    "billed_out",
+)
+
+# Shop-floor queues (not yet left / billed)
+ACTIVE_STATUSES = frozenset(
+    {"open", "assigned", "in_progress", "waiting_parts", "waiting_customer", "done"}
+)
+WAITING_STATUSES = frozenset({"waiting_parts", "waiting_customer"})
+CLOSED_STATUSES = frozenset({"billed_out"})
 
 
 @dataclass
@@ -47,6 +62,11 @@ class RepairOrder:
     current_tech_id: str = ""
     current_tech_name: str = ""
     current_since: str = ""
+    # Internal efficiency stamps — never print on customer PDF.
+    started_at: str = ""  # first in_progress
+    done_at: str = ""  # work finished (still in shop)
+    billed_out_at: str = ""  # left / billed
+    waiting_since: str = ""  # entered waiting_parts or waiting_customer
     status: str = "open"
     obd_snapshot: str = ""
     photos: list[dict[str, Any]] = field(default_factory=list)

@@ -3,7 +3,24 @@ import { Link } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import { api, type AssignedBoard, type AssignedOrderSummary } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { formatDataSource, formatStatus } from "@/lib/utils";
+import { formatDataSource, formatShopTime, formatStatus } from "@/lib/utils";
+
+type QueueAct =
+  | "add"
+  | "remove"
+  | "complete"
+  | "billed_out"
+  | "waiting_parts"
+  | "waiting_customer";
+
+function timingLine(o: AssignedOrderSummary): string {
+  const bits: string[] = [];
+  if (o.waiting_since) bits.push(`waiting since ${formatShopTime(o.waiting_since)}`);
+  if (o.started_at) bits.push(`started ${formatShopTime(o.started_at)}`);
+  if (o.done_at) bits.push(`done ${formatShopTime(o.done_at)}`);
+  if (o.billed_out_at) bits.push(`billed ${formatShopTime(o.billed_out_at)}`);
+  return bits.join(" · ");
+}
 
 function OrderCard({
   o,
@@ -16,6 +33,7 @@ function OrderCard({
   meName?: string;
   actions?: ReactNode;
 }) {
+  const timing = timingLine(o);
   return (
     <li className="rounded-xl border border-border bg-surface px-4 py-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -25,6 +43,7 @@ function OrderCard({
           </Link>
           <div className="text-sm">{o.customer}</div>
           <div className="text-sm text-muted">{o.vehicle}</div>
+          {timing ? <div className="mt-1 text-xs text-muted">{timing}</div> : null}
         </div>
         <div className="text-right text-xs text-muted">
           <div className="font-medium text-fg/80">{formatStatus(o.status)}</div>
@@ -42,16 +61,10 @@ function OrderCard({
               (!!meName &&
                 (w.assigned_to_name === meName || w.notes_by === meName));
             const notesWho = w.notes_by || w.assigned_to_name;
-            const concernWho = w.created_by
-              ? w.created_by_role
-                ? `${w.created_by} (${w.created_by_role})`
-                : w.created_by
-              : "";
             return (
               <li key={w.id} className={mine ? "text-fg" : undefined}>
                 <span className="font-mono">{w.id}</span> · {formatStatus(w.status)}
-                {notesWho ? ` · notes: ${notesWho}` : " · no notes yet"}
-                {concernWho ? ` · concern: ${concernWho}` : ""}
+                {notesWho ? ` · notes: ${notesWho}` : ""}
                 {w.concern ? ` — ${w.concern}` : ""}
               </li>
             );
@@ -90,7 +103,7 @@ export function AssignedWorkPage() {
     return () => window.clearInterval(t);
   }, [refresh]);
 
-  async function runQueue(id: string, action: "add" | "remove" | "complete") {
+  async function runQueue(id: string, action: QueueAct) {
     setActingId(id);
     setErr("");
     try {
@@ -119,51 +132,84 @@ export function AssignedWorkPage() {
   const meId = board?.tech_id;
   const meName = board?.tech_name;
   const myCurrentId = board?.my_current?.id;
+  const loggedIn = !!(meId || meName);
+
+  function btn(id: string, label: string, action: () => void, variant: "default" | "secondary" | "ghost" = "secondary") {
+    return (
+      <Button
+        type="button"
+        size="sm"
+        variant={variant}
+        disabled={actingId === id || busy}
+        onClick={action}
+      >
+        {label}
+      </Button>
+    );
+  }
 
   function mineActions(o: AssignedOrderSummary) {
     const isCurrent = o.id === myCurrentId;
-    const disabled = actingId === o.id || busy;
     return (
       <>
-        {!isCurrent ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            disabled={disabled}
-            onClick={() => void runCurrent(o.id, true)}
-          >
-            Start as current
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            disabled={disabled}
-            onClick={() => void runCurrent(o.id, false)}
-          >
-            Clear current
-          </Button>
-        )}
-        <Button
-          type="button"
-          size="sm"
-          disabled={disabled}
-          onClick={() => void runQueue(o.id, "complete")}
-        >
-          Mark complete
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          disabled={disabled}
-          onClick={() => void runQueue(o.id, "remove")}
-        >
-          Remove from queue
-        </Button>
+        {!isCurrent
+          ? btn(o.id, "Start as current", () => void runCurrent(o.id, true))
+          : btn(o.id, "Clear current", () => void runCurrent(o.id, false))}
+        {btn(o.id, "Waiting on parts", () => void runQueue(o.id, "waiting_parts"))}
+        {btn(o.id, "Waiting on customer", () => void runQueue(o.id, "waiting_customer"))}
+        {btn(o.id, "Mark done", () => void runQueue(o.id, "complete"), "default")}
+        {btn(o.id, "Remove from queue", () => void runQueue(o.id, "remove"), "ghost")}
       </>
+    );
+  }
+
+  function waitingActions(o: AssignedOrderSummary) {
+    return (
+      <>
+        {btn(o.id, "Resume as current", () => void runCurrent(o.id, true))}
+        {btn(o.id, "Mark done", () => void runQueue(o.id, "complete"))}
+      </>
+    );
+  }
+
+  function readyActions(o: AssignedOrderSummary) {
+    return btn(o.id, "Mark billed out", () => void runQueue(o.id, "billed_out"), "default");
+  }
+
+  function section(
+    title: string,
+    items: AssignedOrderSummary[] | undefined,
+    empty: string,
+    actionFor?: (o: AssignedOrderSummary) => ReactNode,
+    accent = true,
+  ) {
+    const list = items || [];
+    return (
+      <section className="space-y-3">
+        <h2
+          className={`text-xs font-semibold uppercase tracking-wide ${
+            accent ? "text-accent" : "text-muted"
+          }`}
+        >
+          {title}
+          {list.length ? ` · ${list.length}` : ""}
+        </h2>
+        {list.length === 0 ? (
+          <p className="text-sm text-muted">{empty}</p>
+        ) : (
+          <ul className="space-y-3">
+            {list.map((o) => (
+              <OrderCard
+                key={o.id}
+                o={o}
+                meId={meId}
+                meName={meName}
+                actions={actionFor?.(o)}
+              />
+            ))}
+          </ul>
+        )}
+      </section>
     );
   }
 
@@ -175,8 +221,8 @@ export function AssignedWorkPage() {
             Assigned work
           </h1>
           <p className="mt-1 max-w-xl text-sm text-muted">
-            Planned queue vs what you’re on right now. Add cars for later, start one as current,
-            and mark complete when the job is finished.
+            Planned queue, waiting parks, done vs billed out. Shop timing stays here — never on the
+            customer PDF.
           </p>
         </div>
         <Button variant="secondary" disabled={busy} onClick={() => void refresh()}>
@@ -221,23 +267,18 @@ export function AssignedWorkPage() {
                   <div className="text-xs text-muted">{entry.order.id}</div>
                   {entry.is_me ? (
                     <>
-                      <Button
-                        type="button"
-                        size="sm"
-                        disabled={actingId === entry.order.id || busy}
-                        onClick={() => void runQueue(entry.order.id, "complete")}
-                      >
-                        Mark complete
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        disabled={actingId === entry.order.id || busy}
-                        onClick={() => void runCurrent(entry.order.id, false)}
-                      >
-                        Clear current
-                      </Button>
+                      {btn(entry.order.id, "Waiting on parts", () =>
+                        void runQueue(entry.order.id, "waiting_parts"),
+                      )}
+                      {btn(entry.order.id, "Mark done", () =>
+                        void runQueue(entry.order.id, "complete"),
+                      )}
+                      {btn(
+                        entry.order.id,
+                        "Clear current",
+                        () => void runCurrent(entry.order.id, false),
+                        "ghost",
+                      )}
                     </>
                   ) : null}
                 </div>
@@ -247,28 +288,33 @@ export function AssignedWorkPage() {
         )}
       </section>
 
-      <section className="space-y-3">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
-          My queue (planned)
-        </h2>
-        {(board?.mine || []).length === 0 ? (
-          <p className="text-sm text-muted">
-            Nothing in your queue. Add from Unassigned below, or from the Orders list.
-          </p>
-        ) : (
-          <ul className="space-y-3">
-            {(board?.mine || []).map((o) => (
-              <OrderCard
-                key={o.id}
-                o={o}
-                meId={meId}
-                meName={meName}
-                actions={mineActions(o)}
-              />
-            ))}
-          </ul>
-        )}
-      </section>
+      {section(
+        "My queue (planned)",
+        board?.mine,
+        "Nothing in your active queue. Add from Unassigned or Orders.",
+        loggedIn ? mineActions : undefined,
+      )}
+
+      {section(
+        "Waiting on parts",
+        board?.waiting_parts,
+        "No jobs waiting on parts.",
+        loggedIn ? waitingActions : undefined,
+      )}
+
+      {section(
+        "Waiting on customer",
+        board?.waiting_customer,
+        "No jobs waiting on customer verification.",
+        loggedIn ? waitingActions : undefined,
+      )}
+
+      {section(
+        "Ready to bill (done)",
+        board?.ready_to_bill,
+        "No finished jobs waiting to bill out.",
+        loggedIn ? readyActions : undefined,
+      )}
 
       <section className="space-y-4">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
@@ -297,46 +343,20 @@ export function AssignedWorkPage() {
         )}
       </section>
 
-      <section className="space-y-3">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
-          Unassigned (open)
-        </h2>
-        {(board?.unassigned || []).length === 0 ? (
-          <p className="text-sm text-muted">All open jobs have an assignee.</p>
-        ) : (
-          <ul className="space-y-3">
-            {(board?.unassigned || []).map((o) => (
-              <OrderCard
-                key={o.id}
-                o={o}
-                actions={
-                  meId || meName ? (
-                    <>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        disabled={actingId === o.id || busy}
-                        onClick={() => void runQueue(o.id, "add")}
-                      >
-                        Add to my queue
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        disabled={actingId === o.id || busy}
-                        onClick={() => void runCurrent(o.id, true)}
-                      >
-                        Start as current
-                      </Button>
-                    </>
-                  ) : null
-                }
-              />
-            ))}
-          </ul>
-        )}
-      </section>
+      {section(
+        "Unassigned (open)",
+        board?.unassigned,
+        "All open jobs have an assignee.",
+        loggedIn
+          ? (o) => (
+              <>
+                {btn(o.id, "Add to my queue", () => void runQueue(o.id, "add"))}
+                {btn(o.id, "Start as current", () => void runCurrent(o.id, true), "default")}
+              </>
+            )
+          : undefined,
+        false,
+      )}
     </div>
   );
 }

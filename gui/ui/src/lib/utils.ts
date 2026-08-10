@@ -21,7 +21,9 @@ const STATUS_LABELS: Record<string, string> = {
   assigned: "Assigned",
   in_progress: "In progress",
   waiting_parts: "Waiting on parts",
+  waiting_customer: "Waiting on customer",
   done: "Done",
+  billed_out: "Billed out",
   declined: "Declined",
 };
 
@@ -85,6 +87,16 @@ export function formatUploadMode(mode: string | undefined | null): string {
   const raw = (mode || "").trim();
   if (!raw) return "—";
   return lookup(UPLOAD_MODE_LABELS, raw) ?? formatLabel(raw);
+}
+
+/** Short shop-only timestamp for efficiency (never on customer PDF). */
+export function formatShopTime(iso: string | undefined | null): string {
+  const raw = (iso || "").trim();
+  if (!raw) return "";
+  // Prefer local-ish display from ISO without pulling in a date lib
+  const m = raw.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+  if (m) return `${m[1]} ${m[2]}`;
+  return raw.slice(0, 16);
 }
 
 /**

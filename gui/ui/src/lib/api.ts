@@ -56,6 +56,10 @@ export type RepairOrder = {
   current_tech_id?: string;
   current_tech_name?: string;
   current_since?: string;
+  started_at?: string;
+  done_at?: string;
+  billed_out_at?: string;
+  waiting_since?: string;
   status: string;
   obd_snapshot: string;
   photos: Array<Record<string, unknown>>;
@@ -76,6 +80,11 @@ export type AssignedOrderSummary = {
   current_tech_id?: string;
   current_tech_name?: string;
   current_since?: string;
+  started_at?: string;
+  done_at?: string;
+  billed_out_at?: string;
+  waiting_since?: string;
+  created?: string;
   updated: string;
   work_items: Array<{
     id: string;
@@ -99,6 +108,9 @@ export type NowWorkingEntry = {
 
 export type AssignedBoard = {
   mine: AssignedOrderSummary[];
+  waiting_parts?: AssignedOrderSummary[];
+  waiting_customer?: AssignedOrderSummary[];
+  ready_to_bill?: AssignedOrderSummary[];
   by_tech: Array<{
     id: string;
     name: string;
@@ -355,7 +367,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ active }),
     }),
-  queueAction: (roId: string, action: "add" | "remove" | "complete") =>
+  queueAction: (
+    roId: string,
+    action:
+      | "add"
+      | "remove"
+      | "complete"
+      | "billed_out"
+      | "waiting_parts"
+      | "waiting_customer",
+  ) =>
     req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/queue`, {
       method: "POST",
       body: JSON.stringify({ action }),

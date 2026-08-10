@@ -45,6 +45,11 @@ def _summarize(d: dict[str, Any]) -> dict[str, Any]:
         "current_tech_id": d.get("current_tech_id") or "",
         "current_tech_name": d.get("current_tech_name") or "",
         "current_since": d.get("current_since") or "",
+        "started_at": d.get("started_at") or "",
+        "done_at": d.get("done_at") or "",
+        "billed_out_at": d.get("billed_out_at") or "",
+        "waiting_since": d.get("waiting_since") or "",
+        "created": d.get("created") or "",
         "updated": d.get("updated") or d.get("created") or "",
         "work_items": [
             {
@@ -71,6 +76,9 @@ def build_assigned_board(
     tech_name: str = "",
 ) -> dict[str, Any]:
     mine: list[dict[str, Any]] = []
+    waiting_parts: list[dict[str, Any]] = []
+    waiting_customer: list[dict[str, Any]] = []
+    ready_to_bill: list[dict[str, Any]] = []
     by_tech: dict[str, dict[str, Any]] = {}
     unassigned: list[dict[str, Any]] = []
     now_working: list[dict[str, Any]] = []
@@ -84,6 +92,7 @@ def build_assigned_board(
         ro_aname = str(d.get("assigned_to_name") or "")
         cur_id = str(d.get("current_tech_id") or "")
         cur_name = str(d.get("current_tech_name") or "")
+        status = str(d.get("status") or "")
         item_assignees: list[tuple[str, str]] = []
         for it in d.get("work_items") or []:
             if not isinstance(it, dict):
@@ -101,8 +110,14 @@ def build_assigned_board(
                 for iid, iname in item_assignees
             )
         )
-        is_done = str(d.get("status") or "") == "done"
-        if involves_me and not is_done:
+
+        if status == "waiting_parts":
+            waiting_parts.append(summary)
+        elif status == "waiting_customer":
+            waiting_customer.append(summary)
+        elif status == "done":
+            ready_to_bill.append(summary)
+        elif status != "billed_out" and involves_me:
             mine.append(summary)
 
         if cur_id or cur_name:
@@ -117,7 +132,7 @@ def build_assigned_board(
             if entry["is_me"]:
                 my_current = summary
 
-        if is_done:
+        if status in ("done", "billed_out", "waiting_parts", "waiting_customer"):
             continue
 
         tech_slots: list[tuple[str, str, str]] = []
@@ -155,14 +170,17 @@ def build_assigned_board(
             unassigned.append(summary)
 
     by_tech_list = sorted(by_tech.values(), key=lambda b: (b.get("name") or "").lower())
-    mine.sort(key=lambda o: o.get("updated") or "", reverse=True)
-    unassigned.sort(key=lambda o: o.get("updated") or "", reverse=True)
+    for lst in (mine, waiting_parts, waiting_customer, ready_to_bill, unassigned):
+        lst.sort(key=lambda o: o.get("updated") or "", reverse=True)
     now_working.sort(key=lambda e: (e.get("tech_name") or "").lower())
     for b in by_tech_list:
         b["orders"].sort(key=lambda o: o.get("updated") or "", reverse=True)
 
     return {
         "mine": mine,
+        "waiting_parts": waiting_parts,
+        "waiting_customer": waiting_customer,
+        "ready_to_bill": ready_to_bill,
         "by_tech": by_tech_list,
         "unassigned": unassigned,
         "now_working": now_working,

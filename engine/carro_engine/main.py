@@ -301,9 +301,16 @@ class CurrentTaskBody(BaseModel):
 
 
 class QueueActionBody(BaseModel):
-    """Planned queue + completion for the logged-in tech."""
+    """Planned queue + completion / waiting / billed-out for the logged-in tech."""
 
-    action: Literal["add", "remove", "complete"]
+    action: Literal[
+        "add",
+        "remove",
+        "complete",
+        "billed_out",
+        "waiting_parts",
+        "waiting_customer",
+    ]
 
 
 @app.get("/assigned")
@@ -350,8 +357,34 @@ def assign_ro_route(ro_id: str, body: AssignRoBody) -> dict[str, Any]:
         tech_name=body.assigned_to_name,
         set_status_assigned=True,
     )
-    if body.status and body.status in ("open", "assigned", "in_progress", "done"):
+    if body.status and body.status in (
+        "open",
+        "assigned",
+        "in_progress",
+        "waiting_parts",
+        "waiting_customer",
+        "done",
+        "billed_out",
+    ):
+        from carro.core.models import now_iso
+
         order.status = body.status
+        if body.status == "in_progress" and not (order.started_at or "").strip():
+            order.started_at = now_iso()
+        if body.status == "done":
+            if not (order.done_at or "").strip():
+                order.done_at = now_iso()
+            order.waiting_since = ""
+        if body.status == "billed_out":
+            if not (order.billed_out_at or "").strip():
+                order.billed_out_at = now_iso()
+            if not (order.done_at or "").strip():
+                order.done_at = now_iso()
+            order.waiting_since = ""
+        if body.status in ("waiting_parts", "waiting_customer"):
+            order.waiting_since = now_iso()
+        if body.status in ("open", "assigned", "in_progress"):
+            order.waiting_since = ""
     store.save(order)
     _push_ro(order)
     return order.to_dict()
@@ -403,14 +436,16 @@ def set_current_task_route(ro_id: str, body: CurrentTaskBody) -> dict[str, Any]:
 def queue_action_route(ro_id: str, body: QueueActionBody) -> dict[str, Any]:
     """
     Planned work queue for the logged-in tech:
-    - add: assign to me (status assigned) without claiming current task
-    - remove: unassign from me / clear my current if on this RO
-    - complete: mark done and clear my current task on it
+    - add / remove / complete (work finished)
+    - billed_out (car left)
+    - waiting_parts / waiting_customer (parked)
     """
     from carro.core.assignment import (
         add_to_my_queue,
+        bill_out_ro,
         complete_ro,
         remove_from_my_queue,
+        set_waiting,
     )
 
     tech = techmod.current_technician()
@@ -427,6 +462,15 @@ def queue_action_route(ro_id: str, body: QueueActionBody) -> dict[str, Any]:
             raise HTTPException(403, "This RO is not on your queue")
     elif body.action == "complete":
         complete_ro(order, tech_id=tech.id, tech_name=tech.name)
+    elif body.action == "billed_out":
+        bill_out_ro(order, tech_id=tech.id, tech_name=tech.name)
+    elif body.action in ("waiting_parts", "waiting_customer"):
+        set_waiting(
+            order,
+            kind=body.action,
+            tech_id=tech.id,
+            tech_name=tech.name,
+        )
     else:
         raise HTTPException(400, f"Unknown action: {body.action}")
 

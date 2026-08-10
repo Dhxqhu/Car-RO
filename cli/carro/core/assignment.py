@@ -45,7 +45,7 @@ def set_current_task(
 ) -> None:
     """
     Mark this RO as the tech's current bay task.
-    Also assigns the RO to them (planned/active queue) and moves open/assigned → in_progress.
+    Also assigns the RO to them (planned/active queue) and moves open/assigned/waiting → in_progress.
     """
     tid = (tech_id or "").strip()
     tname = (tech_name or "").strip()
@@ -57,12 +57,23 @@ def set_current_task(
     order.current_since = now_iso()
     if also_assign:
         assign_ro(order, tech_id=tid, tech_name=tname, set_status_assigned=False)
-    if order.status in ("", "open", "assigned"):
+    if order.status in (
+        "",
+        "open",
+        "assigned",
+        "waiting_parts",
+        "waiting_customer",
+    ):
         order.status = "in_progress"
+        order.waiting_since = ""
+    if not (order.started_at or "").strip() and order.status == "in_progress":
+        order.started_at = now_iso()
 
 
 def add_to_my_queue(order: RepairOrder, *, tech_id: str, tech_name: str) -> None:
     """Plan work: assign RO to this tech without making it the current bay task."""
+    if order.status == "billed_out":
+        return
     assign_ro(order, tech_id=tech_id, tech_name=tech_name, set_status_assigned=True)
 
 
@@ -101,8 +112,46 @@ def remove_from_my_queue(order: RepairOrder, *, tech_id: str, tech_name: str) ->
 
 
 def complete_ro(order: RepairOrder, *, tech_id: str = "", tech_name: str = "") -> None:
-    """Mark the RO done and clear current-task if this tech (or anyone) is on it."""
+    """Work finished — car may still be in the shop (not billed out yet)."""
     order.status = "done"
+    order.done_at = now_iso()
+    order.waiting_since = ""
+    if tech_id or tech_name:
+        if matches_tech(
+            order.current_tech_id,
+            order.current_tech_name,
+            me_id=tech_id,
+            me_name=tech_name,
+        ):
+            clear_current_task(order)
+    else:
+        clear_current_task(order)
+
+
+def bill_out_ro(order: RepairOrder, *, tech_id: str = "", tech_name: str = "") -> None:
+    """Car left / billed — clear bay current task."""
+    if order.status != "done":
+        # Allow bill-out from done primarily; still stamp done_at if jumping ahead
+        if not (order.done_at or "").strip():
+            order.done_at = now_iso()
+    order.status = "billed_out"
+    order.billed_out_at = now_iso()
+    order.waiting_since = ""
+    clear_current_task(order)
+
+
+def set_waiting(
+    order: RepairOrder,
+    *,
+    kind: str,
+    tech_id: str = "",
+    tech_name: str = "",
+) -> None:
+    """Park the job: waiting_parts or waiting_customer. Clears current bay task."""
+    if kind not in ("waiting_parts", "waiting_customer"):
+        raise ValueError(f"Unknown waiting kind: {kind}")
+    order.status = kind
+    order.waiting_since = now_iso()
     if tech_id or tech_name:
         if matches_tech(
             order.current_tech_id,
@@ -237,6 +286,11 @@ def summarize_order_for_board(order: RepairOrder | dict[str, Any]) -> dict[str, 
         "current_tech_id": d.get("current_tech_id") or "",
         "current_tech_name": d.get("current_tech_name") or "",
         "current_since": d.get("current_since") or "",
+        "started_at": d.get("started_at") or "",
+        "done_at": d.get("done_at") or "",
+        "billed_out_at": d.get("billed_out_at") or "",
+        "waiting_since": d.get("waiting_since") or "",
+        "created": d.get("created") or "",
         "updated": d.get("updated") or d.get("created") or "",
         "work_items": [
             {
@@ -264,11 +318,15 @@ def build_assigned_board(
 ) -> dict[str, Any]:
     """
     Build Assigned Work view:
-    - mine: ROs assigned to me (RO-level or any work item)
-    - by_tech: other techs' assigned work (grouped)
-    - unassigned: open/assigned ROs with no RO assignee and no item assignees
+    - mine: active planned/in-progress for me (not waiting / done / billed)
+    - waiting_parts / waiting_customer: parked jobs
+    - ready_to_bill: status done (work finished, still in shop)
+    - by_tech / unassigned / now_working
     """
     mine: list[dict[str, Any]] = []
+    waiting_parts: list[dict[str, Any]] = []
+    waiting_customer: list[dict[str, Any]] = []
+    ready_to_bill: list[dict[str, Any]] = []
     by_tech: dict[str, dict[str, Any]] = {}
     unassigned: list[dict[str, Any]] = []
     now_working: list[dict[str, Any]] = []
@@ -281,6 +339,7 @@ def build_assigned_board(
         ro_aname = str(d.get("assigned_to_name") or "")
         cur_id = str(d.get("current_tech_id") or "")
         cur_name = str(d.get("current_tech_name") or "")
+        status = str(d.get("status") or "")
         item_assignees: list[tuple[str, str]] = []
         for it in d.get("work_items") or []:
             if not isinstance(it, dict):
@@ -291,9 +350,14 @@ def build_assigned_board(
                 item_assignees.append((iid, iname))
 
         involves_me = order_involves_tech(d, tech_id=tech_id, tech_name=tech_name)
-        status = str(d.get("status") or "")
-        is_done = status == "done"
-        if involves_me and not is_done:
+
+        if status == "waiting_parts":
+            waiting_parts.append(summary)
+        elif status == "waiting_customer":
+            waiting_customer.append(summary)
+        elif status == "done":
+            ready_to_bill.append(summary)
+        elif status != "billed_out" and involves_me:
             mine.append(summary)
 
         if cur_id or cur_name:
@@ -308,7 +372,7 @@ def build_assigned_board(
             if entry["is_me"]:
                 my_current = summary
 
-        if is_done:
+        if status in ("done", "billed_out", "waiting_parts", "waiting_customer"):
             continue
 
         # Collect unique tech keys for this RO (excluding me for by_tech grouping of "others")
@@ -338,7 +402,6 @@ def build_assigned_board(
                     "current": None,
                 },
             )
-            # Avoid duplicate RO under same tech
             if not any(o.get("id") == summary["id"] for o in bucket["orders"]):
                 bucket["orders"].append(summary)
             if matches_tech(cur_id, cur_name, me_id=tid, me_name=tname):
@@ -348,14 +411,17 @@ def build_assigned_board(
             unassigned.append(summary)
 
     by_tech_list = sorted(by_tech.values(), key=lambda b: (b.get("name") or "").lower())
-    mine.sort(key=lambda o: o.get("updated") or "", reverse=True)
-    unassigned.sort(key=lambda o: o.get("updated") or "", reverse=True)
+    for lst in (mine, waiting_parts, waiting_customer, ready_to_bill, unassigned):
+        lst.sort(key=lambda o: o.get("updated") or "", reverse=True)
     now_working.sort(key=lambda e: (e.get("tech_name") or "").lower())
     for b in by_tech_list:
         b["orders"].sort(key=lambda o: o.get("updated") or "", reverse=True)
 
     return {
         "mine": mine,
+        "waiting_parts": waiting_parts,
+        "waiting_customer": waiting_customer,
+        "ready_to_bill": ready_to_bill,
         "by_tech": by_tech_list,
         "unassigned": unassigned,
         "now_working": now_working,

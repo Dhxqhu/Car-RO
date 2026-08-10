@@ -32,7 +32,10 @@ STATUS_OPTIONS = [
     ("open", "open"),
     ("assigned", "assigned"),
     ("in_progress", "in_progress"),
+    ("waiting_parts", "waiting_parts"),
+    ("waiting_customer", "waiting_customer"),
     ("done", "done"),
+    ("billed_out", "billed_out"),
 ]
 
 
@@ -147,7 +150,16 @@ class RepairOrderForm(CarroThemeApp[RepairOrder | None]):
                     STATUS_OPTIONS,
                     value=(
                         o.status
-                        if o.status in {"open", "assigned", "in_progress", "done"}
+                        if o.status
+                        in {
+                            "open",
+                            "assigned",
+                            "in_progress",
+                            "waiting_parts",
+                            "waiting_customer",
+                            "done",
+                            "billed_out",
+                        }
                         else "open"
                     ),
                     id="status",
