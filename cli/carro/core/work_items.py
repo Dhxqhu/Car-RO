@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
+import re
 from typing import Any
 
 from carro.core.models import now_iso
@@ -70,18 +71,26 @@ def normalize_part(data: dict[str, Any] | None, *, default_manufacturer: str = "
     if not isinstance(data, dict):
         data = {}
     pid = str(data.get("id") or "").strip() or "PN-001"
+    try:
+        wrong_count = max(0, int(data.get("wrong_count") or 0))
+    except (TypeError, ValueError):
+        wrong_count = 0
     return {
         "id": pid,
         "description": str(data.get("description") or "").strip(),
+        # Actual / ordered part number
         "part_number": str(data.get("part_number") or "").strip(),
+        "oem_part_number": str(data.get("oem_part_number") or "").strip(),
         "manufacturer": str(data.get("manufacturer") or default_manufacturer or "").strip(),
         # Actual part brand / cross (e.g. Denso, Motorcraft) — distinct from OEM manufacturer.
         "brand": str(data.get("brand") or "").strip(),
+        "supplier": str(data.get("supplier") or "").strip(),
         "status": normalize_part_status(data.get("status")),
         "requested_at": str(data.get("requested_at") or "").strip(),
         "ordered_at": str(data.get("ordered_at") or "").strip(),
         "received_at": str(data.get("received_at") or "").strip(),
         "wrong_note": str(data.get("wrong_note") or "").strip(),
+        "wrong_count": wrong_count,
         "updated_at": str(data.get("updated_at") or "").strip(),
     }
 
@@ -200,12 +209,18 @@ class WorkItem:
     assigned_to_id: str = ""
     assigned_to_name: str = ""
     assigned_at: str = ""
+    # Who parked this item waiting_parts / waiting_customer (for return-to-requester).
+    wait_requested_by: str = ""
+    wait_requested_by_id: str = ""
+    wait_kind: str = ""  # waiting_parts | waiting_customer | ""
     # Floor planning: daily | next_day | long_term
     queue_lane: str = "daily"
     # Advisor-armed move applied on clock-out when this item is current.
     pending_queue_lane: str = ""
     # Local calendar day (YYYY-MM-DD) when the item entered its current lane.
     queue_day: str = ""
+    # Advisor: must finish today (set on assign); clears when parked next_day/long_term.
+    due_eod: bool = False
     # Tech request to push to next day (advisor approves; apply on clock-out if current).
     next_day_request: dict[str, Any] = field(default_factory=dict)
     # Shop-only efficiency: time actually spent (not billed hours). Never on customer PDF.
@@ -232,6 +247,8 @@ class WorkItem:
     created: str = ""
     updated: str = ""
     linked_photo_ids: list[str] = field(default_factory=list)
+    # Last merge undo payload (sources + target_before). Cleared on unmerge.
+    merge_snapshot: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -245,6 +262,9 @@ class WorkItem:
         clean.setdefault("linked_photo_ids", [])
         if not isinstance(clean.get("linked_photo_ids"), list):
             clean["linked_photo_ids"] = []
+        clean.setdefault("merge_snapshot", {})
+        if not isinstance(clean.get("merge_snapshot"), dict):
+            clean["merge_snapshot"] = {}
         clean.setdefault("time_log", [])
         if not isinstance(clean.get("time_log"), list):
             clean["time_log"] = []
@@ -294,6 +314,7 @@ class WorkItem:
         clean["queue_day"] = str(clean.get("queue_day") or "").strip()
         if not clean["queue_day"] and clean["queue_lane"] == "daily":
             clean["queue_day"] = today_local_iso()
+        clean["due_eod"] = bool(clean.get("due_eod"))
         clean["next_day_request"] = normalize_next_day_request(
             clean.get("next_day_request") or empty_next_day_request()
         )
@@ -374,8 +395,8 @@ def ensure_work_items_from_legacy(
     return [
         WorkItem(
             id="WI-001",
-            concern=c,
-            notes=n,
+            concern=c or n,
+            notes=n if c else "",
             status="open",
             priority=1,
             created=ts,
@@ -383,6 +404,18 @@ def ensure_work_items_from_legacy(
             created_by_role="tech",
         )
     ]
+
+
+def order_has_work_item_concern(order: Any) -> bool:
+    """True when the RO has at least one work item with a non-empty concern."""
+    for raw in getattr(order, "work_items", None) or []:
+        if isinstance(raw, dict):
+            if str(raw.get("concern") or "").strip():
+                return True
+        else:
+            if str(getattr(raw, "concern", "") or "").strip():
+                return True
+    return False
 
 
 def apply_rollups(order: Any) -> None:
@@ -503,12 +536,24 @@ def upsert_work_item(
             target.assigned_to_id = assign_to_id.strip()
         if assign_to_name is not None:
             target.assigned_to_name = assign_to_name.strip()
+        if assign_to_id is not None or assign_to_name is not None:
+            if (target.assigned_to_id or "").strip() or (target.assigned_to_name or "").strip():
+                if not (target.assigned_at or "").strip():
+                    target.assigned_at = ts
+            else:
+                target.assigned_at = ""
 
     target.updated = ts
     target.updated_by = actor
     target.updated_by_role = actor_role
     order.work_items = work_items_to_dicts(items)
     apply_rollups(order)
+    try:
+        from carro.core.assignment import rollup_ro_status_from_items
+
+        rollup_ro_status_from_items(order)
+    except Exception:
+        pass
     return target
 
 
@@ -518,8 +563,480 @@ def remove_work_item(order: Any, item_id: str) -> bool:
     if len(kept) == len(items):
         return False
     order.work_items = work_items_to_dicts(kept)
+    if not kept:
+        # Avoid ensure_work_items_from_legacy re-seeding WI-001 from rolled-up complaint.
+        order.complaint = ""
+        order.tech_notes = ""
     apply_rollups(order)
+    try:
+        from carro.core.assignment import rollup_ro_status_from_items
+
+        rollup_ro_status_from_items(order)
+    except Exception:
+        pass
     return True
+
+
+def _append_labeled_text(base: str, label: str, extra: str) -> str:
+    base_s = (base or "").strip()
+    extra_s = (extra or "").strip()
+    if not extra_s:
+        return base_s
+    block = f"[{label}]\n{extra_s}"
+    if not base_s:
+        return block
+    return f"{base_s}\n\n---\n{block}"
+
+
+def _unified_concern_text(items: list[WorkItem]) -> str:
+    """Build one concern listing every original complaint from the merged set."""
+    lines: list[str] = []
+    seen: set[str] = set()
+    for w in items:
+        raw = (w.concern or "").strip()
+        if not raw:
+            continue
+        # Preserve multi-line / prior-merge text as one bullet block
+        key = raw.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        if "\n" in raw:
+            indented = "\n  ".join(raw.splitlines())
+            lines.append(f"• [{w.id}] {indented}")
+        else:
+            lines.append(f"• {raw}")
+    return "\n".join(lines)
+
+
+def _earlier_iso(a: str, b: str) -> str:
+    a_s = (a or "").strip()
+    b_s = (b or "").strip()
+    if not a_s:
+        return b_s
+    if not b_s:
+        return a_s
+    return a_s if a_s <= b_s else b_s
+
+
+def _later_iso(a: str, b: str) -> str:
+    a_s = (a or "").strip()
+    b_s = (b or "").strip()
+    if not a_s:
+        return b_s
+    if not b_s:
+        return a_s
+    return a_s if a_s >= b_s else b_s
+
+
+def merge_work_items(
+    order: Any,
+    *,
+    target_id: str,
+    source_ids: list[str],
+    reason: str = "",
+) -> WorkItem:
+    """
+    Absorb source work items into target (survivor). Moves parts, time, and text;
+    unifies concerns into one list; records merge reason; removes sources.
+    """
+    tid = (target_id or "").strip()
+    reason_s = (reason or "").strip()
+    if not reason_s:
+        raise ValueError("Merge reason required")
+    sources = [str(x).strip() for x in (source_ids or []) if str(x).strip() and str(x).strip() != tid]
+    # Dedupe while preserving order
+    seen: set[str] = set()
+    uniq_sources: list[str] = []
+    for sid in sources:
+        if sid in seen:
+            continue
+        seen.add(sid)
+        uniq_sources.append(sid)
+    sources = uniq_sources
+    if not tid:
+        raise ValueError("target_id required")
+    if not sources:
+        raise ValueError("Select at least one other work item to merge")
+
+    items = ensure_work_items_on_order(order)
+    by_id = {w.id: w for w in items}
+    if tid not in by_id:
+        raise ValueError(f"Work item not found: {tid}")
+    for sid in sources:
+        if sid not in by_id:
+            raise ValueError(f"Work item not found: {sid}")
+
+    involved = [tid, *sources]
+    for wid in involved:
+        w = by_id[wid]
+        if (w.timer_started_at or "").strip():
+            stop_work_timer(order, wid, bank_between_sessions=False)
+        items = ensure_work_items_on_order(order)
+        by_id = {x.id: x for x in items}
+        w = by_id[wid]
+        stop_downtime(w)
+
+    items = ensure_work_items_on_order(order)
+    by_id = {w.id: w for w in items}
+    target = by_id[tid]
+    # Snapshot before unify so Unmerge can restore (mistake undo).
+    target_before = {
+        "concern": target.concern or "",
+        "notes": target.notes or "",
+        "private_notes": target.private_notes or "",
+    }
+    source_snapshots = [deepcopy(by_id[sid].to_dict()) for sid in sources]
+    merged_set = [target, *[by_id[sid] for sid in sources]]
+    target.concern = _unified_concern_text(merged_set)
+
+    # Assignment / queue: fill empty survivor fields from first source that has them
+    for sid in sources:
+        src = by_id[sid]
+        if not (target.assigned_to_id or "").strip() and (src.assigned_to_id or "").strip():
+            target.assigned_to_id = src.assigned_to_id
+            target.assigned_to_name = src.assigned_to_name or ""
+            target.assigned_at = src.assigned_at or target.assigned_at or now_iso()
+        if not (target.queue_lane or "").strip() or target.queue_lane == "daily":
+            from carro.core.queue_lanes import normalize_queue_lane
+
+            src_lane = normalize_queue_lane(src.queue_lane, default="daily")
+            if src_lane != "daily" and normalize_queue_lane(target.queue_lane, default="daily") == "daily":
+                target.queue_lane = src_lane
+                target.queue_day = src.queue_day or target.queue_day
+                target.pending_queue_lane = ""
+
+    parts = list(target.parts or [])
+    existing_part_ids = {str(p.get("id") or "") for p in parts if isinstance(p, dict)}
+    time_log = list(target.time_log or [])
+    downtime_log = list(normalize_downtime_log(target.downtime_log))
+    stage_log = list(normalize_stage_log(target.stage_log))
+    stage_totals = normalize_stage_totals(target.stage_totals)
+    worked = max(0, int(target.worked_minutes or 0))
+    downtime_mins = max(0, int(target.downtime_minutes or 0))
+    linked = list(target.linked_photo_ids or [])
+
+    for sid in sources:
+        src = by_id[sid]
+        label = sid
+        target.notes = _append_labeled_text(target.notes, label, src.notes or "")
+        target.private_notes = _append_labeled_text(
+            target.private_notes, f"{label} private", src.private_notes or ""
+        )
+
+        for p in src.parts or []:
+            if not isinstance(p, dict):
+                continue
+            entry = dict(p)
+            pid = str(entry.get("id") or "").strip()
+            if not pid or pid in existing_part_ids:
+                entry["id"] = new_part_id(parts)
+            parts.append(normalize_part(entry))
+            existing_part_ids.add(str(entry.get("id") or ""))
+
+        for entry in src.time_log or []:
+            if isinstance(entry, dict):
+                time_log.append(dict(entry))
+        worked += max(0, int(src.worked_minutes or 0))
+        target.worked_first_at = _earlier_iso(target.worked_first_at, src.worked_first_at)
+        target.worked_last_at = _later_iso(target.worked_last_at, src.worked_last_at)
+
+        for entry in normalize_downtime_log(src.downtime_log):
+            downtime_log.append(entry)
+        downtime_mins += max(0, int(src.downtime_minutes or 0))
+
+        for entry in normalize_stage_log(src.stage_log):
+            stage_log.append(entry)
+        src_totals = normalize_stage_totals(src.stage_totals)
+        for k in STAGE_TOTAL_KEYS:
+            stage_totals[k] = max(0, int(stage_totals.get(k) or 0)) + max(
+                0, int(src_totals.get(k) or 0)
+            )
+
+        for pid in src.linked_photo_ids or []:
+            s = str(pid or "").strip()
+            if s and s not in linked:
+                linked.append(s)
+
+    merge_note = f"Merged from {', '.join(sources)}\nReason: {reason_s}"
+    target.private_notes = _append_labeled_text(target.private_notes, "merge", merge_note)
+    target.merge_snapshot = {
+        "at": now_iso(),
+        "reason": reason_s,
+        "target_id": tid,
+        "source_ids": list(sources),
+        "target_before": target_before,
+        "sources": source_snapshots,
+    }
+
+    target.parts = parts
+    target.time_log = time_log
+    target.worked_minutes = worked
+    target.downtime_log = downtime_log[-_DOWNTIME_LOG_CAP:]
+    target.downtime_minutes = downtime_mins
+    target.stage_log = stage_log[-_STAGE_LOG_CAP:]
+    target.stage_totals = stage_totals
+    target.linked_photo_ids = linked
+    target.timer_started_at = ""
+    target.timer_tech_id = ""
+    target.timer_tech_name = ""
+    target.downtime_started_at = ""
+    target.downtime_reason = ""
+    target.updated = now_iso()
+
+    # Rewrite found-issue links
+    try:
+        from carro.core.found_issues import ensure_found_issues_on_order
+
+        fis = ensure_found_issues_on_order(order)
+        source_set = set(sources)
+        changed_fi = False
+        for fi in fis:
+            if (fi.work_item_id or "").strip() in source_set:
+                fi.work_item_id = tid
+                fi.updated = now_iso()
+                changed_fi = True
+            if (fi.source_work_item_id or "").strip() in source_set:
+                fi.source_work_item_id = tid
+                fi.updated = now_iso()
+                changed_fi = True
+        if changed_fi:
+            order.found_issues = [f.to_dict() for f in fis]
+    except Exception:
+        pass
+
+    # Current bay pointer
+    cur = (getattr(order, "current_item_id", "") or "").strip()
+    if cur in sources or cur == tid:
+        st = (target.status or "").strip().lower()
+        if st in ("done", "declined"):
+            order.current_item_id = ""
+            order.current_tech_id = ""
+            order.current_tech_name = ""
+            order.current_since = ""
+        else:
+            order.current_item_id = tid
+
+    kept = [w for w in items if w.id not in sources]
+    # Ensure target object in kept is the mutated one
+    kept = [target if w.id == tid else w for w in kept]
+    order.work_items = work_items_to_dicts(kept)
+    apply_rollups(order)
+    try:
+        from carro.core.assignment import rollup_ro_status_from_items
+
+        rollup_ro_status_from_items(order)
+    except Exception:
+        pass
+    return target
+
+
+_MERGE_FROM_RE = re.compile(
+    r"Merged from\s+([^\n]+)",
+    re.IGNORECASE,
+)
+_BULLET_RE = re.compile(r"^\s*[•\-\*]\s*(.+)$")
+
+
+def _parse_merged_from_ids(private_notes: str) -> list[str]:
+    m = _MERGE_FROM_RE.search(private_notes or "")
+    if not m:
+        return []
+    raw = m.group(1).strip()
+    # "WI-002" or "WI-002, WI-003" / "WI-002 and WI-003"
+    parts = re.split(r"\s*(?:,|/|\band\b)\s*", raw, flags=re.IGNORECASE)
+    out: list[str] = []
+    for p in parts:
+        tok = (p or "").strip().rstrip(".")
+        if re.fullmatch(r"WI-\d+", tok, flags=re.IGNORECASE):
+            num = tok.split("-", 1)[-1]
+            out.append(f"WI-{num}")
+    # dedupe
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for sid in out:
+        if sid in seen:
+            continue
+        seen.add(sid)
+        uniq.append(sid)
+    return uniq
+
+
+def _concern_bullets(concern: str) -> list[str]:
+    lines = (concern or "").splitlines()
+    bullets: list[str] = []
+    for line in lines:
+        m = _BULLET_RE.match(line)
+        if m:
+            text = (m.group(1) or "").strip()
+            if text:
+                bullets.append(text)
+    if bullets:
+        return bullets
+    raw = (concern or "").strip()
+    return [raw] if raw else []
+
+
+def _strip_merge_private_note(private_notes: str) -> str:
+    """Remove the [merge] … block appended by merge_work_items."""
+    text = private_notes or ""
+    # Common shape: optional prior text, then [merge]\nMerged from …\nReason: …
+    parts = re.split(r"\n\n---\n\[merge\]\n|\A\[merge\]\n", text, maxsplit=1)
+    if len(parts) == 1 and not text.lstrip().startswith("[merge]"):
+        return text
+    head = parts[0].rstrip()
+    return head
+
+
+def synthesize_merge_snapshot(item: WorkItem) -> dict[str, Any] | None:
+    """
+    Build a best-effort undo payload for merges that predate merge_snapshot.
+    Uses private-notes "Merged from …" and bullet concerns.
+    """
+    snap = item.merge_snapshot if isinstance(item.merge_snapshot, dict) else {}
+    sources_raw = snap.get("sources") if snap else None
+    if isinstance(sources_raw, list) and sources_raw:
+        return snap
+
+    source_ids = _parse_merged_from_ids(item.private_notes or "")
+    if not source_ids:
+        # Fall back to stored source_ids without full sources
+        stored_ids = snap.get("source_ids") if snap else None
+        if isinstance(stored_ids, list):
+            source_ids = [str(x).strip() for x in stored_ids if str(x).strip()]
+    if not source_ids:
+        return None
+
+    bullets = _concern_bullets(item.concern or "")
+    # Survivor concern was first in unified list; remaining map to sources in order.
+    if len(bullets) >= 1 + len(source_ids):
+        target_concern = bullets[0]
+        source_concerns = bullets[1 : 1 + len(source_ids)]
+    elif len(bullets) == len(source_ids):
+        # All bullets were sources and survivor had empty concern — uncommon
+        target_concern = ""
+        source_concerns = bullets
+    else:
+        target_concern = bullets[0] if bullets else ""
+        source_concerns = [""] * len(source_ids)
+        for i, sid in enumerate(source_ids):
+            if i + 1 < len(bullets):
+                source_concerns[i] = bullets[i + 1]
+
+    target_before = snap.get("target_before") if isinstance(snap.get("target_before"), dict) else {}
+    if not target_before:
+        target_before = {
+            "concern": target_concern,
+            "notes": "",
+            "private_notes": _strip_merge_private_note(item.private_notes or ""),
+        }
+
+    sources: list[dict[str, Any]] = []
+    for i, sid in enumerate(source_ids):
+        sources.append(
+            WorkItem(
+                id=sid,
+                concern=source_concerns[i] if i < len(source_concerns) else "",
+                notes="",
+                private_notes="",
+                item_type=item.item_type or "other",
+                status="open",
+            ).to_dict()
+        )
+
+    return {
+        "at": snap.get("at") or now_iso(),
+        "reason": str(snap.get("reason") or "legacy merge"),
+        "target_id": item.id,
+        "source_ids": list(source_ids),
+        "target_before": target_before,
+        "sources": sources,
+        "legacy": True,
+    }
+
+
+def work_item_can_unmerge(item: WorkItem | dict[str, Any] | None) -> bool:
+    if item is None:
+        return False
+    if isinstance(item, dict):
+        item = WorkItem.from_dict(item)
+    snap = item.merge_snapshot if isinstance(item.merge_snapshot, dict) else {}
+    sources = snap.get("sources")
+    if isinstance(sources, list) and sources:
+        return True
+    if synthesize_merge_snapshot(item):
+        return True
+    return False
+
+
+def unmerge_work_items(order: Any, item_id: str) -> list[WorkItem]:
+    """
+    Undo the last merge on a survivor that still has merge_snapshot.
+    Restores source items from the snapshot and target concern/notes from target_before.
+    """
+    from carro.core.models import CLOSED_STATUSES
+
+    st = str(getattr(order, "status", "") or "").strip().lower()
+    if st in CLOSED_STATUSES:
+        raise ValueError("Cannot unmerge on an archived RO — reopen it first")
+
+    tid = (item_id or "").strip()
+    if not tid:
+        raise ValueError("item_id required")
+    items = ensure_work_items_on_order(order)
+    by_id = {w.id: w for w in items}
+    if tid not in by_id:
+        raise ValueError(f"Work item not found: {tid}")
+    target = by_id[tid]
+    snap = target.merge_snapshot if isinstance(target.merge_snapshot, dict) else {}
+    sources_raw = snap.get("sources") if snap else None
+    if not snap or not isinstance(sources_raw, list) or not sources_raw:
+        synthesized = synthesize_merge_snapshot(target)
+        if not synthesized:
+            raise ValueError("This work item has no undoable merge snapshot")
+        snap = synthesized
+        sources_raw = snap.get("sources")
+        target.merge_snapshot = snap
+
+    if not isinstance(sources_raw, list) or not sources_raw:
+        raise ValueError("This work item has no undoable merge snapshot")
+
+    target_before = snap.get("target_before") if isinstance(snap.get("target_before"), dict) else {}
+    restored: list[WorkItem] = []
+    for raw in sources_raw:
+        if not isinstance(raw, dict):
+            continue
+        src = WorkItem.from_dict(deepcopy(raw))
+        # Prefer original id when free; otherwise allocate a new one.
+        if src.id in by_id and src.id != tid:
+            # Collision (unlikely unless manually recreated) — mint new id
+            existing_ids = {w.id for w in items} | {r.id for r in restored}
+            n = 1
+            while f"WI-{n:03d}" in existing_ids:
+                n += 1
+            src.id = f"WI-{n:03d}"
+        restored.append(src)
+
+    target.concern = str(target_before.get("concern") or "")
+    target.notes = str(target_before.get("notes") or "")
+    target.private_notes = str(target_before.get("private_notes") or "")
+    target.merge_snapshot = {}
+    target.updated = now_iso()
+
+    # Drop any lingering merge private note block is left as historical text if present.
+    kept = list(items)
+    for src in restored:
+        if not any(w.id == src.id for w in kept):
+            kept.append(src)
+    order.work_items = work_items_to_dicts(kept)
+    apply_rollups(order)
+    try:
+        from carro.core.assignment import rollup_ro_status_from_items
+
+        rollup_ro_status_from_items(order)
+    except Exception:
+        pass
+    return restored
 
 
 def _find_item(order: Any, item_id: str) -> tuple[list[WorkItem], WorkItem]:
@@ -536,8 +1053,10 @@ def add_part(
     *,
     description: str,
     part_number: str = "",
+    oem_part_number: str = "",
     manufacturer: str | None = None,
     brand: str = "",
+    supplier: str = "",
 ) -> dict[str, Any]:
     """Add a needed-part line to a work item."""
     items, target = _find_item(order, item_id)
@@ -552,8 +1071,10 @@ def add_part(
             "id": new_part_id(parts),
             "description": desc,
             "part_number": (part_number or "").strip(),
+            "oem_part_number": (oem_part_number or "").strip(),
             "manufacturer": mfr,
             "brand": (brand or "").strip(),
+            "supplier": (supplier or "").strip(),
             "status": "new_request",
             "requested_at": ts,
             "updated_at": ts,
@@ -575,8 +1096,10 @@ def update_part(
     *,
     description: str | None = None,
     part_number: str | None = None,
+    oem_part_number: str | None = None,
     manufacturer: str | None = None,
     brand: str | None = None,
+    supplier: str | None = None,
 ) -> dict[str, Any]:
     items, target = _find_item(order, item_id)
     parts = list(target.parts or [])
@@ -587,10 +1110,14 @@ def update_part(
             p["description"] = description.strip()
         if part_number is not None:
             p["part_number"] = part_number.strip()
+        if oem_part_number is not None:
+            p["oem_part_number"] = oem_part_number.strip()
         if manufacturer is not None:
             p["manufacturer"] = manufacturer.strip()
         if brand is not None:
             p["brand"] = brand.strip()
+        if supplier is not None:
+            p["supplier"] = supplier.strip()
         p["updated_at"] = now_iso()
         parts[i] = normalize_part(p)
         target.parts = parts
@@ -626,9 +1153,11 @@ def set_part_status(
 ) -> dict[str, Any]:
     """
     Transition a part line.
-    received_wrong → resets to new_request, stamps wrong_note, re-requests parts on the RO.
+    received_wrong → resets to new_request, stamps wrong_note, increments wrong_count,
+    re-requests parts on the RO.
+    When every part on the item is received → item open + unassigned for pickup.
     """
-    from carro.core.assignment import request_parts
+    from carro.core.assignment import clear_current_task, request_parts, rollup_ro_status_from_items
 
     st = normalize_part_status(status, default="")
     if st not in PART_STATUSES:
@@ -642,6 +1171,10 @@ def set_part_status(
             continue
         if st == "received_wrong":
             p["status"] = "new_request"
+            try:
+                p["wrong_count"] = max(0, int(p.get("wrong_count") or 0)) + 1
+            except (TypeError, ValueError):
+                p["wrong_count"] = 1
             note = (wrong_note or "").strip() or "Received wrong part"
             prev = (p.get("wrong_note") or "").strip()
             p["wrong_note"] = f"{prev}\n{ts}: {note}".strip() if prev else f"{ts}: {note}"
@@ -678,6 +1211,60 @@ def set_part_status(
         raise ValueError(f"Part not found: {part_id}")
     target.parts = parts
     target.updated = ts
+
+    # All parts received → back to open unassigned pool for tech pickup
+    if st == "received" and parts and all(
+        normalize_part_status(p.get("status")) == "received" for p in parts
+    ):
+        from carro.core.assignment import release_wait_item
+
+        items = ensure_work_items_on_order(order)
+        target = next((w for w in items if w.id == item_id), target)
+        if (target.status or "").strip().lower() == "waiting_parts":
+            try:
+                release_wait_item(
+                    order,
+                    item_id,
+                    return_to_requester=False,
+                    reason="parts_received",
+                )
+            except ValueError:
+                # Not waiting — still open + unassign for pickup
+                if (order.current_item_id or "").strip() == (item_id or "").strip():
+                    clear_current_task(order)
+                    items = ensure_work_items_on_order(order)
+                    target = next((w for w in items if w.id == item_id), target)
+                set_item_status(target, "open", at=ts)
+                target.assigned_to_id = ""
+                target.assigned_to_name = ""
+                target.assigned_at = ""
+                target.wait_kind = ""
+                target.wait_requested_by = ""
+                target.wait_requested_by_id = ""
+                target.updated = ts
+                order.work_items = work_items_to_dicts(items)
+                apply_rollups(order)
+                try:
+                    rollup_ro_status_from_items(order)
+                except Exception:
+                    pass
+        else:
+            if (order.current_item_id or "").strip() == (item_id or "").strip():
+                clear_current_task(order)
+                items = ensure_work_items_on_order(order)
+                target = next((w for w in items if w.id == item_id), target)
+            target.assigned_to_id = ""
+            target.assigned_to_name = ""
+            target.assigned_at = ""
+            target.updated = ts
+            order.work_items = work_items_to_dicts(items)
+            apply_rollups(order)
+            try:
+                rollup_ro_status_from_items(order)
+            except Exception:
+                pass
+        return found
+
     order.work_items = work_items_to_dicts(items)
     apply_rollups(order)
     return found
@@ -727,7 +1314,9 @@ def collect_parts_sheet(
                 desc = (p.get("description") or "").strip()
                 concern = (w.concern or "").strip()
                 brand = (p.get("brand") or "").strip()
-                if want_q and want_q not in f"{desc} {pn} {mfr} {brand} {concern}".lower():
+                oem = (p.get("oem_part_number") or "").strip()
+                supplier = (p.get("supplier") or "").strip()
+                if want_q and want_q not in f"{desc} {pn} {mfr} {brand} {oem} {supplier} {concern}".lower():
                     continue
                 rows.append(
                     {
@@ -741,13 +1330,16 @@ def collect_parts_sheet(
                         "part_id": p.get("id"),
                         "description": desc,
                         "part_number": pn,
+                        "oem_part_number": oem,
                         "manufacturer": mfr,
                         "brand": brand,
+                        "supplier": supplier,
                         "status": pst,
                         "requested_at": p.get("requested_at") or "",
                         "ordered_at": p.get("ordered_at") or "",
                         "received_at": p.get("received_at") or "",
                         "wrong_note": p.get("wrong_note") or "",
+                        "wrong_count": int(p.get("wrong_count") or 0),
                         "updated_at": p.get("updated_at") or "",
                     }
                 )
@@ -840,6 +1432,22 @@ def diff_work_item_events(
                     "summary": (w.concern or "")[:120] or wid,
                 }
             )
+            if (w.assigned_to_id or "").strip() or (w.assigned_to_name or "").strip():
+                who = (w.assigned_to_name or w.assigned_to_id or "unassigned").strip()
+                events.append(
+                    {
+                        "type": "item_assigned",
+                        "ro_id": ro_id,
+                        "item_id": wid,
+                        "actor": actor,
+                        "at": ts,
+                        "summary": who,
+                        "payload": {
+                            "assigned_to_id": w.assigned_to_id or "",
+                            "assigned_to_name": w.assigned_to_name or "",
+                        },
+                    }
+                )
             continue
         old = b_items[wid]
         if (old.concern or "") != (w.concern or ""):
@@ -865,6 +1473,8 @@ def diff_work_item_events(
                 }
             )
         if old.status != w.status:
+            old_st = (old.status or "").strip().lower()
+            new_st = (w.status or "").strip().lower()
             events.append(
                 {
                     "type": "item_status_changed",
@@ -875,6 +1485,33 @@ def diff_work_item_events(
                     "summary": f"{old.status} → {w.status}",
                 }
             )
+            if old_st in ("waiting_parts", "waiting_customer") and new_st == "open":
+                who = (w.assigned_to_name or w.assigned_to_id or "").strip()
+                concern = (w.concern or wid)[:80]
+                reason = (
+                    "Parts received"
+                    if old_st == "waiting_parts"
+                    else "Customer approved"
+                )
+                events.append(
+                    {
+                        "type": "item_wait_cleared",
+                        "ro_id": ro_id,
+                        "item_id": wid,
+                        "actor": actor,
+                        "at": ts,
+                        "summary": (
+                            f"{reason} · {who} · {concern}"
+                            if who
+                            else f"{reason} · Unassigned · {concern}"
+                        ),
+                        "payload": {
+                            "assigned_to_id": w.assigned_to_id or "",
+                            "assigned_to_name": w.assigned_to_name or "",
+                            "from_status": old_st,
+                        },
+                    }
+                )
         if (old.assigned_to_id, old.assigned_to_name) != (
             w.assigned_to_id,
             w.assigned_to_name,
@@ -888,6 +1525,31 @@ def diff_work_item_events(
                     "actor": actor,
                     "at": ts,
                     "summary": who,
+                    "payload": {
+                        "assigned_to_id": w.assigned_to_id or "",
+                        "assigned_to_name": w.assigned_to_name or "",
+                    },
+                }
+            )
+        if not bool(old.due_eod) and bool(w.due_eod):
+            who = (w.assigned_to_name or w.assigned_to_id or "").strip()
+            concern = (w.concern or wid)[:80]
+            events.append(
+                {
+                    "type": "item_due_eod",
+                    "ro_id": ro_id,
+                    "item_id": wid,
+                    "actor": actor,
+                    "at": ts,
+                    "summary": (
+                        f"Needs done by end of day · {who} · {concern}"
+                        if who
+                        else f"Needs done by end of day · {concern}"
+                    ),
+                    "payload": {
+                        "assigned_to_id": w.assigned_to_id or "",
+                        "assigned_to_name": w.assigned_to_name or "",
+                    },
                 }
             )
     for wid in b_items:

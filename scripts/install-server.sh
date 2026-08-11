@@ -9,10 +9,14 @@ done
 ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd)"
 SERVER_SRC="$ROOT/server"
 
+# shellcheck disable=SC1091
+source "$ROOT/scripts/lib/pick-port.sh"
+
 PY="${PYTHON:-python3}"
 INSTALL_DIR="${CARRO_SERVER_HOME:-$HOME/carro-server}"
 DATA_DIR="${CARRO_DATA_DIR:-$HOME/carro-data}"
-PORT="${CARRO_PORT:-8787}"
+# Capture caller override before sourcing env file
+CALLER_PORT="${CARRO_PORT:-}"
 
 if ! command -v "$PY" >/dev/null 2>&1; then
   echo "error: python3 not found" >&2
@@ -43,6 +47,7 @@ mkdir -p "$DATA_DIR"
 
 ENV_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/carro-server.env"
 mkdir -p "$(dirname "$ENV_FILE")"
+TOKEN=""
 if [[ ! -f "$ENV_FILE" ]]; then
   TOKEN="$(.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(24))')"
   cat >"$ENV_FILE" <<EOF
@@ -63,6 +68,22 @@ else
   TOKEN="${CARRO_TOKEN:-}"
   echo "==> Keeping existing $ENV_FILE"
 fi
+
+# Preference: explicit env → stored CARRO_PORT → 8787
+if [[ -n "$CALLER_PORT" ]]; then
+  PREFERRED_PORT="$CALLER_PORT"
+elif [[ -n "${CARRO_PORT:-}" ]]; then
+  PREFERRED_PORT="$CARRO_PORT"
+else
+  PREFERRED_PORT=8787
+fi
+
+PORT="$(pick_port "$PREFERRED_PORT")"
+if [[ "$PORT" != "$PREFERRED_PORT" ]]; then
+  echo "==> Port $PREFERRED_PORT busy — using $PORT instead"
+fi
+upsert_env_var "$ENV_FILE" "CARRO_PORT" "$PORT"
+export CARRO_PORT="$PORT"
 
 UNIT_DIR="$HOME/.config/systemd/user"
 mkdir -p "$UNIT_DIR"
@@ -85,7 +106,7 @@ RestartSec=3
 WantedBy=default.target
 EOF
 
-echo "==> Wrote $UNIT"
+echo "==> Wrote $UNIT (port $PORT)"
 
 if command -v systemctl >/dev/null 2>&1; then
   systemctl --user daemon-reload

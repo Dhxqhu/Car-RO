@@ -1,8 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Bell } from "lucide-react";
+import { Bell, X } from "lucide-react";
 import { api, type IdleNudge, type RoEvent, type ShopMessage } from "@/lib/api";
-import { eventLabel, filterOthersEvents, formatEventSummary } from "@/lib/notifications";
+import {
+  eventLabel,
+  filterAdvisorDeskEvents,
+  filterOthersEvents,
+  formatEventSummary,
+} from "@/lib/notifications";
+import {
+  eventDismissKey,
+  idleDismissKey,
+  isDismissed,
+  loadDismissed,
+  msgDismissKey,
+  resolvingClearsType,
+  sameWorkTarget,
+  saveDismissed,
+} from "@/lib/notifyDismiss";
 import {
   loadNotifyPrefs,
   NOTIFY_PREFS_CHANGED,
@@ -38,6 +53,13 @@ function idleKindLabel(kind: string): string {
   return "Idle";
 }
 
+function formatIdleThreshold(hours?: number | null, fallback = 24): string {
+  const h = hours != null && hours > 0 ? hours : fallback;
+  if (h >= 168) return "7d";
+  if (h % 24 === 0 && h >= 48) return `${h / 24}d`;
+  return `${h}h`;
+}
+
 /**
  * Live feed: team RO events, idle nudges, and person-to-person messages (+ sound).
  */
@@ -62,9 +84,66 @@ export function TechNotifications({
   const msgSeenId = useRef(Number(localStorage.getItem(MSG_SEEN_KEY) || 0));
   const idleSeen = useRef(loadIdleSeen());
   const idleBadgeCounted = useRef(new Set<string>());
+  const dismissed = useRef(loadDismissed());
   const primed = useRef(false);
   const self = { name: techName, id: techId };
   const soundOn = prefs.sound;
+
+  // Auto-close the panel after idle. Do not reset on pointermove — poll re-renders
+  // under the cursor can keep firing move events and the menu never hides.
+  const PANEL_IDLE_MS = 10_000;
+  const idleTimer = useRef<number | null>(null);
+  const openRef = useRef(open);
+  openRef.current = open;
+
+  const clearIdleClose = useCallback(() => {
+    if (idleTimer.current != null) {
+      window.clearTimeout(idleTimer.current);
+      idleTimer.current = null;
+    }
+  }, []);
+
+  const bumpIdleClose = useCallback(() => {
+    clearIdleClose();
+    if (!openRef.current) return;
+    idleTimer.current = window.setTimeout(() => {
+      idleTimer.current = null;
+      setOpen(false);
+    }, PANEL_IDLE_MS);
+  }, [clearIdleClose]);
+
+  useEffect(() => {
+    if (!open) {
+      clearIdleClose();
+      return;
+    }
+    bumpIdleClose();
+    return clearIdleClose;
+  }, [open, bumpIdleClose, clearIdleClose]);
+
+  const rememberDismiss = useCallback((key: string | null) => {
+    if (!key) return;
+    dismissed.current.add(key);
+    saveDismissed(dismissed.current);
+  }, []);
+
+  const autoClearResolved = useCallback((list: RoEvent[]) => {
+    let changed = false;
+    for (const e of list) {
+      const clears = resolvingClearsType(e.type);
+      if (!clears) continue;
+      for (const other of list) {
+        if (other.type !== clears) continue;
+        if (!sameWorkTarget(e, other)) continue;
+        const key = eventDismissKey(other.id);
+        if (key && !dismissed.current.has(key)) {
+          dismissed.current.add(key);
+          changed = true;
+        }
+      }
+    }
+    if (changed) saveDismissed(dismissed.current);
+  }, []);
 
   useEffect(() => {
     const sync = () => setPrefs(loadNotifyPrefs());
@@ -78,31 +157,53 @@ export function TechNotifications({
 
   const mergeEvents = useCallback(
     (batch: RoEvent[], replace: boolean) => {
-      const others = filterOthersEvents(batch, self);
+      let scoped = filterOthersEvents(batch, self);
+      if (!prefs.globalNotifications) {
+        scoped = filterAdvisorDeskEvents(scoped);
+      }
+      const others = scoped.filter(
+        (e) => !isDismissed(dismissed.current, eventDismissKey(e.id)),
+      );
       if (!others.length && !replace) return { others, maxId: lastId.current };
+      autoClearResolved(others);
+      const still = others.filter(
+        (e) => !isDismissed(dismissed.current, eventDismissKey(e.id)),
+      );
       setEvents((prev) => {
-        const merged = replace ? others.slice().reverse() : [...others.slice().reverse(), ...prev];
+        const merged = replace
+          ? still.slice().reverse()
+          : [...still.slice().reverse(), ...prev];
         const byId = new Map<string, RoEvent>();
         for (const e of merged) {
-          byId.set(String(e.id ?? `${e.at}-${e.type}-${e.ro_id}`), e);
+          const key = String(e.id ?? `${e.at}-${e.type}-${e.ro_id}`);
+          if (isDismissed(dismissed.current, eventDismissKey(e.id))) continue;
+          byId.set(key, e);
+        }
+        // Drop rows cleared by resolving events against the merged set
+        autoClearResolved(Array.from(byId.values()));
+        for (const [k, e] of [...byId.entries()]) {
+          if (isDismissed(dismissed.current, eventDismissKey(e.id))) byId.delete(k);
         }
         return Array.from(byId.values()).slice(0, 40);
       });
-      const maxId = others.reduce((m, e) => Math.max(m, Number(e.id) || 0), lastId.current);
+      const maxId = still.reduce((m, e) => Math.max(m, Number(e.id) || 0), lastId.current);
       if (maxId > lastId.current) lastId.current = maxId;
-      return { others, maxId };
+      return { others: still, maxId };
     },
-    [techName, techId],
+    [techName, techId, autoClearResolved, prefs.globalNotifications],
   );
 
   const mergeIdle = useCallback((rows: IdleNudge[]) => {
-    setIdle(rows.slice(0, 40));
-    const active = new Set(rows.map((r) => r.fingerprint).filter(Boolean));
+    const panel = rows
+      .filter((r) => !isDismissed(dismissed.current, idleDismissKey(r.fingerprint)))
+      .slice(0, 40);
+    setIdle(panel);
+    const active = new Set(panel.map((r) => r.fingerprint).filter(Boolean));
     for (const fp of [...idleBadgeCounted.current]) {
       if (!active.has(fp)) idleBadgeCounted.current.delete(fp);
     }
     let fresh = 0;
-    for (const row of rows) {
+    for (const row of panel) {
       const fp = row.fingerprint;
       if (!fp || idleSeen.current.has(fp) || idleBadgeCounted.current.has(fp)) continue;
       idleBadgeCounted.current.add(fp);
@@ -119,19 +220,55 @@ export function TechNotifications({
     [soundOn],
   );
 
-  const poll = useCallback(async () => {
-    /** Any new notif this tick — sound module coalesces bursts. */
-    let ping: "message" | "update" | null = null;
+  const wasOffline = useRef(false);
+  const reconnecting = useRef(false);
+
+  const ackDelivered = useCallback(async (msgs: ShopMessage[]) => {
+    const ids = msgs
+      .filter((m) => m.id && !m.delivered_at && !m.read_at)
+      .map((m) => Number(m.id))
+      .filter((id) => id > 0);
+    if (!ids.length) return;
     try {
-      const r = await api.listEvents({
-        since_id: lastId.current || undefined,
-        limit: 30,
-        exclude_actor: techName || undefined,
-        exclude_actor_id: techId || undefined,
+      await api.markMessagesDelivered(ids);
+    } catch {
+      /* offline / older server */
+    }
+  }, []);
+
+  /** Inbox rows addressed to me only — never treat my outbound sends as notifies. */
+  const inboxForMe = useCallback(
+    (msgs: ShopMessage[]) => {
+      const myId = (techId || "").trim().toLowerCase();
+      if (!myId) return [];
+      return msgs.filter((m) => {
+        const to = String(m.to_id || "").trim().toLowerCase();
+        const from = String(m.from_id || "").trim().toLowerCase();
+        if (from && from === myId) return false;
+        return to === myId && !m.read_at;
       });
-      setNote(r.note ?? null);
-      if (r.events?.length) {
-        const { others } = mergeEvents(r.events, false);
+    },
+    [techId],
+  );
+
+  const catchUpEvents = useCallback(
+    async (opts?: { pageLimit?: number; maxPages?: number }) => {
+      const pageLimit = opts?.pageLimit ?? 100;
+      const maxPages = opts?.maxPages ?? 5;
+      let ping: "message" | "update" | null = null;
+      let pages = 0;
+      while (pages < maxPages) {
+        pages += 1;
+        const r = await api.listEvents({
+          since_id: lastId.current || undefined,
+          limit: pageLimit,
+          exclude_actor: techName || undefined,
+          exclude_actor_id: techId || undefined,
+        });
+        setNote(r.note ?? null);
+        const batch = r.events || [];
+        if (!batch.length) break;
+        const { others } = mergeEvents(batch, false);
         const fresh = others.filter(
           (e) =>
             Number(e.id) > seenId.current &&
@@ -142,12 +279,99 @@ export function TechNotifications({
           if (!open) setUnread((u) => u + fresh.length);
           ping = "update";
         }
+        if (batch.length < pageLimit) break;
+      }
+      return ping;
+    },
+    [mergeEvents, techName, techId, open, prefs],
+  );
+
+  const onReconnect = useCallback(async () => {
+    if (reconnecting.current) return;
+    reconnecting.current = true;
+    try {
+      try {
+        const st = await api.syncStatus();
+        const pending = Number(st.pending?.pending_total || 0);
+        if (pending > 0) {
+          await api.sync().catch(() => undefined);
+        }
+      } catch {
+        /* ignore */
+      }
+      let ping: "message" | "update" | null = null;
+      try {
+        ping = await catchUpEvents({ pageLimit: 100, maxPages: 5 });
+      } catch {
+        /* still offline */
+        return;
+      }
+      try {
+        const r = await api.listIdleNotifications(
+          prefs.globalNotifications ? undefined : { desk: true },
+        );
+        setIdleHours(r.idle_nudge_hours ?? 24);
+        if (!r.enabled || !prefs.idleNudges) {
+          setIdle([]);
+        } else {
+          const fresh = mergeIdle(r.idle || []);
+          if (fresh > 0) {
+            if (!open) setUnread((u) => u + fresh);
+            if (!ping) ping = "update";
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (!prefs.shopMessages) {
+          setMsgUnread(0);
+          setRecentMsgs([]);
+        } else {
+          const r = await api.listMessages({ unread: true, limit: 20 });
+          const raw = inboxForMe(r.messages || []);
+          void ackDelivered(raw);
+          const msgs = raw.filter(
+            (m) => !isDismissed(dismissed.current, msgDismissKey(m.id)),
+          );
+          setRecentMsgs(msgs);
+          const count = msgs.length;
+          setMsgUnread(count);
+          const maxMsgId = msgs.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0);
+          if (primed.current && maxMsgId > msgSeenId.current && count > 0) {
+            ping = "message";
+            msgSeenId.current = maxMsgId;
+            localStorage.setItem(MSG_SEEN_KEY, String(maxMsgId));
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      wasOffline.current = false;
+      if (ping) chime(ping);
+    } finally {
+      reconnecting.current = false;
+    }
+  }, [catchUpEvents, mergeIdle, prefs, open, ackDelivered, inboxForMe, chime]);
+
+  const poll = useCallback(async () => {
+    /** Any new notif this tick — sound module coalesces bursts. */
+    let ping: "message" | "update" | null = null;
+    let eventsOk = false;
+    try {
+      ping = (await catchUpEvents({ pageLimit: 30, maxPages: 1 })) || null;
+      eventsOk = true;
+      if (wasOffline.current) {
+        void onReconnect();
+        return;
       }
     } catch {
-      /* offline / no server — quiet */
+      wasOffline.current = true;
     }
     try {
-      const r = await api.listIdleNotifications();
+      const r = await api.listIdleNotifications(
+          prefs.globalNotifications ? undefined : { desk: true },
+        );
       setIdleHours(r.idle_nudge_hours ?? 24);
       if (!r.enabled || !prefs.idleNudges) {
         setIdle([]);
@@ -167,9 +391,13 @@ export function TechNotifications({
         setRecentMsgs([]);
       } else {
         const r = await api.listMessages({ unread: true, limit: 8 });
-        const msgs = r.messages || [];
+        const raw = inboxForMe(r.messages || []);
+        void ackDelivered(raw);
+        const msgs = raw.filter(
+          (m) => !isDismissed(dismissed.current, msgDismissKey(m.id)),
+        );
         setRecentMsgs(msgs);
-        const count = r.unread ?? msgs.length;
+        const count = msgs.length;
         setMsgUnread(count);
         const maxMsgId = msgs.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0);
         if (primed.current && maxMsgId > msgSeenId.current && count > 0) {
@@ -182,11 +410,23 @@ export function TechNotifications({
         }
       }
     } catch {
+      if (!eventsOk) wasOffline.current = true;
       setMsgUnread(0);
       setRecentMsgs([]);
     }
     if (ping) chime(ping);
-  }, [mergeEvents, mergeIdle, techName, techId, open, chime, prefs]);
+  }, [
+    catchUpEvents,
+    onReconnect,
+    mergeIdle,
+    techName,
+    techId,
+    open,
+    chime,
+    prefs,
+    ackDelivered,
+    inboxForMe,
+  ]);
 
   useEffect(() => {
     void (async () => {
@@ -210,10 +450,12 @@ export function TechNotifications({
           );
         }
       } catch {
-        /* ignore */
+        wasOffline.current = true;
       }
       try {
-        const r = await api.listIdleNotifications();
+        const r = await api.listIdleNotifications(
+          prefs.globalNotifications ? undefined : { desk: true },
+        );
         setIdleHours(r.idle_nudge_hours ?? 24);
         if (r.enabled && prefs.idleNudges) {
           const fresh = mergeIdle(r.idle || []);
@@ -230,9 +472,13 @@ export function TechNotifications({
           setRecentMsgs([]);
         } else {
           const r = await api.listMessages({ unread: true, limit: 8 });
-          const msgs = r.messages || [];
+          const raw = inboxForMe(r.messages || []);
+          void ackDelivered(raw);
+          const msgs = raw.filter(
+            (m) => !isDismissed(dismissed.current, msgDismissKey(m.id)),
+          );
           setRecentMsgs(msgs);
-          setMsgUnread(r.unread ?? msgs.length);
+          setMsgUnread(msgs.length);
           const maxMsgId = msgs.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0);
           if (maxMsgId > msgSeenId.current) {
             msgSeenId.current = maxMsgId;
@@ -245,12 +491,34 @@ export function TechNotifications({
       }
       primed.current = true;
     })();
-  }, [techName, techId, prefs.idleNudges, prefs.shopMessages]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [techName, techId, prefs.idleNudges, prefs.shopMessages, prefs.globalNotifications]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const t = window.setInterval(() => void poll(), 5000);
     return () => window.clearInterval(t);
   }, [poll]);
+
+  useEffect(() => {
+    const kick = () => {
+      if (wasOffline.current || !navigator.onLine) {
+        wasOffline.current = true;
+        void onReconnect();
+      }
+    };
+    const onOnline = () => {
+      wasOffline.current = true;
+      void onReconnect();
+    };
+    const onVis = () => {
+      if (document.visibilityState === "visible") kick();
+    };
+    window.addEventListener("online", onOnline);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [onReconnect]);
 
   function markSeen() {
     unlockNotifySound();
@@ -263,6 +531,57 @@ export function TechNotifications({
     }
     saveIdleSeen(idleSeen.current);
     setUnread(0);
+  }
+
+  function dismissEvent(e: RoEvent) {
+    const key = eventDismissKey(e.id);
+    rememberDismiss(key);
+    setEvents((prev) => prev.filter((x) => String(x.id) !== String(e.id)));
+    if (Number(e.id) > seenId.current) {
+      setUnread((u) => Math.max(0, u - 1));
+    }
+  }
+
+  function dismissIdle(row: IdleNudge) {
+    const key = idleDismissKey(row.fingerprint);
+    rememberDismiss(key);
+    if (row.fingerprint) {
+      idleSeen.current.add(row.fingerprint);
+      saveIdleSeen(idleSeen.current);
+    }
+    setIdle((prev) => prev.filter((r) => r.fingerprint !== row.fingerprint));
+    setUnread((u) => Math.max(0, u - 1));
+  }
+
+  async function dismissMessage(m: ShopMessage) {
+    const key = msgDismissKey(m.id);
+    rememberDismiss(key);
+    setRecentMsgs((prev) => prev.filter((x) => x.id !== m.id));
+    setMsgUnread((n) => Math.max(0, n - 1));
+    try {
+      if (!m.read_at) await api.markMessageRead(m.id);
+    } catch {
+      /* offline — stays dismissed locally */
+    }
+  }
+
+  function dismissAllVisible() {
+    for (const e of events) rememberDismiss(eventDismissKey(e.id));
+    for (const row of idle) {
+      rememberDismiss(idleDismissKey(row.fingerprint));
+      if (row.fingerprint) idleSeen.current.add(row.fingerprint);
+    }
+    saveIdleSeen(idleSeen.current);
+    for (const m of recentMsgs) {
+      rememberDismiss(msgDismissKey(m.id));
+      if (!m.read_at) void api.markMessageRead(m.id).catch(() => undefined);
+    }
+    setEvents([]);
+    setIdle([]);
+    setRecentMsgs([]);
+    setUnread(0);
+    setMsgUnread(0);
+    markSeen();
   }
 
   function toggleSound() {
@@ -307,6 +626,10 @@ export function TechNotifications({
             className={cn(
               "absolute right-0 z-40 mt-2 w-80 max-w-[min(20rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-surface shadow-lg",
             )}
+            onPointerDown={bumpIdleClose}
+            onWheel={bumpIdleClose}
+            onScroll={bumpIdleClose}
+            onKeyDown={bumpIdleClose}
           >
             <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
               <Link
@@ -322,6 +645,16 @@ export function TechNotifications({
                   : "Messages"}
               </Link>
               <div className="flex items-center gap-2">
+                {!empty ? (
+                  <button
+                    type="button"
+                    className="text-[11px] text-muted hover:text-fg"
+                    onClick={() => dismissAllVisible()}
+                    title="Dismiss all visible notifications"
+                  >
+                    Clear all
+                  </button>
+                ) : null}
                 <Link
                   to="/settings"
                   className="text-[11px] text-muted hover:text-fg"
@@ -345,7 +678,18 @@ export function TechNotifications({
                   <li key={m.id} className="border-b border-border/60 px-3 py-2 text-sm last:border-0">
                     <div className="flex justify-between gap-2 text-xs text-muted">
                       <span>From {m.from_name}</span>
-                      <span className="shrink-0">{formatShopTime(m.at)}</span>
+                      <span className="flex shrink-0 items-center gap-1">
+                        {formatShopTime(m.at)}
+                        <button
+                          type="button"
+                          className="rounded p-0.5 text-muted hover:bg-border/50 hover:text-fg"
+                          aria-label="Dismiss message"
+                          title="Dismiss (marks read)"
+                          onClick={() => void dismissMessage(m)}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </span>
                     </div>
                     <p className="mt-0.5 line-clamp-2 text-xs">{m.body}</p>
                     {(m.ro_id || m.work_item_id) && (
@@ -370,7 +714,7 @@ export function TechNotifications({
               <>
                 <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted">
                   Needs attention
-                  {idleHours > 0 ? ` · ≥ ${idleHours}h idle` : ""}
+                  {idleHours > 0 ? ` · ≥ ${formatIdleThreshold(idleHours)} idle` : ""}
                 </div>
                 <ul className="max-h-56 overflow-y-auto border-b border-border">
                   {idle.map((row) => (
@@ -379,15 +723,33 @@ export function TechNotifications({
                       className="border-b border-border/60 px-3 py-2 text-sm last:border-0"
                     >
                       <div className="flex justify-between gap-2 text-xs text-muted">
-                        <span>{idleKindLabel(row.kind)}</span>
-                        <span className="shrink-0">
+                        <span>
+                          {idleKindLabel(row.kind)}
+                          {row.idle_threshold_hours != null &&
+                          row.idle_threshold_hours !== idleHours
+                            ? ` · ≥ ${formatIdleThreshold(row.idle_threshold_hours)}`
+                            : ""}
+                        </span>
+                        <span className="flex shrink-0 items-center gap-1">
                           {row.idle_hours != null ? `${row.idle_hours}h` : ""}
+                          <button
+                            type="button"
+                            className="rounded p-0.5 text-muted hover:bg-border/50 hover:text-fg"
+                            aria-label="Dismiss idle nudge"
+                            title="Dismiss"
+                            onClick={() => dismissIdle(row)}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
                         </span>
                       </div>
                       <Link
                         to={`/ro/${row.ro_id}`}
                         className="font-medium text-accent hover:underline"
-                        onClick={() => setOpen(false)}
+                        onClick={() => {
+                          dismissIdle(row);
+                          setOpen(false);
+                        }}
                       >
                         {row.ro_id}
                       </Link>
@@ -432,13 +794,27 @@ export function TechNotifications({
                   >
                     <div className="flex justify-between gap-2 text-xs text-muted">
                       <span>{eventLabel(e.type)}</span>
-                      <span className="shrink-0">{e.at?.slice(11, 19) || ""}</span>
+                      <span className="flex shrink-0 items-center gap-1">
+                        {e.at?.slice(11, 19) || ""}
+                        <button
+                          type="button"
+                          className="rounded p-0.5 text-muted hover:bg-border/50 hover:text-fg"
+                          aria-label="Dismiss update"
+                          title="Dismiss"
+                          onClick={() => dismissEvent(e)}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </span>
                     </div>
                     {e.ro_id && e.ro_id !== "_message" ? (
                       <Link
                         to={`/ro/${e.ro_id}`}
                         className="font-medium text-accent hover:underline"
-                        onClick={() => setOpen(false)}
+                        onClick={() => {
+                          dismissEvent(e);
+                          setOpen(false);
+                        }}
                       >
                         {e.ro_id}
                       </Link>

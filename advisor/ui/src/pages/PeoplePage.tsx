@@ -56,6 +56,29 @@ export function PeoplePage() {
     }
   }
 
+  async function toggleWorkingPrivilege(a: Advisor, enabled: boolean) {
+    if (removeAdminPin.length !== 4) {
+      setErr("Enter the shop admin PIN to change working privilege");
+      return;
+    }
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    try {
+      const r = await api.setAdvisorWorkingPrivilege(a.id, enabled, removeAdminPin);
+      setMsg(
+        enabled
+          ? `${r.name}: working privilege on (bay work + job timers; no tech day clock)`
+          : `${r.name}: working privilege off`,
+      );
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not update working privilege");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function removeAdvisor(a: Advisor) {
     if (advisors.length < 2) {
       setErr("Cannot remove the last advisor");
@@ -109,7 +132,7 @@ export function PeoplePage() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="font-[family-name:var(--font-display)] text-3xl font-semibold">People</h1>
+        <h1 className="font-[family-name:var(--font-display)] text-3xl font-semibold">Staff</h1>
         <p className="mt-1 text-sm text-muted">
           Add advisors here only. You can also add technicians from the desk. Rosters sync through the
           shop server. Removals require the shop admin PIN.
@@ -124,11 +147,11 @@ export function PeoplePage() {
           Staff changes
         </h2>
         <p className="text-xs text-muted">
-          Enter the admin PIN once, then use Remove on a person below. Cannot remove the last
-          advisor or last technician.
+          Enter the admin PIN once, then use Remove or Working privilege on a person below. Cannot
+          remove the last advisor or last technician.
         </p>
         <div className="max-w-xs">
-          <Label>Admin PIN (for remove)</Label>
+          <Label>Admin PIN (for remove / privilege)</Label>
           <Input
             className="mt-1"
             type="password"
@@ -143,22 +166,42 @@ export function PeoplePage() {
 
       <section className="space-y-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Advisors</h2>
+        <p className="text-xs text-muted">
+          Working privilege: may assign and perform bay work; job time is tracked; not a tech day
+          clock.
+        </p>
         <ul className="divide-y divide-border rounded-2xl border border-border bg-surface">
           {advisors.map((a) => (
-            <li key={a.id} className="flex flex-wrap items-center justify-between gap-2 px-5 py-3 text-sm">
+            <li key={a.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 text-sm">
               <div>
                 <span className="font-medium">{a.name}</span>
                 <span className="ml-2 text-muted">{a.id}</span>
+                {a.working_privilege ? (
+                  <span className="ml-2 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
+                    Working privilege
+                  </span>
+                ) : null}
               </div>
-              <Button
-                type="button"
-                size="sm"
-                variant="danger"
-                disabled={busy || advisors.length < 2}
-                onClick={() => void removeAdvisor(a)}
-              >
-                Remove
-              </Button>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-xs text-muted">
+                  <input
+                    type="checkbox"
+                    checked={!!a.working_privilege}
+                    disabled={busy}
+                    onChange={(e) => void toggleWorkingPrivilege(a, e.target.checked)}
+                  />
+                  Working privilege
+                </label>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="danger"
+                  disabled={busy || advisors.length < 2}
+                  onClick={() => void removeAdvisor(a)}
+                >
+                  Remove
+                </Button>
+              </div>
             </li>
           ))}
           {!advisors.length ? (

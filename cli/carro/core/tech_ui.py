@@ -537,7 +537,7 @@ def _try_push_roster() -> bool:
 def sync_roster_with_server() -> str:
     """
     Pull if server roster is newer; push if local is newer / server empty.
-    Syncs technicians and advisors. Returns combined status string.
+    Syncs technicians, advisors, and suppliers. Returns combined status string.
     """
     try:
         from carro.core import advisors as advmod
@@ -600,6 +600,16 @@ def sync_roster_with_server() -> str:
             roster_for_sync=advmod.roster_for_sync,
             list_key="advisors",
         )
-        return f"techs={tech_status};advisors={adv_status}"
+        from carro.core import suppliers as suppliersmod
+
+        sup_status = _sync_one(
+            get_remote=remote.get_suppliers,
+            put_remote=remote.put_suppliers,
+            load_local=suppliersmod.load_roster,
+            apply_remote=suppliersmod.replace_roster,
+            roster_for_sync=suppliersmod.roster_for_sync,
+            list_key="suppliers",
+        )
+        return f"techs={tech_status};advisors={adv_status};suppliers={sup_status}"
     except Exception as exc:
         return f"error: {exc}"

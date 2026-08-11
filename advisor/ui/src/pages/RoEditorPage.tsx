@@ -1,6 +1,6 @@
 /* ADVISOR_NO_PRIVATE */
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   Cable,
@@ -15,7 +15,9 @@ import {
 } from "lucide-react";
 import {
   api,
+  isObdVinMismatch,
   photoUrl,
+  type Advisor,
   type FoundIssue,
   type RepairOrder,
   type Technician,
@@ -99,7 +101,11 @@ const RO_STATUSES = [
   "waiting_customer",
   "done",
   "billed_out",
+  "canceled",
+  "no_call_no_show",
 ] as const;
+
+const CLOSED_RO = new Set(["billed_out", "canceled", "no_call_no_show"]);
 
 const emptyItem = (): WorkItem => ({
   id: "",
@@ -118,8 +124,10 @@ const emptyPartDraft = (make = ""): WorkItemPart => ({
   id: "",
   description: "",
   part_number: "",
+  oem_part_number: "",
   manufacturer: make,
   brand: "",
+  supplier: "",
   status: "new_request",
 });
 
@@ -133,12 +141,21 @@ function partStatusLabel(s?: string): string {
   return hit?.label || formatStatus(s);
 }
 
+/** True when Unmerge can restore absorbed items (snapshot or legacy merge note). */
+function canUnmerge(item: WorkItem): boolean {
+  if (item.merge_snapshot?.sources?.length) return true;
+  if (item.merge_snapshot?.source_ids?.length) return true;
+  return /Merged from\s+WI-\d+/i.test(item.private_notes || "");
+}
+
 function formatPartLine(p: WorkItemPart, fallbackMake = ""): string {
   const bits = [p.description || "—", partStatusLabel(p.status)];
+  if (p.part_number) bits.push(`Actual ${p.part_number}`);
+  if (p.oem_part_number) bits.push(`OEM ${p.oem_part_number}`);
+  if (p.supplier) bits.push(p.supplier);
   if (p.brand) bits.push(p.brand);
   if (p.manufacturer) bits.push(p.manufacturer);
   else if (fallbackMake) bits.push(fallbackMake);
-  if (p.part_number) bits.push(`PN ${p.part_number}`);
   return bits.join(" · ");
 }
 
@@ -229,7 +246,10 @@ function orderStageTotals(o: RepairOrder): {
 export function RoEditorPage() {
   const { id } = useParams();
   const nav = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const fileRef = useRef<HTMLInputElement>(null);
+  const bayFileRef = useRef<HTMLInputElement>(null);
+  const bayPanelRef = useRef<HTMLDivElement>(null);
   const [order, setOrder] = useState<RepairOrder>(empty);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -244,6 +264,11 @@ export function RoEditorPage() {
   const [photoBusy, setPhotoBusy] = useState(false);
   const [draftItem, setDraftItem] = useState<WorkItem>(emptyItem());
   const [itemEditorOpen, setItemEditorOpen] = useState(false);
+  const [mergeSelected, setMergeSelected] = useState<string[]>([]);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeTargetId, setMergeTargetId] = useState("");
+  const [mergeReason, setMergeReason] = useState("");
+  const [mergeBusy, setMergeBusy] = useState(false);
   const [draftPart, setDraftPart] = useState<WorkItemPart>(emptyPartDraft());
   const [fiEditorOpen, setFiEditorOpen] = useState(false);
   const [draftFi, setDraftFi] = useState<{
@@ -252,6 +277,9 @@ export function RoEditorPage() {
     files: File[];
   }>({ description: "", notes: "", files: [] });
   const [fiBusy, setFiBusy] = useState(false);
+  const [editingFiId, setEditingFiId] = useState<string | null>(null);
+  const [editFiDesc, setEditFiDesc] = useState("");
+  const [editFiNotes, setEditFiNotes] = useState("");
   const [itemBusy, setItemBusy] = useState(false);
   const [roDetailsEditing, setRoDetailsEditing] = useState(false);
   const [bayItemId, setBayItemId] = useState("");
@@ -277,6 +305,13 @@ export function RoEditorPage() {
   } | null>(null);
   const [techs, setTechs] = useState<Technician[]>([]);
   const [me, setMe] = useState<Technician | null>(null);
+  const [deskAdvisor, setDeskAdvisor] = useState<Advisor | null>(null);
+  const [workingPrivilege, setWorkingPrivilege] = useState(false);
+  /** New work-item assignee: "" = Unassigned (explicit). */
+  const [draftAssignId, setDraftAssignId] = useState("");
+  /** Per found-issue tech pick for Approve → Assign */
+  const [fiApprovePick, setFiApprovePick] = useState<Record<string, string>>({});
+  const [suppliers, setSuppliers] = useState<Array<{ id: string; name: string }>>([]);
   const [currentBusy, setCurrentBusy] = useState(false);
   const [editTimeOpen, setEditTimeOpen] = useState(false);
   const [editTimeMinutes, setEditTimeMinutes] = useState("");
@@ -291,19 +326,36 @@ export function RoEditorPage() {
       .whoami()
       .then((r) => setMe(r.technician))
       .catch(() => undefined);
+    void api
+      .advisorWhoami()
+      .then((r) => {
+        setDeskAdvisor(r.advisor);
+        setWorkingPrivilege(
+          Boolean(r.working_privilege ?? r.advisor?.working_privilege),
+        );
+      })
+      .catch(() => undefined);
+    void api
+      .listSuppliers()
+      .then((r) => setSuppliers(r.suppliers || []))
+      .catch(() => undefined);
   }, []);
 
+  const canDocumentFoundIssues = Boolean(me || workingPrivilege);
+  const canApproveFoundIssues = Boolean(deskAdvisor);
+  const workerId = me?.id || (workingPrivilege ? deskAdvisor?.id : "") || "";
+  const workerName = me?.name || (workingPrivilege ? deskAdvisor?.name : "") || "";
   const isMyCurrent =
-    !!me &&
-    ((!!me.id && order.current_tech_id === me.id) ||
-      (!!me.name && order.current_tech_name === me.name));
+    !!workerId &&
+    ((!!workerId && order.current_tech_id === workerId) ||
+      (!!workerName && order.current_tech_name === workerName));
   const currentItemId = order.current_item_id || "";
 
   function itemOnMyQueue(item: WorkItem): boolean {
-    if (!me) return false;
+    if (!workerId && !workerName) return false;
     return (
-      (!!me.id && item.assigned_to_id === me.id) ||
-      (!!me.name && item.assigned_to_name === me.name)
+      (!!workerId && item.assigned_to_id === workerId) ||
+      (!!workerName && item.assigned_to_name === workerName)
     );
   }
 
@@ -352,7 +404,7 @@ export function RoEditorPage() {
   }
 
   async function setItemCurrent(itemId: string, active: boolean) {
-    if (!order.id || !me) return;
+    if (!order.id || (!me && !workingPrivilege)) return;
     setCurrentBusy(true);
     setErr("");
     try {
@@ -366,6 +418,9 @@ export function RoEditorPage() {
         setBayPrivateNotes(item?.private_notes || "");
         setBayPart(emptyPartDraft(next.make));
         setMsg(`Started work on ${itemId} — notes open`);
+        window.setTimeout(() => {
+          bayPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }, 50);
       } else {
         closeBay();
         setMsg("Stopped current work item");
@@ -382,7 +437,7 @@ export function RoEditorPage() {
     (w) => w.id === bayItemId && w.timer_started_at,
   );
   useEffect(() => {
-    if (!order.id || !bayItemId || !me || !bayTimerOn) return;
+    if (!order.id || !bayItemId || (!me && !workingPrivilege) || !bayTimerOn) return;
     const id = window.setInterval(() => {
       void (async () => {
         try {
@@ -396,7 +451,7 @@ export function RoEditorPage() {
       })();
     }, 15 * 60 * 1000);
     return () => window.clearInterval(id);
-  }, [order.id, bayItemId, me, bayTimerOn]);
+  }, [order.id, bayItemId, me, workingPrivilege, bayTimerOn]);
 
   async function queueAction(
     action:
@@ -405,16 +460,32 @@ export function RoEditorPage() {
       | "complete"
       | "complete_item"
       | "billed_out"
+      | "canceled"
+      | "no_call_no_show"
       | "reopen"
       | "waiting_parts"
       | "request_parts"
       | "item_waiting_parts"
       | "waiting_customer"
       | "request_approval"
-      | "item_waiting_customer",
+      | "item_waiting_customer"
+      | "item_release_wait"
+      | "item_return_to_requester",
     itemId?: string,
   ) {
-    if (!order.id || !me) return;
+    if (!order.id) return;
+    const archiveLike =
+      action === "billed_out" ||
+      action === "canceled" ||
+      action === "no_call_no_show" ||
+      action === "reopen";
+    const deskRelease =
+      action === "item_release_wait" || action === "item_return_to_requester";
+    if (archiveLike || deskRelease) {
+      if (!me && !deskAdvisor) return;
+    } else if (!me && !workingPrivilege) {
+      return;
+    }
     setCurrentBusy(true);
     setErr("");
     try {
@@ -426,6 +497,8 @@ export function RoEditorPage() {
         complete: "Marked done — in advisor ready-to-bill queue",
         complete_item: itemId ? `Completed ${itemId}` : "Item completed",
         billed_out: "Marked billed out (closed)",
+        canceled: "Marked canceled (archived)",
+        no_call_no_show: "Marked no call / no show (archived)",
         reopen: "Reopened",
         waiting_parts: "Pushed for parts order (advisor)",
         request_parts: "Pushed for parts order (advisor)",
@@ -437,6 +510,12 @@ export function RoEditorPage() {
         item_waiting_customer: itemId
           ? `${itemId} waiting on customer`
           : "Waiting on customer",
+        item_release_wait: itemId
+          ? `${itemId} released to Unassigned`
+          : "Released to Unassigned",
+        item_return_to_requester: itemId
+          ? `${itemId} returned to requesting tech`
+          : "Returned to requesting tech",
       };
       setMsg(labels[action] || "Updated");
     } catch (e) {
@@ -448,16 +527,114 @@ export function RoEditorPage() {
 
   useEffect(() => {
     if (!id) return;
+    setMergeSelected([]);
+    setMergeOpen(false);
     api
       .getRo(id)
       .then((o) => {
         setOrder(o);
+        // Intake / new RO: customer + vehicle editable until they lock with Done.
+        setRoDetailsEditing(!(o.work_items || []).length);
         if (!o.work_items?.length && (o.complaint || o.tech_notes)) {
           /* legacy blob — engine/from_dict synthesizes on next save */
         }
+        const bay = (searchParams.get("bay") || "").trim();
+        if (bay && (o.work_items || []).some((w) => w.id === bay)) {
+          const item = (o.work_items || []).find((w) => w.id === bay);
+          setBayItemId(bay);
+          setBayFocus("notes");
+          setBayNotes(item?.notes || "");
+          setBayPrivateNotes(item?.private_notes || "");
+          setBayPart(emptyPartDraft(o.make));
+          setMsg(`Working on ${bay} — notes open`);
+          setSearchParams(
+            (prev) => {
+              const next = new URLSearchParams(prev);
+              next.delete("bay");
+              return next;
+            },
+            { replace: true },
+          );
+          window.setTimeout(() => {
+            bayPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          }, 50);
+        }
       })
       .catch((e: Error) => setErr(e.message));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional once per RO
   }, [id]);
+
+  async function startFoundIssueFromBay() {
+    if (!order.id || !canDocumentFoundIssues) return;
+    setFiBusy(true);
+    setErr("");
+    try {
+      const next = await api.beginFoundIssueCompose(
+        order.id,
+        bayItemId || order.current_item_id || undefined,
+      );
+      setOrder(next);
+      setDraftFi({ description: "", notes: "", files: [] });
+      setFiEditorOpen(true);
+      const cur = next.current_item_id || bayItemId || "";
+      if (cur) {
+        const item = (next.work_items || []).find((w) => w.id === cur);
+        setBayItemId(cur);
+        setBayFocus("notes");
+        setBayNotes(item?.notes || "");
+        setBayPrivateNotes(item?.private_notes || "");
+        setBayPart(emptyPartDraft(next.make));
+      }
+      setMsg("Work timer paused — describe the found issue");
+      window.setTimeout(() => {
+        document
+          .getElementById("found-issues-section")
+          ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }, 50);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not start found-issue request");
+    } finally {
+      setFiBusy(false);
+    }
+  }
+
+  async function onBayPhotosSelected(files: FileList | null) {
+    if (!files?.length || !order.id) return;
+    setPhotoBusy(true);
+    setErr("");
+    try {
+      const next = await api.uploadPhotos(
+        order.id,
+        Array.from(files),
+        "diag",
+        bayItemId ? `Working ${bayItemId}` : "",
+      );
+      setOrder(next);
+      setMsg(`Attached ${files.length} photo(s) (diag)`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Upload failed");
+    } finally {
+      setPhotoBusy(false);
+      if (bayFileRef.current) bayFileRef.current.value = "";
+    }
+  }
+
+  const openNewItem = searchParams.get("newItem") === "1";
+  useEffect(() => {
+    if (!openNewItem || !order.id) return;
+    setDraftItem(emptyItem());
+    setDraftPart(emptyPartDraft(order.make));
+    setItemEditorOpen(true);
+    setMsg("Add the new concern — saving pulls this RO off Ready to bill.");
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("newItem");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [openNewItem, order.id, order.make, setSearchParams]);
 
   function setRoAssignee(techId: string) {
     if (!techId) {
@@ -541,8 +718,33 @@ export function RoEditorPage() {
     try {
       const updated = await api.pullObd(order.id);
       setOrder(updated);
-      setMsg("Pulled OBD / Saved Codes");
+      setMsg(
+        updated.obd_vin_mismatch_forced
+          ? "Pulled OBD snapshot (VIN mismatched — RO VIN kept)"
+          : "Pulled OBD / Saved Codes",
+      );
     } catch (e) {
+      if (isObdVinMismatch(e)) {
+        const roVin = e.body.ro_vin || order.vin || "(none)";
+        const pulledVin = e.body.pulled_vin || e.body.pulled?.vin || "(unknown)";
+        const ok = window.confirm(
+          `OBD scan is for VIN ${pulledVin} but this RO is ${roVin}. ` +
+            "Applying may put the wrong codes on the PDF. Apply snapshot anyway? " +
+            "(RO VIN will stay the same.)",
+        );
+        if (!ok) {
+          setMsg("OBD pull cancelled — VIN mismatch");
+          return;
+        }
+        try {
+          const updated = await api.pullObd(order.id, { force: true });
+          setOrder(updated);
+          setMsg("Pulled OBD snapshot (VIN mismatched — RO VIN kept)");
+        } catch (e2) {
+          setErr(e2 instanceof Error ? e2.message : "OBD pull failed");
+        }
+        return;
+      }
       setErr(e instanceof Error ? e.message : "OBD pull failed");
     }
   }
@@ -773,6 +975,8 @@ export function RoEditorPage() {
               order.waiting_since ||
               order.done_at ||
               order.billed_out_at ||
+              order.canceled_at ||
+              order.no_call_no_show_at ||
               orderWorkedMinutes(order) > 0) && (
               <p className="mt-0.5 text-xs text-muted">
                 Shop timing
@@ -783,6 +987,12 @@ export function RoEditorPage() {
                 {order.done_at ? ` · done ${formatShopTime(order.done_at)}` : ""}
                 {order.billed_out_at
                   ? ` · billed out ${formatShopTime(order.billed_out_at)}`
+                  : ""}
+                {order.canceled_at
+                  ? ` · canceled ${formatShopTime(order.canceled_at)}`
+                  : ""}
+                {order.no_call_no_show_at
+                  ? ` · no call / no show ${formatShopTime(order.no_call_no_show_at)}`
                   : ""}
                 {order.parts_requested_at
                   ? ` · parts asked ${formatShopTime(order.parts_requested_at)}${
@@ -805,7 +1015,7 @@ export function RoEditorPage() {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          {me ? (
+          {me || deskAdvisor ? (
             <>
               {order.status === "done" ? (
                 <>
@@ -824,7 +1034,7 @@ export function RoEditorPage() {
                   </Button>
                 </>
               ) : null}
-              {order.status === "billed_out" ? (
+              {CLOSED_RO.has(order.status) ? (
                 <Button
                   variant="secondary"
                   disabled={currentBusy || !order.id}
@@ -832,6 +1042,24 @@ export function RoEditorPage() {
                 >
                   Reopen
                 </Button>
+              ) : null}
+              {deskAdvisor && !CLOSED_RO.has(order.status) && order.status !== "done" ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    disabled={currentBusy || !order.id}
+                    onClick={() => void queueAction("no_call_no_show")}
+                  >
+                    No call / no show
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    disabled={currentBusy || !order.id}
+                    onClick={() => void queueAction("canceled")}
+                  >
+                    Cancel appointment
+                  </Button>
+                </>
               ) : null}
             </>
           ) : null}
@@ -1074,28 +1302,143 @@ export function RoEditorPage() {
             </h2>
             <p className="mt-1 text-xs text-muted">
               Each concern is its own billed job. Queue and current work attach to the work item —
-              the RO is only the car. Time stamps and tech totals stay shop-side (not on customer PDF).
+              the RO is only the car. Check Merge on related items when diags turn out to be the
+              same issue.
             </p>
           </div>
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={itemBusy || !order.id}
-            onClick={() => {
-              setDraftItem(emptyItem());
-              setDraftPart(emptyPartDraft(order.make));
-              setItemEditorOpen(true);
-            }}
-          >
-            New item
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            {mergeSelected.length >= 2 ? (
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={itemBusy || mergeBusy || !order.id}
+                onClick={() => {
+                  setMergeTargetId(mergeSelected[0] || "");
+                  setMergeReason("");
+                  setMergeOpen(true);
+                }}
+              >
+                Merge ({mergeSelected.length})…
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={itemBusy || !order.id}
+              onClick={() => {
+                setDraftItem(emptyItem());
+                setDraftAssignId("");
+                setDraftPart(emptyPartDraft(order.make));
+                setItemEditorOpen(true);
+              }}
+            >
+              New item
+            </Button>
+          </div>
         </div>
+
+        {mergeOpen ? (
+          <div className="space-y-3 rounded-xl border border-accent/30 bg-accent/5 p-4">
+            <h3 className="text-sm font-medium">Merge into one work item</h3>
+            <p className="text-xs text-muted">
+              Creates one job listing every selected complaint. Parts, shop time, and notes move into
+              the survivor; the other items are removed.
+            </p>
+            <div className="rounded-lg border border-border/70 bg-bg/40 px-3 py-2 text-sm">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">
+                Unified concern preview
+              </div>
+              <ul className="mt-1 list-disc space-y-1 pl-4">
+                {mergeSelected.map((id) => {
+                  const it = (order.work_items || []).find((w) => w.id === id);
+                  const c = (it?.concern || "").trim();
+                  return (
+                    <li key={id} className="whitespace-pre-wrap">
+                      {c || "(no concern)"}
+                      <span className="ml-1 font-mono text-xs text-muted">({id})</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+            <Field label="Survivor (keep this item id)">
+              <select
+                className="h-10 w-full rounded-lg border border-border bg-bg px-3 text-sm"
+                value={mergeTargetId}
+                onChange={(e) => setMergeTargetId(e.target.value)}
+              >
+                {mergeSelected.map((id) => {
+                  const it = (order.work_items || []).find((w) => w.id === id);
+                  return (
+                    <option key={id} value={id}>
+                      {id}
+                      {it?.concern ? ` — ${it.concern.slice(0, 60)}` : ""}
+                    </option>
+                  );
+                })}
+              </select>
+            </Field>
+            <Field label="Reason for merge (required)">
+              <Textarea
+                value={mergeReason}
+                onChange={(e) => setMergeReason(e.target.value)}
+                placeholder="e.g. Same root cause — both related to ABS sensor"
+              />
+            </Field>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                disabled={mergeBusy || !mergeTargetId || !mergeReason.trim()}
+                onClick={() =>
+                  void (async () => {
+                    setMergeBusy(true);
+                    setErr("");
+                    try {
+                      const sources = mergeSelected.filter((id) => id !== mergeTargetId);
+                      const next = await api.mergeWorkItems(
+                        order.id,
+                        mergeTargetId,
+                        sources,
+                        mergeReason.trim(),
+                      );
+                      setOrder(next);
+                      setMergeSelected([]);
+                      setMergeReason("");
+                      setMergeOpen(false);
+                      setMsg(
+                        `Merged ${sources.join(", ")} into ${next.merged_into || mergeTargetId}`,
+                      );
+                    } catch (e) {
+                      setErr(e instanceof Error ? e.message : "Merge failed");
+                    } finally {
+                      setMergeBusy(false);
+                    }
+                  })()
+                }
+              >
+                {mergeBusy ? "Merging…" : "Confirm merge"}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={mergeBusy}
+                onClick={() => {
+                  setMergeOpen(false);
+                  setMergeReason("");
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+            {err ? <p className="text-sm text-danger">{err}</p> : null}
+          </div>
+        ) : null}
 
         {(order.work_items || []).length === 0 ? (
           <p className="text-sm text-muted">
-            No work items yet
+            No work items yet — add at least one concern so this job shows on the desk pool
             {order.complaint || order.tech_notes
-              ? " — legacy notes will become item WI-001 on next item save."
+              ? " (legacy notes will become item WI-001 on next item save)."
               : "."}
           </p>
         ) : (
@@ -1105,23 +1448,49 @@ export function RoEditorPage() {
               const isCurrent =
                 isMyCurrent && (currentItemId === item.id || !!item.timer_started_at);
               const breakdown = itemTechBreakdown(item);
+              const canSelect = (item.status || "").toLowerCase() !== "declined";
+              const selected = mergeSelected.includes(item.id);
               return (
                 <li
                   key={item.id}
                   className="rounded-xl border border-border bg-bg/40 px-4 py-3 text-sm"
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="font-mono text-xs text-muted">
+                    <div className="flex min-w-0 items-start gap-2">
+                      {canSelect && (order.work_items || []).length >= 2 ? (
+                        <label className="mt-0.5 flex shrink-0 cursor-pointer items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 accent-[var(--accent)]"
+                            checked={selected}
+                            aria-label={`Select ${item.id} for merge`}
+                            onChange={(e) => {
+                              setMergeSelected((prev) => {
+                                if (e.target.checked) {
+                                  return prev.includes(item.id) ? prev : [...prev, item.id];
+                                }
+                                return prev.filter((id) => id !== item.id);
+                              });
+                              setMergeOpen(false);
+                            }}
+                          />
+                          Merge
+                        </label>
+                      ) : null}
+                      <div className="font-mono text-xs text-muted">
                       {item.id} · {itemTypeLabel(item.item_type)} · {formatStatus(item.status)}
                       {item.assigned_to_name ? ` · queue ${item.assigned_to_name}` : ""}
                       {isCurrent ? " · your current work" : ""}
                       {(item.parts || []).length
                         ? ` · ${(item.parts || []).length} part(s)`
                         : ""}
-                      {(item.private_notes || "").trim() ? " · private notes" : ""}
+                      {workingPrivilege && (item.private_notes || "").trim()
+                        ? " · private notes"
+                        : ""}
+                    </div>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {me && order.status !== "billed_out" && order.status !== "done" ? (
+                      { (me || workingPrivilege) && !CLOSED_RO.has(order.status) && order.status !== "done" ? (
                         <>
                           {!onQueue ? (
                             <Button
@@ -1155,7 +1524,9 @@ export function RoEditorPage() {
                                   void queueAction("complete_item", item.id)
                                 }
                               >
-                                Completed
+                                {(item.item_type || "").toLowerCase() === "diag"
+                                  ? "Complete diag"
+                                  : "Completed"}
                               </Button>
                               <Button
                                 type="button"
@@ -1186,6 +1557,55 @@ export function RoEditorPage() {
                                 onClick={() => void setItemCurrent(item.id, false)}
                               >
                                 Stop working
+                              </Button>
+                            </>
+                          ) : (item.status || "").toLowerCase() === "waiting_customer" ||
+                            (item.status || "").toLowerCase() === "waiting_parts" ? (
+                            <>
+                              {deskAdvisor ? (
+                                <>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    disabled={currentBusy || itemBusy}
+                                    onClick={() =>
+                                      void queueAction("item_release_wait", item.id)
+                                    }
+                                  >
+                                    {(item.status || "").toLowerCase() ===
+                                    "waiting_customer"
+                                      ? "Approved → Unassigned"
+                                      : "Ready → Unassigned"}
+                                  </Button>
+                                  {(item.wait_requested_by ||
+                                    item.assigned_to_name) && (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="secondary"
+                                      disabled={currentBusy || itemBusy}
+                                      onClick={() =>
+                                        void queueAction(
+                                          "item_return_to_requester",
+                                          item.id,
+                                        )
+                                      }
+                                    >
+                                      Return to{" "}
+                                      {item.wait_requested_by ||
+                                        item.assigned_to_name}
+                                    </Button>
+                                  )}
+                                </>
+                              ) : null}
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="secondary"
+                                disabled={currentBusy || itemBusy}
+                                onClick={() => void setItemCurrent(item.id, true)}
+                              >
+                                Start work
                               </Button>
                             </>
                           ) : (
@@ -1230,6 +1650,44 @@ export function RoEditorPage() {
                       >
                         Edit
                       </Button>
+                      {canUnmerge(item) ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          disabled={itemBusy || CLOSED_RO.has(order.status)}
+                          onClick={() =>
+                            void (async () => {
+                              if (
+                                !window.confirm(
+                                  `Unmerge ${item.id}? Restores ${(item.merge_snapshot?.source_ids || []).join(", ") || "absorbed items"} as separate work items.`,
+                                )
+                              ) {
+                                return;
+                              }
+                              setItemBusy(true);
+                              setErr("");
+                              try {
+                                const next = await api.unmergeWorkItem(order.id, item.id);
+                                setOrder(next);
+                                setMergeSelected([]);
+                                setMsg(
+                                  `Unmerged ${item.id}` +
+                                    (next.unmerged_sources?.length
+                                      ? ` → ${next.unmerged_sources.join(", ")}`
+                                      : ""),
+                                );
+                              } catch (e) {
+                                setErr(e instanceof Error ? e.message : "Unmerge failed");
+                              } finally {
+                                setItemBusy(false);
+                              }
+                            })()
+                          }
+                        >
+                          Unmerge
+                        </Button>
+                      ) : null}
                       <Button
                         type="button"
                         size="sm"
@@ -1320,7 +1778,7 @@ export function RoEditorPage() {
                       {item.notes}
                     </p>
                   ) : null}
-                  {false && (item.private_notes || "").trim() ? (
+                  {workingPrivilege && (item.private_notes || "").trim() ? (
                     <p className="mt-2 whitespace-pre-wrap text-xs text-amber-800 dark:text-amber-200">
                       <span className="uppercase tracking-wide">Private · </span>
                       {item.private_notes}
@@ -1340,7 +1798,10 @@ export function RoEditorPage() {
         )}
 
         {bayItemId ? (
-          <div className="space-y-3 rounded-xl border border-accent/40 bg-bg/50 p-4">
+          <div
+            ref={bayPanelRef}
+            className="space-y-3 rounded-xl border border-accent/40 bg-bg/50 p-4"
+          >
             {(() => {
               const bayItem = (order.work_items || []).find((w) => w.id === bayItemId);
               if (!bayItem) {
@@ -1376,6 +1837,24 @@ export function RoEditorPage() {
                         type="button"
                         size="sm"
                         variant="secondary"
+                        disabled={photoBusy || !order.id}
+                        onClick={() => bayFileRef.current?.click()}
+                      >
+                        {photoBusy ? "Uploading…" : "Photo"}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={fiBusy || itemBusy || !order.id || !canDocumentFoundIssues}
+                        onClick={() => void startFoundIssueFromBay()}
+                      >
+                        Found issue
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
                         onClick={() => setBayMessageOpen(true)}
                       >
                         Message
@@ -1390,6 +1869,14 @@ export function RoEditorPage() {
                       </Button>
                     </div>
                   </div>
+                  <input
+                    ref={bayFileRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => void onBayPhotosSelected(e.target.files)}
+                  />
 
                   {bayFocus === "notes" ? (
                     <div className="space-y-3">
@@ -1400,13 +1887,15 @@ export function RoEditorPage() {
                           placeholder="Findings while working…"
                         />
                       </Field>
-                      <Field label="Private shop notes (techs only — never on customer PDF)">
-                        <Textarea
-                          value={bayPrivateNotes}
-                          onChange={(e) => setBayPrivateNotes(e.target.value)}
-                          placeholder="Internal tips, gotchas…"
-                        />
-                      </Field>
+                      {workingPrivilege || me ? (
+                        <Field label="Private shop notes (techs only — never on customer PDF)">
+                          <Textarea
+                            value={bayPrivateNotes}
+                            onChange={(e) => setBayPrivateNotes(e.target.value)}
+                            placeholder="Internal tips, gotchas…"
+                          />
+                        </Field>
+                      ) : null}
                       <Button
                         type="button"
                         disabled={itemBusy || !order.id}
@@ -1419,7 +1908,10 @@ export function RoEditorPage() {
                                 id: bayItem.id,
                                 concern: bayItem.concern,
                                 notes: bayNotes,
-                                private_notes: bayPrivateNotes,
+                                private_notes:
+                                  workingPrivilege || me
+                                    ? bayPrivateNotes
+                                    : bayItem.private_notes || "",
                                 item_type: bayItem.item_type,
                                 status: bayItem.status,
                               });
@@ -1577,13 +2069,66 @@ export function RoEditorPage() {
                         />
                       </Field>
                       <div className="grid grid-cols-2 gap-3">
-                        <Field label="Part number">
+                        <Field label="Actual part number">
                           <Input
                             value={bayPart.part_number || ""}
                             onChange={(e) =>
                               setBayPart((d) => ({ ...d, part_number: e.target.value }))
                             }
                           />
+                        </Field>
+                        <Field label="OEM part number">
+                          <Input
+                            value={bayPart.oem_part_number || ""}
+                            onChange={(e) =>
+                              setBayPart((d) => ({ ...d, oem_part_number: e.target.value }))
+                            }
+                          />
+                        </Field>
+                        <Field label="Supplier">
+                          <div className="flex gap-2">
+                            <select
+                              className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
+                              value={bayPart.supplier || ""}
+                              onChange={(e) =>
+                                setBayPart((d) => ({ ...d, supplier: e.target.value }))
+                              }
+                            >
+                              <option value="">Choose…</option>
+                              {suppliers.map((s) => (
+                                <option key={s.id} value={s.name}>
+                                  {s.name}
+                                </option>
+                              ))}
+                            </select>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              disabled={itemBusy}
+                              onClick={() =>
+                                void (async () => {
+                                  const name = window.prompt("New supplier name", "") || "";
+                                  if (!name.trim()) return;
+                                  try {
+                                    const entry = await api.addSupplier(name.trim());
+                                    setSuppliers((prev) =>
+                                      prev.some((p) => p.id === entry.id)
+                                        ? prev
+                                        : [...prev, entry].sort((a, b) =>
+                                            a.name.localeCompare(b.name),
+                                          ),
+                                    );
+                                    setBayPart((d) => ({ ...d, supplier: entry.name }));
+                                  } catch (e) {
+                                    setErr(e instanceof Error ? e.message : "Add supplier failed");
+                                  }
+                                })()
+                              }
+                            >
+                              Add
+                            </Button>
+                          </div>
                         </Field>
                         <Field label="Brand / cross">
                           <Input
@@ -1618,16 +2163,20 @@ export function RoEditorPage() {
                                   next = await api.patchPart(order.id, bayItem.id, bayPart.id, {
                                     description: bayPart.description,
                                     part_number: bayPart.part_number || "",
+                                    oem_part_number: bayPart.oem_part_number || "",
                                     manufacturer: bayPart.manufacturer || order.make || "",
                                     brand: bayPart.brand || "",
+                                    supplier: bayPart.supplier || "",
                                   });
                                   setMsg(`Updated ${bayPart.id}`);
                                 } else {
                                   next = await api.addPart(order.id, bayItem.id, {
                                     description: bayPart.description,
                                     part_number: bayPart.part_number || "",
+                                    oem_part_number: bayPart.oem_part_number || "",
                                     manufacturer: bayPart.manufacturer || order.make || "",
                                     brand: bayPart.brand || "",
+                                    supplier: bayPart.supplier || "",
                                   });
                                   setMsg(`Part added to ${bayItem.id}`);
                                 }
@@ -1681,6 +2230,7 @@ export function RoEditorPage() {
               disabled={itemBusy}
               onClick={() => {
                 setDraftItem(emptyItem());
+                setDraftAssignId("");
                 setDraftPart(emptyPartDraft(order.make));
                 setItemEditorOpen(false);
               }}
@@ -1702,6 +2252,25 @@ export function RoEditorPage() {
               ))}
             </select>
           </Field>
+          {!draftItem.id && deskAdvisor ? (
+            <Field label="Assign to (required)">
+              <select
+                className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
+                value={draftAssignId}
+                onChange={(e) => setDraftAssignId(e.target.value)}
+              >
+                <option value="">Unassigned</option>
+                {techs.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name || t.id}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-muted">
+                Put on a tech’s queue, or leave Unassigned for the Assign tab.
+              </p>
+            </Field>
+          ) : null}
           <Field label="Customer concern / request">
             <Textarea
               value={draftItem.concern}
@@ -1709,20 +2278,28 @@ export function RoEditorPage() {
               placeholder="e.g. Brake noise when cold"
             />
           </Field>
-          <Field label="Diagnosis / technician notes (customer PDF)">
-            <Textarea
-              value={draftItem.notes}
-              onChange={(e) => setDraftItem((d) => ({ ...d, notes: e.target.value }))}
-              placeholder="Findings for this item"
-            />
-          </Field>
-          <Field label="Private shop notes (techs only — never on customer PDF)">
-            <Textarea
-              value={draftItem.private_notes || ""}
-              onChange={(e) => setDraftItem((d) => ({ ...d, private_notes: e.target.value }))}
-              placeholder="Internal notes, tips, gotchas…"
-            />
-          </Field>
+          {draftItem.id ? (
+            <>
+              <Field label="Diagnosis / technician notes (customer PDF)">
+                <Textarea
+                  value={draftItem.notes}
+                  onChange={(e) => setDraftItem((d) => ({ ...d, notes: e.target.value }))}
+                  placeholder="Findings for this item"
+                />
+              </Field>
+              {workingPrivilege ? (
+                <Field label="Private shop notes (techs only — never on customer PDF)">
+                  <Textarea
+                    value={draftItem.private_notes || ""}
+                    onChange={(e) =>
+                      setDraftItem((d) => ({ ...d, private_notes: e.target.value }))
+                    }
+                    placeholder="Internal notes, tips, gotchas…"
+                  />
+                </Field>
+              ) : null}
+            </>
+          ) : null}
           <Field label="Status">
             <select
               className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
@@ -1909,10 +2486,17 @@ export function RoEditorPage() {
                         <span className="ml-2 font-mono text-xs text-muted">
                           {p.id} · {partStatusLabel(p.status)}
                         </span>
+                        {(Number(p.wrong_count) || 0) > 0 ? (
+                          <span className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-200">
+                            Wrong ×{Number(p.wrong_count)}
+                          </span>
+                        ) : null}
                         <div className="text-xs text-muted">
-                          {p.brand ? `${p.brand} · ` : ""}
-                          {p.manufacturer || order.make || "—"}
-                          {p.part_number ? ` · PN ${p.part_number}` : ""}
+                          {p.part_number ? `Actual ${p.part_number}` : "Actual —"}
+                          {p.oem_part_number ? ` · OEM ${p.oem_part_number}` : ""}
+                          {p.supplier ? ` · ${p.supplier}` : ""}
+                          {p.brand ? ` · ${p.brand}` : ""}
+                          {` · ${p.manufacturer || order.make || "—"}`}
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-1">
@@ -2046,13 +2630,64 @@ export function RoEditorPage() {
                 />
               </Field>
               <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="Part number">
+                <Field label="Actual part number">
                   <Input
                     value={draftPart.part_number || ""}
                     onChange={(e) =>
                       setDraftPart((d) => ({ ...d, part_number: e.target.value }))
                     }
                   />
+                </Field>
+                <Field label="OEM part number">
+                  <Input
+                    value={draftPart.oem_part_number || ""}
+                    onChange={(e) =>
+                      setDraftPart((d) => ({ ...d, oem_part_number: e.target.value }))
+                    }
+                  />
+                </Field>
+                <Field label="Supplier">
+                  <div className="flex gap-2">
+                    <select
+                      className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
+                      value={draftPart.supplier || ""}
+                      onChange={(e) =>
+                        setDraftPart((d) => ({ ...d, supplier: e.target.value }))
+                      }
+                    >
+                      <option value="">Choose…</option>
+                      {suppliers.map((s) => (
+                        <option key={s.id} value={s.name}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      disabled={itemBusy}
+                      onClick={() =>
+                        void (async () => {
+                          const name = window.prompt("New supplier name", "") || "";
+                          if (!name.trim()) return;
+                          try {
+                            const entry = await api.addSupplier(name.trim());
+                            setSuppliers((prev) =>
+                              prev.some((p) => p.id === entry.id)
+                                ? prev
+                                : [...prev, entry].sort((a, b) => a.name.localeCompare(b.name)),
+                            );
+                            setDraftPart((d) => ({ ...d, supplier: entry.name }));
+                          } catch (e) {
+                            setErr(e instanceof Error ? e.message : "Add supplier failed");
+                          }
+                        })()
+                      }
+                    >
+                      Add
+                    </Button>
+                  </div>
                 </Field>
                 <Field label="Brand / cross">
                   <Input
@@ -2103,8 +2738,10 @@ export function RoEditorPage() {
                           next = await api.addPart(order.id, draftItem.id, {
                             description: draftPart.description,
                             part_number: draftPart.part_number || "",
+                            oem_part_number: draftPart.oem_part_number || "",
                             manufacturer: draftPart.manufacturer || order.make || "",
                             brand: draftPart.brand || "",
+                            supplier: draftPart.supplier || "",
                           });
                           const added = (next.work_items || [])
                             .find((w) => w.id === draftItem.id)
@@ -2129,8 +2766,10 @@ export function RoEditorPage() {
                             {
                               description: draftPart.description,
                               part_number: draftPart.part_number || "",
+                              oem_part_number: draftPart.oem_part_number || "",
                               manufacturer: draftPart.manufacturer || order.make || "",
                               brand: draftPart.brand || "",
+                              supplier: draftPart.supplier || "",
                               status: draftPart.status,
                               wrong_note:
                                 draftPart.status === "received_wrong"
@@ -2190,13 +2829,11 @@ export function RoEditorPage() {
                 setItemBusy(true);
                 setErr("");
                 try {
-                  // Seed from legacy blobs once if empty
-                  if (
-                    !(order.work_items || []).length &&
-                    (order.complaint || order.tech_notes)
-                  ) {
-                    await api.saveRo(order);
-                  }
+                  // Persist customer/vehicle edits before work-item write (store loads from disk).
+                  await api.saveRo(order);
+                  const assignTech = draftAssignId
+                    ? techs.find((t) => t.id === draftAssignId)
+                    : null;
                   const next = await api.upsertWorkItem(order.id, {
                     id: draftItem.id || undefined,
                     concern: draftItem.concern,
@@ -2204,9 +2841,16 @@ export function RoEditorPage() {
                     private_notes: draftItem.private_notes || "",
                     item_type: draftItem.item_type || undefined,
                     status: draftItem.status,
+                    ...(!draftItem.id && deskAdvisor
+                      ? {
+                          assign_to_id: draftAssignId || "",
+                          assign_to_name: assignTech?.name || "",
+                        }
+                      : {}),
                   });
                   setOrder(next);
                   setDraftItem(emptyItem());
+                  setDraftAssignId("");
                   setDraftPart(emptyPartDraft(order.make));
                   setItemEditorOpen(false);
                   setMsg(draftItem.id ? `Updated ${draftItem.id}` : "Work item added");
@@ -2224,21 +2868,25 @@ export function RoEditorPage() {
         ) : null}
       </section>
 
-      <section className="space-y-4 rounded-2xl border border-border bg-surface p-5">
+      <section
+        id="found-issues-section"
+        className="space-y-4 rounded-2xl border border-border bg-surface p-5"
+      >
         <div className="flex flex-wrap items-end justify-between gap-2">
           <div>
             <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
               Found issues
             </h2>
             <p className="mt-1 text-xs text-muted">
-              Push a discovery to the advisor for customer approval without leaving your job. Typing
-              pauses the work timer and banks as downtime.
+              Save several discoveries while you work, then send once so the desk can call the
+              customer once (you or another advisor). Typing pauses the work timer and banks as
+              downtime.
             </p>
           </div>
           <Button
             type="button"
             variant="secondary"
-            disabled={fiBusy || itemBusy || !order.id || !me}
+            disabled={fiBusy || itemBusy || !order.id || !canDocumentFoundIssues}
             onClick={() =>
               void (async () => {
                 setFiBusy(true);
@@ -2273,146 +2921,489 @@ export function RoEditorPage() {
           </Button>
         </div>
 
-        {(order.found_issues || []).length === 0 ? (
-          <p className="text-sm text-muted">No found-issue requests yet.</p>
-        ) : (
-          <ul className="space-y-3">
-            {(order.found_issues || []).map((fi: FoundIssue) => (
-              <li
-                key={fi.id}
-                className="rounded-xl border border-border bg-bg/40 px-4 py-3 text-sm"
-              >
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="font-mono text-xs text-muted">
-                      {fi.id} · {formatStatus(fi.status)}
-                      {fi.found_by ? ` · ${fi.found_by}` : ""}
-                      {fi.work_item_id ? ` → ${fi.work_item_id}` : ""}
-                      {(fi.photos || []).length
-                        ? ` · ${(fi.photos || []).length} photo(s)`
-                        : ""}
+        {(() => {
+          const drafts = (order.found_issues || []).filter((f) => f.status === "draft");
+          const others = (order.found_issues || []).filter((f) => f.status !== "draft");
+          return (
+            <>
+              {drafts.length ? (
+                <div className="space-y-3 rounded-xl border border-accent/30 bg-accent/5 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-accent">
+                        Draft requests · {drafts.length}
+                      </h3>
+                      <p className="mt-0.5 text-xs text-muted">
+                        Not on the desk yet — send when you are ready.
+                      </p>
                     </div>
-                    <p className="mt-1 whitespace-pre-wrap">{fi.description}</p>
-                    {(fi.notes || "").trim() ? (
-                      <p className="mt-1 text-xs text-muted">{fi.notes}</p>
-                    ) : null}
-                    {(fi.photos || []).length ? (
-                      <ul className="mt-2 flex flex-wrap gap-2">
-                        {(fi.photos || []).map((p) => {
-                          const rel = String(p.relpath || p.filename || "");
-                          if (!rel) return null;
-                          return (
-                            <li
-                              key={String(p.id || rel)}
-                              className="overflow-hidden rounded-lg border border-border"
-                            >
-                              <a
-                                href={photoUrl(order.id, rel)}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="block"
-                              >
-                                <img
-                                  src={photoUrl(order.id, rel)}
-                                  alt={String(p.filename || "photo")}
-                                  className="h-20 w-20 object-cover"
-                                />
-                              </a>
-                            </li>
-                          );
-                        })}
-                      </ul>
+                    {canDocumentFoundIssues ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={fiBusy}
+                        onClick={() =>
+                          void (async () => {
+                            setFiBusy(true);
+                            setErr("");
+                            try {
+                              const next = await api.submitFoundIssues(order.id);
+                              setOrder(next);
+                              setEditingFiId(null);
+                              const n = next.submitted_count ?? drafts.length;
+                              setMsg(
+                                n === 1
+                                  ? "1 found issue sent to desk"
+                                  : `${n} found issues sent to desk`,
+                              );
+                            } catch (e) {
+                              setErr(
+                                e instanceof Error ? e.message : "Could not send found issues",
+                              );
+                            } finally {
+                              setFiBusy(false);
+                            }
+                          })()
+                        }
+                      >
+                        {fiBusy ? "Sending…" : "Send to desk"}
+                      </Button>
                     ) : null}
                   </div>
-                  {me && fi.status === "pending" ? (
-                    <div className="flex flex-wrap gap-2">
-                      <label className="inline-flex cursor-pointer items-center rounded-lg border border-border px-2 py-1 text-xs font-medium text-accent hover:bg-accent/10">
-                        Add photos
-                        <input
-                          type="file"
-                          accept="image/*"
-                          multiple
-                          className="hidden"
-                          onChange={(e) => {
-                            const files = Array.from(e.target.files || []);
-                            e.target.value = "";
-                            if (!files.length) return;
-                            void (async () => {
-                              setFiBusy(true);
-                              setErr("");
-                              try {
-                                const next = await api.uploadPhotos(
-                                  order.id,
-                                  files,
-                                  "found_issue",
-                                  fi.description.slice(0, 80),
-                                  fi.id,
-                                );
-                                setOrder(next);
-                                setMsg(`Photos added to ${fi.id}`);
-                              } catch (err) {
-                                setErr(
-                                  err instanceof Error ? err.message : "Photo upload failed",
-                                );
-                              } finally {
-                                setFiBusy(false);
-                              }
-                            })();
-                          }}
-                        />
-                      </label>
-                      <Button
-                        type="button"
-                        size="sm"
-                        disabled={fiBusy}
-                        onClick={() =>
-                          void (async () => {
-                            setFiBusy(true);
-                            setErr("");
-                            try {
-                              const next = await api.approveFoundIssue(order.id, fi.id, "repair");
-                              setOrder(next);
-                              setMsg(`Approved ${fi.id} → new work item`);
-                            } catch (e) {
-                              setErr(e instanceof Error ? e.message : "Approve failed");
-                            } finally {
-                              setFiBusy(false);
-                            }
-                          })()
-                        }
+                  <ul className="space-y-3">
+                    {drafts.map((fi: FoundIssue) => (
+                      <li
+                        key={fi.id}
+                        className="rounded-xl border border-border bg-bg/40 px-4 py-3 text-sm"
                       >
-                        Approve → work item
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        disabled={fiBusy}
-                        onClick={() =>
-                          void (async () => {
-                            setFiBusy(true);
-                            setErr("");
-                            try {
-                              const next = await api.declineFoundIssue(order.id, fi.id);
-                              setOrder(next);
-                              setMsg(`Declined ${fi.id}`);
-                            } catch (e) {
-                              setErr(e instanceof Error ? e.message : "Decline failed");
-                            } finally {
-                              setFiBusy(false);
-                            }
-                          })()
-                        }
-                      >
-                        Decline
-                      </Button>
-                    </div>
-                  ) : null}
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="font-mono text-xs text-muted">
+                              {fi.id} · Draft
+                              {fi.found_by ? ` · ${fi.found_by}` : ""}
+                              {(fi.photos || []).length
+                                ? ` · ${(fi.photos || []).length} photo(s)`
+                                : ""}
+                            </div>
+                            {editingFiId === fi.id ? (
+                              <div className="mt-2 space-y-2">
+                                <Textarea
+                                  value={editFiDesc}
+                                  onChange={(e) => setEditFiDesc(e.target.value)}
+                                  placeholder="Describe the found issue"
+                                  rows={3}
+                                />
+                                <Textarea
+                                  value={editFiNotes}
+                                  onChange={(e) => setEditFiNotes(e.target.value)}
+                                  placeholder="Shop notes (optional)"
+                                  rows={2}
+                                />
+                                <div className="flex flex-wrap gap-2">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    disabled={fiBusy || !editFiDesc.trim()}
+                                    onClick={() =>
+                                      void (async () => {
+                                        setFiBusy(true);
+                                        setErr("");
+                                        try {
+                                          const next = await api.updateFoundIssue(
+                                            order.id,
+                                            fi.id,
+                                            {
+                                              description: editFiDesc.trim(),
+                                              notes: editFiNotes,
+                                            },
+                                          );
+                                          setOrder(next);
+                                          setEditingFiId(null);
+                                          setMsg(`Updated ${fi.id}`);
+                                        } catch (e) {
+                                          setErr(
+                                            e instanceof Error
+                                              ? e.message
+                                              : "Could not update draft",
+                                          );
+                                        } finally {
+                                          setFiBusy(false);
+                                        }
+                                      })()
+                                    }
+                                  >
+                                    Save
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={fiBusy}
+                                    onClick={() => setEditingFiId(null)}
+                                  >
+                                    Cancel
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : (
+                              <>
+                                <p className="mt-1 whitespace-pre-wrap">{fi.description}</p>
+                                {(fi.notes || "").trim() ? (
+                                  <p className="mt-1 text-xs text-muted">{fi.notes}</p>
+                                ) : null}
+                              </>
+                            )}
+                            {(fi.photos || []).length ? (
+                              <ul className="mt-2 flex flex-wrap gap-2">
+                                {(fi.photos || []).map((p) => {
+                                  const rel = String(p.relpath || p.filename || "");
+                                  if (!rel) return null;
+                                  return (
+                                    <li
+                                      key={String(p.id || rel)}
+                                      className="overflow-hidden rounded-lg border border-border"
+                                    >
+                                      <a
+                                        href={photoUrl(order.id, rel)}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="block"
+                                      >
+                                        <img
+                                          src={photoUrl(order.id, rel)}
+                                          alt={String(p.filename || "photo")}
+                                          className="h-20 w-20 object-cover"
+                                        />
+                                      </a>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            ) : null}
+                          </div>
+                          {canDocumentFoundIssues && editingFiId !== fi.id ? (
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="secondary"
+                                disabled={fiBusy}
+                                onClick={() => {
+                                  setEditingFiId(fi.id);
+                                  setEditFiDesc(fi.description || "");
+                                  setEditFiNotes(fi.notes || "");
+                                }}
+                              >
+                                Edit
+                              </Button>
+                              <label className="inline-flex h-8 cursor-pointer items-center rounded-lg border border-border px-3 text-xs font-medium text-accent hover:bg-accent/10">
+                                Add photos
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  multiple
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const files = Array.from(e.target.files || []);
+                                    e.target.value = "";
+                                    if (!files.length) return;
+                                    void (async () => {
+                                      setFiBusy(true);
+                                      setErr("");
+                                      try {
+                                        const next = await api.uploadPhotos(
+                                          order.id,
+                                          files,
+                                          "found_issue",
+                                          fi.description.slice(0, 80),
+                                          fi.id,
+                                        );
+                                        setOrder(next);
+                                        setMsg(`Photos added to ${fi.id}`);
+                                      } catch (err) {
+                                        setErr(
+                                          err instanceof Error
+                                            ? err.message
+                                            : "Photo upload failed",
+                                        );
+                                      } finally {
+                                        setFiBusy(false);
+                                      }
+                                    })();
+                                  }}
+                                />
+                              </label>
+                            </div>
+                          ) : null}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
-              </li>
-            ))}
-          </ul>
-        )}
+              ) : null}
+
+              {others.length === 0 && drafts.length === 0 ? (
+                <p className="text-sm text-muted">No found-issue requests yet.</p>
+              ) : others.length === 0 ? null : (
+                <ul className="space-y-3">
+                  {others.map((fi: FoundIssue) => (
+                    <li
+                      key={fi.id}
+                      className="rounded-xl border border-border bg-bg/40 px-4 py-3 text-sm"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-mono text-xs text-muted">
+                            {fi.id} · {formatStatus(fi.status)}
+                            {fi.found_by ? ` · ${fi.found_by}` : ""}
+                            {fi.work_item_id ? ` → ${fi.work_item_id}` : ""}
+                            {(fi.photos || []).length
+                              ? ` · ${(fi.photos || []).length} photo(s)`
+                              : ""}
+                          </div>
+                          <p className="mt-1 whitespace-pre-wrap">{fi.description}</p>
+                          {(fi.notes || "").trim() ? (
+                            <p className="mt-1 text-xs text-muted">{fi.notes}</p>
+                          ) : null}
+                          {(fi.photos || []).length ? (
+                            <ul className="mt-2 flex flex-wrap gap-2">
+                              {(fi.photos || []).map((p) => {
+                                const rel = String(p.relpath || p.filename || "");
+                                if (!rel) return null;
+                                return (
+                                  <li
+                                    key={String(p.id || rel)}
+                                    className="overflow-hidden rounded-lg border border-border"
+                                  >
+                                    <a
+                                      href={photoUrl(order.id, rel)}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="block"
+                                    >
+                                      <img
+                                        src={photoUrl(order.id, rel)}
+                                        alt={String(p.filename || "photo")}
+                                        className="h-20 w-20 object-cover"
+                                      />
+                                    </a>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          ) : null}
+                        </div>
+                        {canApproveFoundIssues && fi.status === "pending" ? (
+                          <div className="flex w-full flex-wrap items-end gap-2">
+                            <label className="inline-flex cursor-pointer items-center rounded-lg border border-border px-2 py-1 text-xs font-medium text-accent hover:bg-accent/10">
+                              Add photos
+                              <input
+                                type="file"
+                                accept="image/*"
+                                multiple
+                                className="hidden"
+                                onChange={(e) => {
+                                  const files = Array.from(e.target.files || []);
+                                  e.target.value = "";
+                                  if (!files.length) return;
+                                  void (async () => {
+                                    setFiBusy(true);
+                                    setErr("");
+                                    try {
+                                      const next = await api.uploadPhotos(
+                                        order.id,
+                                        files,
+                                        "found_issue",
+                                        fi.description.slice(0, 80),
+                                        fi.id,
+                                      );
+                                      setOrder(next);
+                                      setMsg(`Photos added to ${fi.id}`);
+                                    } catch (err) {
+                                      setErr(
+                                        err instanceof Error
+                                          ? err.message
+                                          : "Photo upload failed",
+                                      );
+                                    } finally {
+                                      setFiBusy(false);
+                                    }
+                                  })();
+                                }}
+                              />
+                            </label>
+                            <label className="min-w-[9rem] flex-1 text-xs text-muted">
+                              Assign to
+                              <select
+                                className="mt-1 flex h-9 w-full rounded-lg border border-border bg-surface px-2 text-sm"
+                                value={fiApprovePick[fi.id] || ""}
+                                onChange={(e) =>
+                                  setFiApprovePick((prev) => ({
+                                    ...prev,
+                                    [fi.id]: e.target.value,
+                                  }))
+                                }
+                              >
+                                <option value="">Select tech…</option>
+                                {techs.map((t) => (
+                                  <option key={t.id} value={t.id}>
+                                    {t.name || t.id}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <Button
+                              type="button"
+                              size="sm"
+                              disabled={fiBusy}
+                              onClick={() =>
+                                void (async () => {
+                                  setFiBusy(true);
+                                  setErr("");
+                                  try {
+                                    const next = await api.approveFoundIssue(
+                                      order.id,
+                                      fi.id,
+                                      "repair",
+                                    );
+                                    setOrder(next);
+                                    setMsg(
+                                      `Approved ${fi.id} → Unassigned (Needs attention)`,
+                                    );
+                                  } catch (e) {
+                                    setErr(
+                                      e instanceof Error ? e.message : "Approve failed",
+                                    );
+                                  } finally {
+                                    setFiBusy(false);
+                                  }
+                                })()
+                              }
+                            >
+                              Approve → Unassigned
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              disabled={fiBusy || !(fiApprovePick[fi.id] || "")}
+                              onClick={() =>
+                                void (async () => {
+                                  const pick = fiApprovePick[fi.id] || "";
+                                  if (!pick) return;
+                                  const tech = techs.find((t) => t.id === pick);
+                                  setFiBusy(true);
+                                  setErr("");
+                                  try {
+                                    const next = await api.approveFoundIssue(
+                                      order.id,
+                                      fi.id,
+                                      "repair",
+                                      {
+                                        assign_to_id: pick,
+                                        assign_to_name: tech?.name || "",
+                                      },
+                                    );
+                                    setOrder(next);
+                                    setMsg(
+                                      `Approved ${fi.id} → assigned to ${tech?.name || pick}`,
+                                    );
+                                    setFiApprovePick((prev) => {
+                                      const n = { ...prev };
+                                      delete n[fi.id];
+                                      return n;
+                                    });
+                                  } catch (e) {
+                                    setErr(
+                                      e instanceof Error ? e.message : "Approve failed",
+                                    );
+                                  } finally {
+                                    setFiBusy(false);
+                                  }
+                                })()
+                              }
+                            >
+                              Approve → Assign
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              disabled={fiBusy}
+                              onClick={() =>
+                                void (async () => {
+                                  setFiBusy(true);
+                                  setErr("");
+                                  try {
+                                    const next = await api.declineFoundIssue(
+                                      order.id,
+                                      fi.id,
+                                    );
+                                    setOrder(next);
+                                    setMsg(`Declined ${fi.id}`);
+                                  } catch (e) {
+                                    setErr(
+                                      e instanceof Error ? e.message : "Decline failed",
+                                    );
+                                  } finally {
+                                    setFiBusy(false);
+                                  }
+                                })()
+                              }
+                            >
+                              Decline
+                            </Button>
+                          </div>
+                        ) : null}
+                        {canApproveFoundIssues &&
+                        fi.status === "converted" &&
+                        fi.work_item_id ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={fiBusy}
+                            onClick={() =>
+                              void (async () => {
+                                if (
+                                  !window.confirm(
+                                    "Undo approval? The work item is removed and this request returns to pending.",
+                                  )
+                                ) {
+                                  return;
+                                }
+                                setFiBusy(true);
+                                setErr("");
+                                try {
+                                  const next = await api.undoFoundIssueApproval(
+                                    order.id,
+                                    fi.id,
+                                  );
+                                  setOrder(next);
+                                  setMsg(`Undid approval of ${fi.id}`);
+                                } catch (e) {
+                                  setErr(
+                                    e instanceof Error
+                                      ? e.message
+                                      : "Undo approval failed",
+                                  );
+                                } finally {
+                                  setFiBusy(false);
+                                }
+                              })()
+                            }
+                          >
+                            Undo approval
+                          </Button>
+                        ) : null}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          );
+        })()}
 
         {fiEditorOpen ? (
           <div className="space-y-3 border-t border-border pt-4">
@@ -2456,11 +3447,11 @@ export function RoEditorPage() {
                 placeholder="e.g. Inner CV boot torn, grease on axle"
               />
             </Field>
-            <Field label="Shop notes for advisor (optional)">
+            <Field label="Shop notes for desk (optional)">
               <Textarea
                 value={draftFi.notes}
                 onChange={(e) => setDraftFi((d) => ({ ...d, notes: e.target.value }))}
-                placeholder="Context for the advisor — not customer-facing until approved"
+                placeholder="Context for the desk — not customer-facing until approved"
               />
             </Field>
             <Field label="Photos (optional)">
@@ -2500,13 +3491,14 @@ export function RoEditorPage() {
                       notes: draftFi.notes,
                       source_work_item_id: order.current_item_id || undefined,
                       finish_compose: true,
+                      status: "draft",
                     });
                     const createdId =
                       next.created_found_issue_id ||
                       [...(next.found_issues || [])]
                         .filter(
                           (f) =>
-                            f.status === "pending" &&
+                            f.status === "draft" &&
                             (f.description || "").trim() ===
                               draftFi.description.trim(),
                         )
@@ -2527,18 +3519,18 @@ export function RoEditorPage() {
                     setDraftFi({ description: "", notes: "", files: [] });
                     setMsg(
                       pendingFiles.length
-                        ? "Found issue + photos saved"
-                        : "Found issue sent",
+                        ? "Request saved as draft with photos — keep working, send when ready"
+                        : "Request saved as draft — keep working, send when ready",
                     );
                   } catch (e) {
-                    setErr(e instanceof Error ? e.message : "Could not send found issue");
+                    setErr(e instanceof Error ? e.message : "Could not save found issue");
                   } finally {
                     setFiBusy(false);
                   }
                 })()
               }
             >
-              {fiBusy ? "Sending…" : "Send to advisor"}
+              {fiBusy ? "Saving…" : "Save request"}
             </Button>
           </div>
         ) : null}

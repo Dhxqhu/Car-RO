@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Search } from "lucide-react";
 import { api, type MessagePerson } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +13,20 @@ type Props = {
   defaultRoId?: string;
   defaultWorkItemId?: string;
   lockRefs?: boolean;
+  /** Optional preselected recipient */
+  defaultTo?: MessagePerson | null;
 };
+
+function roleLabel(role: string): string {
+  return role === "advisor" ? "Advisor" : "Tech";
+}
+
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0] || ""}${parts[parts.length - 1][0] || ""}`.toUpperCase();
+}
 
 export function MessageComposeDialog({
   open,
@@ -21,9 +35,11 @@ export function MessageComposeDialog({
   defaultRoId = "",
   defaultWorkItemId = "",
   lockRefs = false,
+  defaultTo = null,
 }: Props) {
   const [people, setPeople] = useState<MessagePerson[]>([]);
   const [toKey, setToKey] = useState("");
+  const [filter, setFilter] = useState("");
   const [body, setBody] = useState("");
   const [roId, setRoId] = useState(defaultRoId);
   const [workItemId, setWorkItemId] = useState(defaultWorkItemId);
@@ -34,9 +50,10 @@ export function MessageComposeDialog({
     if (!open) return;
     setBody("");
     setErr("");
+    setFilter("");
     setRoId(defaultRoId);
     setWorkItemId(defaultWorkItemId);
-    setToKey("");
+    setToKey(defaultTo ? `${defaultTo.role}:${defaultTo.id}` : "");
     void (async () => {
       try {
         const r = await api.listMessagePeople();
@@ -46,7 +63,17 @@ export function MessageComposeDialog({
         setPeople([]);
       }
     })();
-  }, [open, defaultRoId, defaultWorkItemId]);
+  }, [open, defaultRoId, defaultWorkItemId, defaultTo]);
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return people;
+    return people.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        roleLabel(p.role).toLowerCase().includes(q),
+    );
+  }, [people, filter]);
 
   if (!open) return null;
 
@@ -83,25 +110,53 @@ export function MessageComposeDialog({
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center">
       <button type="button" className="absolute inset-0 cursor-default" aria-label="Close" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-md rounded-xl border border-border bg-surface p-4 shadow-lg">
-        <h2 className="font-[family-name:var(--font-display)] text-lg font-semibold">Send message</h2>
-        <p className="mt-1 text-xs text-muted">Specific person only · optional RO / work item tag</p>
-        <div className="mt-4 space-y-3">
+      <div className="relative z-10 flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-lg">
+        <div className="border-b border-border p-4">
+          <h2 className="font-[family-name:var(--font-display)] text-lg font-semibold">Send message</h2>
+          <p className="mt-1 text-xs text-muted">Any tech or advisor · optional RO / work item tag</p>
+        </div>
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
           <div>
-            <Label htmlFor="msg-to">To</Label>
-            <select
-              id="msg-to"
-              className="mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm"
-              value={toKey}
-              onChange={(e) => setToKey(e.target.value)}
-            >
-              <option value="">Select person…</option>
-              {people.map((p) => (
-                <option key={`${p.role}:${p.id}`} value={`${p.role}:${p.id}`}>
-                  {p.name} ({p.role === "advisor" ? "advisor" : "tech"})
-                </option>
-              ))}
-            </select>
+            <Label htmlFor="msg-filter">To</Label>
+            <div className="relative mt-1">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
+              <input
+                id="msg-filter"
+                className="w-full rounded-lg border border-border bg-bg py-2 pl-8 pr-3 text-sm outline-none focus:border-accent"
+                placeholder="Search staff…"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+              />
+            </div>
+            <ul className="mt-2 max-h-40 overflow-y-auto rounded-lg border border-border">
+              {!filtered.length ? (
+                <li className="px-3 py-2 text-sm text-muted">No matching staff</li>
+              ) : (
+                filtered.map((p) => {
+                  const key = `${p.role}:${p.id}`;
+                  const selected = key === toKey;
+                  return (
+                    <li key={key}>
+                      <button
+                        type="button"
+                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm ${
+                          selected ? "bg-accent/15 text-accent" : "hover:bg-border/40"
+                        }`}
+                        onClick={() => setToKey(key)}
+                      >
+                        <span className="flex h-7 w-7 items-center justify-center rounded-full bg-accent/15 text-[10px] font-semibold text-accent">
+                          {initials(p.name)}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-medium">{p.name}</span>
+                        <span className="text-[10px] uppercase tracking-wide text-muted">
+                          {roleLabel(p.role)}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })
+              )}
+            </ul>
           </div>
           <div>
             <Label htmlFor="msg-body">Message</Label>
@@ -135,15 +190,15 @@ export function MessageComposeDialog({
               />
             </div>
           </div>
-          {err ? <p className="text-sm text-red-600 dark:text-red-400">{err}</p> : null}
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={onClose} disabled={busy}>
-              Cancel
-            </Button>
-            <Button type="button" onClick={() => void send()} disabled={busy}>
-              {busy ? "Sending…" : "Send"}
-            </Button>
-          </div>
+          {err ? <p className="text-sm text-danger">{err}</p> : null}
+        </div>
+        <div className="flex justify-end gap-2 border-t border-border p-3">
+          <Button type="button" variant="secondary" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={() => void send()} disabled={busy}>
+            {busy ? "Sending…" : "Send"}
+          </Button>
         </div>
       </div>
     </div>

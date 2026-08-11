@@ -37,7 +37,7 @@ DEFAULTS: dict = {
     # Nudge when a work item or part sits untouched this long (0 = off)
     "idle_nudge_hours": 24,
     # Background push to shop server while engine/CLI menu is open. 0 = off.
-    "autosync_minutes": 0,
+    "autosync_minutes": 15,
     # Textual TUI theme (search / history / RO forms). Ctrl+P changes persist here.
     "textual_theme": "ansi-dark",
     "photos": {
@@ -87,10 +87,10 @@ def _parse_autosync_minutes(raw: object) -> int:
 
 
 def resolve_autosync_minutes(cfg: dict | None = None) -> int:
-    """Minutes between background syncs. 0 (default) means off."""
+    """Minutes between background maintenance syncs. 0 means off (default 15)."""
     if cfg is None:
         return int(load_config().get("autosync_minutes") or 0)
-    return _parse_autosync_minutes(cfg.get("autosync_minutes", 0))
+    return _parse_autosync_minutes(cfg.get("autosync_minutes", 15))
 
 
 def photos_dir(cfg: dict | None = None) -> Path:

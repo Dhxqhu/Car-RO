@@ -21,20 +21,21 @@ log = logging.getLogger("carro.sync")
 
 
 def _current_actor() -> tuple[str, str]:
-    try:
-        from carro.core import advisors as advmod
-
-        adv = advmod.current_advisor()
-        if adv:
-            return adv.name, adv.id
-    except Exception:
-        pass
+    """Prefer technician when both sessions exist (shared engine dual-login)."""
     try:
         from carro.core import technicians as techmod
 
         tech = techmod.current_technician()
         if tech:
             return tech.name, tech.id
+    except Exception:
+        pass
+    try:
+        from carro.core import advisors as advmod
+
+        adv = advmod.current_advisor()
+        if adv:
+            return adv.name, adv.id
     except Exception:
         pass
     return "", ""
@@ -160,17 +161,27 @@ def perform_sync(
     store: LocalStore | None = None,
     *,
     pending_only: bool = False,
+    sync_roster: bool | None = None,
+    do_prune: bool | None = None,
 ) -> dict[str, Any]:
     """
-    Push local ROs (+ rosters) to the shop server and prune local cache.
-    Continues past individual RO failures so one bad push cannot block the rest.
-    Never prunes while unsynced ROs or pending deletes remain.
+    Push dirty local ROs (+ optional roster) to the shop server and prune cache.
+
+    Always upserts pending (needs_sync) ROs only — never re-uploads the whole
+    catalog. Continues past individual RO failures. Never prunes while unsynced
+    ROs or pending deletes remain.
+
+    pending_only: skip roster when sync_roster is not forced True (lean drain).
+    sync_roster / do_prune: override defaults (None = derive from pending_only).
     """
     store = store or LocalStore()
     remote = RemoteClient()
     pending = store.sync_status()
+    want_roster = (not pending_only) if sync_roster is None else bool(sync_roster)
+    want_prune = True if do_prune is None else bool(do_prune)
+
     if not remote.enabled:
-        removed = store.prune()
+        removed = store.prune() if want_prune else []
         return {
             "ok": True,
             "skipped": True,
@@ -215,24 +226,19 @@ def perform_sync(
         }
 
     roster_status = "skipped"
-    try:
-        from carro.core.tech_ui import sync_roster_with_server
+    if want_roster:
+        try:
+            from carro.core.tech_ui import sync_roster_with_server
 
-        roster_status = sync_roster_with_server()
-    except Exception:
-        roster_status = "skipped"
+            roster_status = sync_roster_with_server()
+        except Exception:
+            roster_status = "skipped"
 
     del_result = try_push_pending_deletes(store, remote)
 
     actor, actor_id = _current_actor()
-    orders = store.list_pending_orders() if pending_only else store.list_orders()
-    # Always include pending first when doing a full sync (pending may already be in list).
-    if not pending_only:
-        seen = {o.id for o in orders}
-        for o in store.list_pending_orders():
-            if o.id not in seen:
-                orders.insert(0, o)
-                seen.add(o.id)
+    # Efficiency: only dirty ROs — already-synced rows stay local without re-PUT.
+    orders = store.list_pending_orders()
 
     pushed = 0
     failed = 0
@@ -256,9 +262,14 @@ def perform_sync(
     pending_after = store.sync_status()
     still_pending = int(pending_after.get("pending_total") or 0)
     removed: list[str] = []
-    if still_pending == 0 and failed == 0 and int(del_result.get("failed") or 0) == 0:
+    if (
+        want_prune
+        and still_pending == 0
+        and failed == 0
+        and int(del_result.get("failed") or 0) == 0
+    ):
         removed = store.prune()
-    elif still_pending:
+    elif still_pending and want_prune:
         log.info(
             "skipping prune — %s item(s) still pending sync",
             still_pending,
@@ -270,7 +281,10 @@ def perform_sync(
     billed_n = resolve_local_billed_keep(cfg)
     ok = failed == 0 and int(del_result.get("failed") or 0) == 0
     if ok:
-        message = f"Pushed {pushed} RO(s); roster: {roster_status}"
+        if pushed == 0 and int(del_result.get("cleared") or 0) == 0:
+            message = f"Nothing pending; roster: {roster_status}"
+        else:
+            message = f"Pushed {pushed} RO(s); roster: {roster_status}"
     else:
         message = (
             f"Synced {pushed} RO(s), {failed} failed — local copies kept "

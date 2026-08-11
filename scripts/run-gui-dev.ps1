@@ -10,6 +10,8 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
 
+. (Join-Path $PSScriptRoot "lib\Pick-Port.ps1")
+
 $env:PYTHONPATH = (@(
   (Join-Path $Root "cli"),
   (Join-Path $Root "server"),
@@ -26,12 +28,17 @@ if (-not (Test-Path $Py)) {
   Write-Error "error: run .\scripts\install.ps1 (or Install-Car-RO.bat) first"
 }
 
-$Port = if ($env:CARRO_ENGINE_PORT) { $env:CARRO_ENGINE_PORT } else { "8788" }
-Write-Host "==> Engine on http://127.0.0.1:$Port"
-$engine = Start-Process -FilePath $Py -ArgumentList @(
-  "-m", "uvicorn", "carro_engine.main:app",
-  "--host", "127.0.0.1", "--port", $Port
-) -PassThru -NoNewWindow -WorkingDirectory $Root
+$Port = Resolve-CarroEnginePort
+$engine = $null
+if (Test-CarroPortHealthy -Port $Port) {
+  Write-Host "==> Engine already on http://127.0.0.1:$Port"
+} else {
+  Write-Host "==> Engine on http://127.0.0.1:$Port"
+  $engine = Start-Process -FilePath $Py -ArgumentList @(
+    "-m", "uvicorn", "carro_engine.main:app",
+    "--host", "127.0.0.1", "--port", "$Port", "--no-access-log"
+  ) -PassThru -NoNewWindow -WorkingDirectory $Root
+}
 
 try {
   Set-Location (Join-Path $Root "gui\ui")
@@ -41,7 +48,7 @@ try {
     Write-Host "==> UI (scanner-only) on http://127.0.0.1:1420/?mode=scanner"
   } else {
     Remove-Item Env:VITE_CARRO_MODE -ErrorAction SilentlyContinue
-    Write-Host "==> UI on http://127.0.0.1:1420 (proxies /api → engine)"
+    Write-Host "==> UI on http://127.0.0.1:1420 (proxies /api → $($env:VITE_ENGINE_URL))"
   }
   npm run dev
 } finally {

@@ -56,6 +56,10 @@ def ensure_queue_defaults(item: Any) -> None:
     if not qd and lane == "daily":
         qd = today_local_iso()
     item.queue_day = qd
+    if not hasattr(item, "due_eod"):
+        item.due_eod = False
+    else:
+        item.due_eod = bool(getattr(item, "due_eod", False))
     req = getattr(item, "next_day_request", None)
     if isinstance(req, dict):
         item.next_day_request = normalize_next_day_request(req)
@@ -76,6 +80,12 @@ def set_queue_lane(
         item.pending_queue_lane = ""
     if set_day:
         item.queue_day = today_local_iso()
+    if lane_n in ("long_term", "next_day"):
+        item.due_eod = False
+    if lane_n == "long_term":
+        item.assigned_to_id = ""
+        item.assigned_to_name = ""
+        item.assigned_at = ""
     item.updated = now_iso()
 
 
@@ -117,6 +127,8 @@ def advisor_set_queue_lane(
     """
     Advisor push to a lane. If the item is currently being worked, arm
     pending_queue_lane and apply on clock-out; otherwise apply immediately.
+
+    Long-term always parks unassigned (clears assignee + due_eod via set_queue_lane).
     """
     lane_n = normalize_queue_lane(lane)
     items = ensure_work_items_on_order(order)
@@ -131,6 +143,12 @@ def advisor_set_queue_lane(
             target.next_day_request = req
     if item_is_current(order, item_id):
         target.pending_queue_lane = lane_n
+        if lane_n in ("long_term", "next_day"):
+            target.due_eod = False
+        if lane_n == "long_term":
+            target.assigned_to_id = ""
+            target.assigned_to_name = ""
+            target.assigned_at = ""
         target.updated = now_iso()
     else:
         set_queue_lane(target, lane_n, clear_pending=True, set_day=True)
@@ -138,6 +156,7 @@ def advisor_set_queue_lane(
 
 
 def decline_next_day_request(order: RepairOrder, item_id: str) -> None:
+    """Decline a tech next-day ask: stay on today, mark due EOD."""
     items = ensure_work_items_on_order(order)
     target = next((w for w in items if w.id == item_id), None)
     if not target:
@@ -148,6 +167,11 @@ def decline_next_day_request(order: RepairOrder, item_id: str) -> None:
     req["status"] = "declined"
     target.next_day_request = req
     target.pending_queue_lane = ""
+    # Stay on today's floor and finish today.
+    ensure_queue_defaults(target)
+    if (target.queue_lane or "").strip().lower() != "long_term":
+        target.queue_lane = "daily"
+    target.due_eod = True
     target.updated = now_iso()
     order.work_items = work_items_to_dicts(items)
 
@@ -195,11 +219,12 @@ def mark_next_day_request_read(order: RepairOrder, item_id: str) -> None:
 
 
 def ensure_daily_on_assign(item: Any) -> None:
-    """When assigning/picking up, default into today's daily queue."""
+    """When assigning/picking up, pull into today's daily queue (from long_term / next_day too)."""
     ensure_queue_defaults(item)
-    if not (item.queue_lane or "").strip() or item.queue_lane not in QUEUE_LANES:
-        set_queue_lane(item, "daily")
-    elif item.queue_lane == "daily" and not (item.queue_day or "").strip():
+    lane = normalize_queue_lane(item.queue_lane, default="daily")
+    if lane != "daily":
+        set_queue_lane(item, "daily", clear_pending=True, set_day=True)
+    elif not (item.queue_day or "").strip():
         item.queue_day = today_local_iso()
 
 
@@ -211,6 +236,7 @@ def rollover_queue_lanes(order: RepairOrder, *, today: str | None = None) -> int
     2. daily + queue_day < today + not current → next_day (left undone overnight)
 
     Long-term and in-progress (current) items are untouched.
+    Clears due_eod when daily work rolls overnight to next_day.
     """
     today_s = (today or today_local_iso()).strip()
     items = ensure_work_items_on_order(order)
@@ -277,3 +303,72 @@ def set_ro_flags(
     if urgent is not None:
         order.urgent = bool(urgent)
     order.updated = now_iso()
+
+
+def repark_siblings_long_term(order: RepairOrder, except_id: str = "") -> int:
+    """
+    After completing a long-term item, re-park remaining shop work as long_term.
+
+    Only touches open / in_progress siblings (not waiting_parts / waiting_customer).
+    Clears pending_queue_lane so a later clock-out cannot yank them to daily.
+    Returns how many items were updated.
+    """
+    skip = (except_id or "").strip()
+    items = ensure_work_items_on_order(order)
+    changed = 0
+    for w in items:
+        if skip and w.id == skip:
+            continue
+        st = str(w.status or "").strip().lower()
+        if st not in ("open", "in_progress"):
+            continue
+        ensure_queue_defaults(w)
+        if normalize_queue_lane(w.queue_lane, default="daily") != "long_term":
+            set_queue_lane(w, "long_term", clear_pending=True, set_day=True)
+            changed += 1
+        else:
+            # Already long_term: still force unassigned park + clear pending/EOD.
+            cleared = False
+            if (w.pending_queue_lane or "").strip():
+                w.pending_queue_lane = ""
+                cleared = True
+            if bool(getattr(w, "due_eod", False)):
+                w.due_eod = False
+                cleared = True
+            if (w.assigned_to_id or "").strip() or (w.assigned_to_name or "").strip():
+                w.assigned_to_id = ""
+                w.assigned_to_name = ""
+                w.assigned_at = ""
+                cleared = True
+            if cleared:
+                w.updated = now_iso()
+                changed += 1
+    if changed:
+        order.work_items = work_items_to_dicts(items)
+    return changed
+
+
+def order_open_items_all_long_term(order: RepairOrder | dict[str, Any]) -> bool:
+    """True when every non-done/declined item is in the long_term lane (and at least one open)."""
+    if isinstance(order, RepairOrder):
+        items = ensure_work_items_on_order(order)
+        rows = [
+            {
+                "status": w.status,
+                "queue_lane": w.queue_lane,
+            }
+            for w in items
+        ]
+    else:
+        rows = [it for it in (order.get("work_items") or []) if isinstance(it, dict)]
+    open_rows = [
+        r
+        for r in rows
+        if str(r.get("status") or "open").strip().lower() not in ("done", "declined")
+    ]
+    if not open_rows:
+        return False
+    return all(
+        normalize_queue_lane(r.get("queue_lane"), default="daily") == "long_term"
+        for r in open_rows
+    )

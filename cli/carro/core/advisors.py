@@ -36,9 +36,15 @@ class Advisor:
     id: str
     name: str
     pin_hash: str
+    working_privilege: bool = False
 
-    def to_dict(self) -> dict[str, str]:
-        return {"id": self.id, "name": self.name, "pin_hash": self.pin_hash}
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "pin_hash": self.pin_hash,
+            "working_privilege": bool(self.working_privilege),
+        }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Advisor:
@@ -46,6 +52,7 @@ class Advisor:
             id=str(data.get("id") or "").strip(),
             name=str(data.get("name") or "").strip(),
             pin_hash=str(data.get("pin_hash") or "").strip(),
+            working_privilege=bool(data.get("working_privilege", False)),
         )
 
 
@@ -190,7 +197,7 @@ def add_advisor(
     ensure_advisor_pin_available(pin, roster=roster, admin_pin_plain=admin_pin_plain)
     pin_hash = hash_pin(pin)
     aid = (advisor_id or unique_advisor_id(name, roster)).strip()
-    advisor = Advisor(id=aid, name=name, pin_hash=pin_hash)
+    advisor = Advisor(id=aid, name=name, pin_hash=pin_hash, working_privilege=False)
     advisors = list(roster.get("advisors") or [])
     advisors.append(advisor.to_dict())
     roster["advisors"] = advisors
@@ -231,6 +238,30 @@ def rename_advisor(advisor_id: str, name: str, *, roster: dict[str, Any] | None 
         raise ValueError(f"Unknown advisor: {advisor_id}")
     roster["advisors"] = advisors
     save_roster(roster)
+
+
+def set_working_privilege(
+    advisor_id: str, enabled: bool, *, roster: dict[str, Any] | None = None
+) -> Advisor:
+    """Grant or revoke bay working privilege (job timers; not tech day clock)."""
+    roster = roster or load_roster()
+    advisors = list(roster.get("advisors") or [])
+    found: dict[str, Any] | None = None
+    for item in advisors:
+        if isinstance(item, dict) and item.get("id") == advisor_id:
+            item["working_privilege"] = bool(enabled)
+            found = item
+            break
+    if not found:
+        raise ValueError(f"Unknown advisor: {advisor_id}")
+    roster["advisors"] = advisors
+    save_roster(roster)
+    return Advisor.from_dict(found)
+
+
+def has_working_privilege(advisor: Advisor | None = None) -> bool:
+    a = advisor if advisor is not None else current_advisor()
+    return bool(a and a.working_privilege)
 
 
 def remove_advisor(advisor_id: str, *, roster: dict[str, Any] | None = None) -> None:
@@ -332,7 +363,9 @@ def clear_session() -> None:
 def current_advisor() -> Advisor | None:
     global _current
     if _current is not None:
-        if get_advisor(_current.id):
+        fresh = get_advisor(_current.id)
+        if fresh:
+            _current = fresh
             return _current
         clear_session()
         return None

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, type ConfigSnapshot } from "@/lib/api";
 import {
   DEFAULT_NOTIFY_PREFS,
@@ -33,7 +33,7 @@ const emptyCfg = (): ConfigSnapshot => ({
   photos_dir: "",
   photos_inbox_dir: "",
   photos_provider: "local",
-  autosync_minutes: 0,
+  autosync_minutes: 15,
   disk: { path: "", free_gb: 0, total_gb: 0 },
   recommend: { local_keep: 0, local_photo_keep: 0 },
   keep_presets: [],
@@ -47,6 +47,9 @@ export function SettingsPage() {
   const [token, setToken] = useState("");
   const [textualTheme, setTextualTheme] = useState("ansi-dark");
   const [logoPath, setLogoPath] = useState("");
+  const [logoBusy, setLogoBusy] = useState(false);
+  const [logoPreviewKey, setLogoPreviewKey] = useState(0);
+  const logoFileRef = useRef<HTMLInputElement | null>(null);
   const [localKeep, setLocalKeep] = useState<string>("auto");
   const [localKeepCustom, setLocalKeepCustom] = useState("");
   const [photoKeep, setPhotoKeep] = useState<string>("auto");
@@ -56,11 +59,26 @@ export function SettingsPage() {
   const [idleNudgeHours, setIdleNudgeHours] = useState("24");
   const [photosDir, setPhotosDir] = useState("");
   const [inboxDir, setInboxDir] = useState("");
-  const [autosyncMinutes, setAutosyncMinutes] = useState("0");
+  const [autosyncMinutes, setAutosyncMinutes] = useState("15");
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [generatedToken, setGeneratedToken] = useState("");
   const [notify, setNotify] = useState<NotifyPrefs>(() => loadNotifyPrefs());
+  const [bugTitle, setBugTitle] = useState("");
+  const [bugDescription, setBugDescription] = useState("");
+  const [bugSteps, setBugSteps] = useState("");
+  const [bugSeverity, setBugSeverity] = useState("medium");
+  const [bugBusy, setBugBusy] = useState(false);
+  const [recentBugs, setRecentBugs] = useState<
+    Array<{
+      id: string;
+      title: string;
+      severity: string;
+      created_at: string;
+      synced?: boolean;
+      sync_error?: string;
+    }>
+  >([]);
 
   function setNotifyPref<K extends keyof NotifyPrefs>(key: K, value: NotifyPrefs[K]) {
     unlockNotifySound();
@@ -105,12 +123,87 @@ export function SettingsPage() {
     }
   }
 
+  async function refreshBugReports() {
+    try {
+      const r = await api.listBugReports(20);
+      setRecentBugs(r.reports || []);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function uploadLogo(file: File) {
+    setLogoBusy(true);
+    setErr("");
+    setMsg("");
+    try {
+      const next = await api.uploadShopLogo(file);
+      applySnapshot(next);
+      setLogoPreviewKey((k) => k + 1);
+      setMsg(`Shop logo installed for PDFs → ${next.logo_path || "ready"}`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Logo upload failed");
+    } finally {
+      setLogoBusy(false);
+    }
+  }
+
+  async function clearLogo() {
+    if (!window.confirm("Clear the shop PDF logo? PDFs will show shop name only.")) return;
+    setLogoBusy(true);
+    setErr("");
+    setMsg("");
+    try {
+      const next = await api.clearShopLogo();
+      applySnapshot(next);
+      setLogoPreviewKey((k) => k + 1);
+      setMsg("Shop logo cleared.");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not clear logo");
+    } finally {
+      setLogoBusy(false);
+    }
+  }
+
   useEffect(() => {
     api
       .getConfig()
       .then(applySnapshot)
       .catch((e: Error) => setErr(e.message));
+    void refreshBugReports();
   }, []);
+
+  async function submitBug() {
+    setBugBusy(true);
+    setErr("");
+    setMsg("");
+    try {
+      const r = await api.submitBugReport({
+        title: bugTitle,
+        description: bugDescription,
+        steps: bugSteps,
+        severity: bugSeverity,
+        client: "advisor",
+      });
+      const sync = r.report.sync_status || (r.report.synced ? "synced" : "skipped");
+      setMsg(
+        sync === "synced"
+          ? `Bug report saved and synced to shop (${r.report.id}).`
+          : sync.startsWith("error:")
+            ? `Bug report saved locally (${r.report.id}). Shop sync failed.`
+            : `Bug report saved locally (${r.report.id}). Shop server not configured.`,
+      );
+      setBugTitle("");
+      setBugDescription("");
+      setBugSteps("");
+      setBugSeverity("medium");
+      await refreshBugReports();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not submit bug report");
+    } finally {
+      setBugBusy(false);
+    }
+  }
 
   function keepValue(mode: string, custom: string): string | number {
     if (mode === "custom") {
@@ -249,16 +342,77 @@ export function SettingsPage() {
         {generatedToken ? (
           <p className="break-all rounded-lg bg-border/30 p-3 font-mono text-xs">{generatedToken}</p>
         ) : null}
-        <Field label="Shop logo path (PDF)">
-          <Input
-            placeholder="/path/to/logo.png"
-            value={logoPath}
-            onChange={(e) => setLogoPath(e.target.value)}
-          />
-          {cfg.logo_status ? (
-            <p className="mt-1 text-xs text-muted">{cfg.logo_status}</p>
-          ) : null}
-        </Field>
+        <div className="space-y-3 rounded-xl border border-border/80 bg-bg/40 p-4">
+          <div>
+            <h3 className="text-sm font-medium">Shop logo for PDF</h3>
+            <p className="mt-1 text-xs text-muted">
+              Appears top-right on customer PDFs next to the shop name. PNG or JPG works best
+              (transparent PNG preferred).
+            </p>
+          </div>
+          {cfg.logo_path ? (
+            <div className="flex flex-wrap items-center gap-4">
+              <img
+                key={logoPreviewKey}
+                src={api.shopLogoUrl()}
+                alt="Shop logo preview"
+                className="max-h-16 max-w-[12rem] rounded-lg border border-border bg-white object-contain p-1"
+                onError={() => setLogoPreviewKey((k) => k + 1)}
+              />
+              <div className="min-w-0 flex-1 text-xs text-muted">
+                <div className="truncate font-mono text-fg">{cfg.logo_path}</div>
+                {cfg.logo_status ? <div className="mt-1">{cfg.logo_status}</div> : null}
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted">
+              {cfg.logo_status || "No logo yet — PDFs will show shop name only."}
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              ref={logoFileRef}
+              type="file"
+              accept="image/png,image/jpeg,image/jpg,image/gif,image/webp,.png,.jpg,.jpeg,.gif,.webp"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                if (f) void uploadLogo(f);
+              }}
+            />
+            <Button
+              type="button"
+              size="sm"
+              disabled={logoBusy}
+              onClick={() => logoFileRef.current?.click()}
+            >
+              {cfg.logo_path ? "Replace logo…" : "Choose logo…"}
+            </Button>
+            {cfg.logo_path ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={logoBusy}
+                onClick={() => void clearLogo()}
+              >
+                Clear logo
+              </Button>
+            ) : null}
+          </div>
+          <Field label="Or paste a file path (advanced)">
+            <Input
+              placeholder="/path/to/logo.png"
+              value={logoPath}
+              onChange={(e) => setLogoPath(e.target.value)}
+            />
+            <p className="mt-1 text-xs text-muted">
+              Saved with the main Save button below. Prefer Choose logo so Car-RO copies the file
+              into its config folder.
+            </p>
+          </Field>
+        </div>
         <Field label="Textual theme (CLI forms)">
           <Input
             placeholder="ansi-dark"
@@ -271,13 +425,14 @@ export function SettingsPage() {
             type="number"
             min={0}
             step={1}
-            placeholder="0"
+            placeholder="15"
             value={autosyncMinutes}
             onChange={(e) => setAutosyncMinutes(e.target.value)}
           />
           <p className="mt-1 text-xs text-muted">
-            While the engine (GUI) or CLI menu is open, push local ROs to the shop server on
-            this timer. Default off. Built for a future advisor desk that pulls recent jobs.
+            While the engine is open, push dirty local ROs to the shop server on this timer
+            (default 15). Skips work when nothing is pending; backs off if the server is
+            unreachable. 0 turns the timer off — pending edits still retry every few minutes.
           </p>
           {cfg.autosync ? (
             <p className="mt-1 text-xs text-muted">
@@ -408,7 +563,8 @@ export function SettingsPage() {
             </h2>
             <p className="mt-1 text-sm text-muted">
               Everything is <span className="text-fg">on by default</span>. Turn off only what you
-              don’t want on this PC. Idle threshold still comes from shop config above.
+              don’t want on this PC. Idle threshold still comes from shop config above. Global off
+              limits the bell to desk ops (assign, parts, completed, billing).
             </p>
           </div>
           <Button
@@ -426,6 +582,12 @@ export function SettingsPage() {
           </Button>
         </div>
         <NotifyToggle
+          label="Global notifications"
+          detail="On: all shop activity. Off: desk ops only (needs assign, waiting parts, completed, billing, found issues, next-day requests, flags)."
+          checked={notify.globalNotifications}
+          onChange={(v) => setNotifyPref("globalNotifications", v)}
+        />
+        <NotifyToggle
           label="Notification sound"
           detail="Chime when something new arrives (browser may require a click first)."
           checked={notify.sound}
@@ -436,6 +598,12 @@ export function SettingsPage() {
           detail="Status changes, assignments, photos, and other RO activity from others."
           checked={notify.teamUpdates}
           onChange={(v) => setNotifyPref("teamUpdates", v)}
+        />
+        <NotifyToggle
+          label="Found-issue requests"
+          detail="Ping when someone sends discoveries for customer approval. Turn off if you do not want those alerts."
+          checked={notify.foundIssues}
+          onChange={(v) => setNotifyPref("foundIssues", v)}
         />
         <NotifyToggle
           label="Shop messages"
@@ -477,6 +645,82 @@ export function SettingsPage() {
         <Field label="Inbox directory">
           <Input value={inboxDir} onChange={(e) => setInboxDir(e.target.value)} />
         </Field>
+      </section>
+
+      <section className="space-y-4 rounded-2xl border border-border bg-surface p-6">
+        <div>
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">Bug report</h2>
+          <p className="mt-1 text-sm text-muted">
+            Document a problem on this bay. Saved locally and pushed to the shop server when online.
+            App version, shop name, and who you are are attached automatically — never the API token.
+          </p>
+        </div>
+        <Field label="Title">
+          <Input
+            value={bugTitle}
+            onChange={(e) => setBugTitle(e.target.value)}
+            placeholder="Short summary"
+          />
+        </Field>
+        <Field label="Severity">
+          <select
+            className="flex h-10 w-full rounded-lg border border-border bg-bg px-3 text-sm"
+            value={bugSeverity}
+            onChange={(e) => setBugSeverity(e.target.value)}
+          >
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </Field>
+        <Field label="What happened">
+          <textarea
+            className="min-h-[6rem] w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm"
+            value={bugDescription}
+            onChange={(e) => setBugDescription(e.target.value)}
+            placeholder="What you expected vs what you saw"
+          />
+        </Field>
+        <Field label="Steps to reproduce (optional)">
+          <textarea
+            className="min-h-[4rem] w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm"
+            value={bugSteps}
+            onChange={(e) => setBugSteps(e.target.value)}
+            placeholder="1. … 2. …"
+          />
+        </Field>
+        <Button
+          type="button"
+          disabled={bugBusy || !bugTitle.trim() || !bugDescription.trim()}
+          onClick={() => void submitBug()}
+        >
+          {bugBusy ? "Submitting…" : "Submit bug report"}
+        </Button>
+        {recentBugs.length ? (
+          <div className="space-y-2 border-t border-border pt-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">
+              Recent on this bay
+            </h3>
+            <ul className="space-y-2">
+              {recentBugs.map((r) => (
+                <li key={r.id} className="rounded-lg border border-border/70 px-3 py-2 text-sm">
+                  <div className="font-medium">
+                    {r.title}{" "}
+                    <span className="text-xs font-normal uppercase text-muted">{r.severity}</span>
+                  </div>
+                  <div className="text-xs text-muted">
+                    {r.created_at}
+                    {r.synced
+                      ? " · synced to shop"
+                      : r.sync_error
+                        ? ` · local only (${r.sync_error})`
+                        : " · local only"}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
       </section>
 
       {msg ? <p className="text-sm text-accent">{msg}</p> : null}

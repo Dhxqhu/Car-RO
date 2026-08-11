@@ -14,13 +14,29 @@ from carro.storage.remote import RemoteClient
 CONSOLE = Console()
 
 
-def _actor() -> tuple[str, str, str]:
-    adv = advmod.current_advisor()
-    if adv:
-        return adv.id, adv.name, "advisor"
+def _actor(*, prefer: str | None = None) -> tuple[str, str, str]:
     tech = techmod.current_technician()
-    if tech:
-        return tech.id, tech.name, "technician"
+    adv = advmod.current_advisor()
+    pref = (prefer or "").strip().lower()
+    if pref in ("technician", "tech"):
+        if tech:
+            return tech.id, tech.name, "technician"
+        if adv:
+            return adv.id, adv.name, "advisor"
+    elif pref == "advisor":
+        if adv:
+            return adv.id, adv.name, "advisor"
+        if tech:
+            return tech.id, tech.name, "technician"
+    else:
+        if tech and not adv:
+            return tech.id, tech.name, "technician"
+        if adv and not tech:
+            return adv.id, adv.name, "advisor"
+        if tech:
+            return tech.id, tech.name, "technician"
+        if adv:
+            return adv.id, adv.name, "advisor"
     raise RuntimeError("Log in first (carro tech login or carroadviser login)")
 
 

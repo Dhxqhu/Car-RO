@@ -4,6 +4,8 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
 
+. (Join-Path $PSScriptRoot "lib\Pick-Port.ps1")
+
 $env:PYTHONPATH = (@(
   (Join-Path $Root "cli"),
   (Join-Path $Root "server"),
@@ -20,13 +22,9 @@ if (-not (Test-Path $Py)) {
   Write-Error "error: run .\scripts\install.ps1 (or Install-Car-RO.bat) first"
 }
 
-$Port = if ($env:CARRO_ENGINE_PORT) { $env:CARRO_ENGINE_PORT } else { "8788" }
+$Port = Resolve-CarroEnginePort
 $engine = $null
-$healthOk = $false
-try {
-  $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/health" -UseBasicParsing -TimeoutSec 1
-  if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) { $healthOk = $true }
-} catch { $healthOk = $false }
+$healthOk = Test-CarroPortHealthy -Port $Port
 
 if ($healthOk) {
   Write-Host "==> Engine already on http://127.0.0.1:$Port"
@@ -34,21 +32,18 @@ if ($healthOk) {
   Write-Host "==> Starting engine on http://127.0.0.1:$Port"
   $engine = Start-Process -FilePath $Py -ArgumentList @(
     "-m", "uvicorn", "carro_engine.main:app",
-    "--host", "127.0.0.1", "--port", $Port
+    "--host", "127.0.0.1", "--port", "$Port", "--no-access-log"
   ) -PassThru -NoNewWindow -WorkingDirectory $Root
   for ($i = 0; $i -lt 20; $i++) {
     Start-Sleep -Milliseconds 300
-    try {
-      $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/health" -UseBasicParsing -TimeoutSec 1
-      if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) { break }
-    } catch { }
+    if (Test-CarroPortHealthy -Port $Port) { break }
   }
 }
 
 try {
   Set-Location (Join-Path $Root "advisor\ui")
   if (-not (Test-Path "node_modules")) { npm install }
-  Write-Host "==> Advisor UI on http://127.0.0.1:1422 (proxies /api → engine)"
+  Write-Host "==> Advisor UI on http://127.0.0.1:1422 (proxies /api → $($env:VITE_ENGINE_URL))"
   npm run dev
 } finally {
   if ($engine -and -not $engine.HasExited) {

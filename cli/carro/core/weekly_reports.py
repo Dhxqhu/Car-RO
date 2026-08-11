@@ -427,6 +427,9 @@ def build_weekly_efficiency_report(
         ro_id = str(d.get("id") or "")
 
         for it in item_dicts:
+            # Long-term projects skip downtime pressure metrics (shop time is expected).
+            if str(it.get("queue_lane") or "").strip().lower() == "long_term":
+                continue
             wid = str(it.get("id") or "")
             jk = f"{ro_id}:{wid}"
             owner = item_owner.get(jk)

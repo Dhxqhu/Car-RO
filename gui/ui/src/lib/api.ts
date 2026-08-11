@@ -32,13 +32,16 @@ export type WorkItemPart = {
   id: string;
   description: string;
   part_number?: string;
+  oem_part_number?: string;
   manufacturer?: string;
   brand?: string;
+  supplier?: string;
   status: string;
   requested_at?: string;
   ordered_at?: string;
   received_at?: string;
   wrong_note?: string;
+  wrong_count?: number;
   updated_at?: string;
 };
 
@@ -94,6 +97,14 @@ export type WorkItem = {
   updated?: string;
   linked_photo_ids?: string[];
   parts?: WorkItemPart[];
+  merge_snapshot?: {
+    at?: string;
+    reason?: string;
+    target_id?: string;
+    source_ids?: string[];
+    target_before?: { concern?: string; notes?: string; private_notes?: string };
+    sources?: WorkItem[];
+  };
 };
 
 export type PartsSheetRow = {
@@ -107,13 +118,16 @@ export type PartsSheetRow = {
   part_id: string;
   description: string;
   part_number?: string;
+  oem_part_number?: string;
   manufacturer?: string;
   brand?: string;
+  supplier?: string;
   status: string;
   requested_at?: string;
   ordered_at?: string;
   received_at?: string;
   wrong_note?: string;
+  wrong_count?: number;
   updated_at?: string;
   vin?: string;
 };
@@ -148,10 +162,13 @@ export type IdleNudge = {
   summary?: string;
   customer?: string;
   vehicle?: string;
+  assigned_to_id?: string;
   assigned_to_name?: string;
   manufacturer?: string;
   idle_since?: string;
   idle_hours?: number;
+  idle_threshold_hours?: number;
+  queue_lane?: string;
   fingerprint: string;
 };
 
@@ -180,6 +197,8 @@ export type RepairOrder = {
   started_at?: string;
   done_at?: string;
   billed_out_at?: string;
+  canceled_at?: string;
+  no_call_no_show_at?: string;
   waiting_since?: string;
   parts_requested_at?: string;
   parts_requested_by?: string;
@@ -201,6 +220,7 @@ export type FoundIssue = {
   description: string;
   notes?: string;
   status: string;
+  kind?: string;
   decline_reason?: string;
   found_by?: string;
   found_by_id?: string;
@@ -227,6 +247,7 @@ export type FoundIssueSummary = {
   ro_id: string;
   description: string;
   status: string;
+  kind?: string;
   found_by?: string;
   found_by_id?: string;
   found_at?: string;
@@ -254,6 +275,7 @@ export type AssignedJobSummary = {
   queue_lane?: string;
   pending_queue_lane?: string;
   queue_day?: string;
+  due_eod?: boolean;
   next_day_request?: {
     status?: string;
     at?: string;
@@ -265,6 +287,9 @@ export type AssignedJobSummary = {
   assigned_to_id?: string;
   assigned_to_name?: string;
   assigned_at?: string;
+  wait_requested_by?: string;
+  wait_requested_by_id?: string;
+  wait_kind?: string;
   worked_minutes?: number;
   worked_first_at?: string;
   worked_last_at?: string;
@@ -299,6 +324,8 @@ export type AssignedOrderSummary = {
   started_at?: string;
   done_at?: string;
   billed_out_at?: string;
+  canceled_at?: string;
+  no_call_no_show_at?: string;
   waiting_since?: string;
   parts_requested_at?: string;
   parts_requested_by?: string;
@@ -307,6 +334,12 @@ export type AssignedOrderSummary = {
   waiter?: boolean;
   urgent?: boolean;
   worked_minutes?: number;
+  tech_worked?: Array<{ tech_id?: string; tech_name: string; minutes: number }>;
+  items_total?: number;
+  items_done?: number;
+  items_declined?: number;
+  items_open?: number;
+  open_concerns?: string[];
   created?: string;
   updated: string;
   work_items: Array<{
@@ -352,7 +385,10 @@ export type AssignedBoard = {
   waiting_customer?: AssignedJobSummary[];
   found_issues_pending?: FoundIssueSummary[];
   ready_to_bill?: AssignedOrderSummary[];
+  waiting_other_items?: AssignedOrderSummary[];
   billed_out?: AssignedOrderSummary[];
+  canceled?: AssignedOrderSummary[];
+  no_call_no_show?: AssignedOrderSummary[];
   by_tech: Array<{
     id: string;
     name: string;
@@ -400,6 +436,7 @@ export type ShopMessage = {
   work_item_id?: string;
   reply_to?: number | null;
   read_at?: string | null;
+  delivered_at?: string | null;
   last_notified_at?: string;
   renotify_count?: number;
 };
@@ -565,6 +602,8 @@ export type HistoryResult = {
   vin_query: string;
   name_query: string;
   remote_enabled: boolean;
+  remote_ok?: boolean;
+  note?: string;
 };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -579,17 +618,67 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!r.ok) {
-    let detail = r.statusText;
+    let detail: unknown = r.statusText;
     try {
       const j = await r.json();
-      detail = j.detail || JSON.stringify(j);
+      detail = j.detail ?? j;
     } catch {
       /* ignore */
     }
-    throw new Error(typeof detail === "string" ? detail : "Request failed");
+    const message =
+      typeof detail === "string"
+        ? detail
+        : detail && typeof detail === "object" && "detail" in detail
+          ? String((detail as { detail?: unknown }).detail || "Request failed")
+          : "Request failed";
+    throw new ApiError(message, r.status, detail);
   }
   if (r.status === 204) return undefined as T;
   return r.json() as Promise<T>;
+}
+
+/** Tech GUI always identifies as technician when both sessions exist on one engine. */
+const MSG_AS_ROLE = "technician";
+
+function msgReq<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers || {});
+  headers.set("X-Carro-As-Role", MSG_AS_ROLE);
+  const join = path.includes("?") ? "&" : "?";
+  const withRole = path.includes("as_role=")
+    ? path
+    : `${path}${join}as_role=${encodeURIComponent(MSG_AS_ROLE)}`;
+  return req<T>(withRole, { ...init, headers });
+}
+
+export class ApiError extends Error {
+  status: number;
+  body: unknown;
+  constructor(message: string, status: number, body?: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
+export function isObdVinMismatch(
+  err: unknown,
+): err is ApiError & {
+  body: {
+    mismatch: true;
+    ro_vin?: string;
+    pulled_vin?: string;
+    detail?: string;
+    pulled?: { vin?: string; year?: string; make?: string; obd_snapshot?: string };
+  };
+} {
+  if (!(err instanceof ApiError) || err.status !== 409) return false;
+  const d = err.body;
+  if (!d || typeof d !== "object") return false;
+  const body = d as Record<string, unknown>;
+  // FastAPI wraps dict detail as the detail value itself
+  if (body.mismatch === true) return true;
+  return false;
 }
 
 export function photoUrl(roId: string, relpath: string): string {
@@ -715,8 +804,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ path }),
     }),
-  pullObd: (id: string) =>
-    req<RepairOrder>(`/ros/${encodeURIComponent(id)}/pull-obd`, { method: "POST" }),
+  pullObd: (id: string, opts?: { force?: boolean }) =>
+    req<RepairOrder & { obd_vin_mismatch_forced?: boolean; pulled_vin?: string }>(
+      `/ros/${encodeURIComponent(id)}/pull-obd`,
+      {
+        method: "POST",
+        body: JSON.stringify({ force: Boolean(opts?.force) }),
+      },
+    ),
   listPhotos: (id: string) =>
     req<{ photos: Array<Record<string, unknown>> }>(
       `/ros/${encodeURIComponent(id)}/photos`,
@@ -792,7 +887,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ prior_id: priorId }),
     }),
-  sync: () => req<{ ok: boolean; message: string }>("/sync", { method: "POST" }),
+  sync: () =>
+    req<{
+      ok: boolean;
+      message: string;
+      pending?: { pending_total?: number };
+    }>("/sync", { method: "POST" }),
+  syncStatus: () =>
+    req<{
+      ok: boolean;
+      pending?: { pending_total?: number };
+      server_configured?: boolean;
+    }>("/sync/status"),
   upsertWorkItem: (
     roId: string,
     body: {
@@ -809,6 +915,28 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  mergeWorkItems: (
+    roId: string,
+    targetId: string,
+    sourceIds: string[],
+    reason: string,
+  ) =>
+    req<RepairOrder & { merged_into?: string; merged_sources?: string[] }>(
+      `/ros/${encodeURIComponent(roId)}/work-items/merge`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          target_id: targetId,
+          source_ids: sourceIds,
+          reason,
+        }),
+      },
+    ),
+  unmergeWorkItem: (roId: string, itemId: string) =>
+    req<RepairOrder & { unmerged_sources?: string[] }>(
+      `/ros/${encodeURIComponent(roId)}/work-items/${encodeURIComponent(itemId)}/unmerge`,
+      { method: "POST", body: "{}" },
+    ),
   listParts: (opts?: {
     status?: string;
     manufacturer?: string;
@@ -858,8 +986,10 @@ export const api = {
     body: {
       description: string;
       part_number?: string;
+      oem_part_number?: string;
       manufacturer?: string | null;
       brand?: string;
+      supplier?: string;
     },
   ) =>
     req<RepairOrder>(
@@ -873,8 +1003,10 @@ export const api = {
     body: {
       description?: string;
       part_number?: string;
+      oem_part_number?: string;
       manufacturer?: string;
       brand?: string;
+      supplier?: string;
       status?: string;
       wrong_note?: string;
     },
@@ -908,7 +1040,13 @@ export const api = {
   assignedBoard: () => req<AssignedBoard>("/assigned"),
   assignRo: (
     roId: string,
-    body: { assigned_to_id?: string; assigned_to_name?: string; status?: string },
+    body: {
+      assigned_to_id?: string;
+      assigned_to_name?: string;
+      item_id?: string | null;
+      status?: string;
+      due_eod?: boolean | null;
+    },
   ) =>
     req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/assign`, {
       method: "POST",
@@ -927,16 +1065,20 @@ export const api = {
       | "complete"
       | "complete_item"
       | "billed_out"
+      | "canceled"
+      | "no_call_no_show"
       | "reopen"
       | "waiting_parts"
       | "request_parts"
       | "item_waiting_parts"
       | "waiting_customer"
       | "request_approval"
-      | "item_waiting_customer",
+      | "item_waiting_customer"
+      | "item_release_wait"
+      | "item_return_to_requester",
     itemId?: string,
   ) =>
-    req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/queue`, {
+    msgReq<RepairOrder>(`/ros/${encodeURIComponent(roId)}/queue`, {
       method: "POST",
       body: JSON.stringify({ action, item_id: itemId || null }),
     }),
@@ -999,6 +1141,7 @@ export const api = {
       notes?: string;
       source_work_item_id?: string;
       finish_compose?: boolean;
+      status?: "draft" | "pending";
     },
   ) =>
     req<RepairOrder & { created_found_issue_id?: string }>(
@@ -1008,8 +1151,27 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
-  approveFoundIssue: (roId: string, fiId: string, itemType = "repair") =>
+  updateFoundIssue: (
+    roId: string,
+    fiId: string,
+    body: { description?: string; notes?: string },
+  ) =>
     req<RepairOrder>(
+      `/ros/${encodeURIComponent(roId)}/found-issues/${encodeURIComponent(fiId)}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
+  submitFoundIssues: (roId: string, ids?: string[]) =>
+    req<
+      RepairOrder & {
+        submitted_found_issue_ids?: string[];
+        submitted_count?: number;
+      }
+    >(`/ros/${encodeURIComponent(roId)}/found-issues/submit`, {
+      method: "POST",
+      body: JSON.stringify({ ids: ids || [] }),
+    }),
+  approveFoundIssue: (roId: string, fiId: string, itemType = "repair") =>
+    msgReq<RepairOrder>(
       `/ros/${encodeURIComponent(roId)}/found-issues/${encodeURIComponent(fiId)}/approve`,
       {
         method: "POST",
@@ -1017,7 +1179,7 @@ export const api = {
       },
     ),
   declineFoundIssue: (roId: string, fiId: string, reason = "customer_declined") =>
-    req<RepairOrder>(
+    msgReq<RepairOrder>(
       `/ros/${encodeURIComponent(roId)}/found-issues/${encodeURIComponent(fiId)}/decline`,
       {
         method: "POST",
@@ -1045,18 +1207,32 @@ export const api = {
     return req<{ events: RoEvent[]; note?: string }>(`/events?${params.toString()}`);
   },
   listMessagePeople: () =>
-    req<{ people: MessagePerson[]; server_required?: boolean }>("/messages/people"),
+    msgReq<{
+      people: MessagePerson[];
+      me?: { id: string; role: string };
+      server_required?: boolean;
+    }>("/messages/people"),
   listMessages: (opts?: { unread?: boolean; limit?: number }) => {
     const params = new URLSearchParams();
     if (opts?.unread) params.set("unread", "true");
     params.set("limit", String(opts?.limit ?? 100));
     const q = params.toString();
-    return req<{ messages: ShopMessage[]; unread: number }>(`/messages?${q}`);
+    return msgReq<{ messages: ShopMessage[]; unread: number }>(`/messages?${q}`);
   },
   listSentMessages: (opts?: { limit?: number }) => {
     const params = new URLSearchParams();
     params.set("limit", String(opts?.limit ?? 100));
-    return req<{ messages: ShopMessage[] }>(`/messages/sent?${params.toString()}`);
+    return msgReq<{ messages: ShopMessage[] }>(`/messages/sent?${params.toString()}`);
+  },
+  listMessageThread: (withId: string, opts?: { limit?: number }) => {
+    const params = new URLSearchParams();
+    params.set("with_id", withId);
+    params.set("limit", String(opts?.limit ?? 200));
+    return msgReq<{
+      messages: ShopMessage[];
+      me: { id: string; name: string; role: string };
+      with_id: string;
+    }>(`/messages/thread?${params.toString()}`);
   },
   sendMessage: (body: {
     body: string;
@@ -1067,17 +1243,22 @@ export const api = {
     work_item_id?: string;
     reply_to?: number | null;
   }) =>
-    req<{ ok: boolean; message: ShopMessage }>("/messages", {
+    msgReq<{ ok: boolean; message: ShopMessage }>("/messages", {
       method: "POST",
       body: JSON.stringify(body),
     }),
   markMessageRead: (messageId: number) =>
-    req<{ ok: boolean; message: ShopMessage }>(`/messages/${messageId}/read`, {
+    msgReq<{ ok: boolean; message: ShopMessage }>(`/messages/${messageId}/read`, {
       method: "POST",
       body: JSON.stringify({}),
     }),
+  markMessagesDelivered: (ids: number[]) =>
+    msgReq<{ ok: boolean; messages: ShopMessage[]; count: number }>("/messages/delivered", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
   renotifyMessage: (messageId: number) =>
-    req<{ ok: boolean; message: ShopMessage }>(`/messages/${messageId}/renotify`, {
+    msgReq<{ ok: boolean; message: ShopMessage }>(`/messages/${messageId}/renotify`, {
       method: "POST",
       body: "{}",
     }),
@@ -1160,19 +1341,59 @@ export const api = {
       `/reports/efficiency${q}`,
     );
   },
-  listIdleNotifications: () =>
-    req<{
+  listIdleNotifications: (opts?: { assignee_id?: string; desk?: boolean }) => {
+    const params = new URLSearchParams();
+    if (opts?.assignee_id) params.set("assignee_id", opts.assignee_id);
+    if (opts?.desk) params.set("desk", "1");
+    const q = params.toString();
+    return req<{
       idle: IdleNudge[];
       count: number;
       idle_nudge_hours: number;
       enabled: boolean;
-    }>("/notifications/idle"),
+    }>(`/notifications/idle${q ? `?${q}` : ""}`);
+  },
   getConfig: () => req<ConfigSnapshot>("/config"),
   setConfig: (body: Record<string, unknown>) =>
     req<{ ok: boolean } & ConfigSnapshot>("/config", {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  submitBugReport: (body: {
+    title: string;
+    description: string;
+    severity?: string;
+    steps?: string;
+    client?: string;
+  }) =>
+    req<{
+      ok: boolean;
+      report: {
+        id: string;
+        title: string;
+        severity: string;
+        created_at: string;
+        synced?: boolean;
+        sync_status?: string;
+        sync_error?: string;
+      };
+    }>("/bug-reports", { method: "POST", body: JSON.stringify(body) }),
+  listBugReports: (limit = 30) =>
+    req<{
+      reports: Array<{
+        id: string;
+        title: string;
+        description?: string;
+        severity: string;
+        created_at: string;
+        synced?: boolean;
+        sync_status?: string;
+        sync_error?: string;
+        reporter_name?: string;
+        client?: string;
+      }>;
+      count: number;
+    }>(`/bug-reports?limit=${limit}`),
   generateToken: () =>
     req<{ ok: boolean; token: string } & ConfigSnapshot>("/config/generate-token", {
       method: "POST",

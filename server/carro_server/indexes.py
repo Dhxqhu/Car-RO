@@ -72,11 +72,21 @@ def ensure_index_tables(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # Older DBs created before brand existed.
+    # Older DBs created before brand / wrong_count / oem / supplier existed.
     cols = {r[1] for r in conn.execute("PRAGMA table_info(ro_parts)").fetchall()}
     if "brand" not in cols:
         conn.execute("ALTER TABLE ro_parts ADD COLUMN brand TEXT NOT NULL DEFAULT ''")
+    if "wrong_count" not in cols:
+        conn.execute("ALTER TABLE ro_parts ADD COLUMN wrong_count INTEGER NOT NULL DEFAULT 0")
+    if "wrong_note" not in cols:
+        conn.execute("ALTER TABLE ro_parts ADD COLUMN wrong_note TEXT NOT NULL DEFAULT ''")
+    if "oem_part_number" not in cols:
+        conn.execute("ALTER TABLE ro_parts ADD COLUMN oem_part_number TEXT NOT NULL DEFAULT ''")
+    if "supplier" not in cols:
+        conn.execute("ALTER TABLE ro_parts ADD COLUMN supplier TEXT NOT NULL DEFAULT ''")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ro_parts_pn ON ro_parts(part_number)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ro_parts_oem ON ro_parts(oem_part_number)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ro_parts_supplier ON ro_parts(supplier)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ro_parts_mfr ON ro_parts(manufacturer)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ro_parts_brand ON ro_parts(brand)")
     conn.execute(
@@ -162,8 +172,10 @@ def sync_ro_projections(conn: sqlite3.Connection, ro: dict[str, Any]) -> None:
                     wid,
                     pid,
                     _norm_upper(p.get("part_number")),
+                    _norm_upper(p.get("oem_part_number")),
                     _norm_upper(p.get("manufacturer") or make),
                     _norm_upper(p.get("brand")),
+                    _norm(p.get("supplier")),
                     _norm(p.get("description")),
                     _norm_lower(p.get("status") or "new_request"),
                     _norm(p.get("requested_at")),
@@ -175,16 +187,20 @@ def sync_ro_projections(conn: sqlite3.Connection, ro: dict[str, Any]) -> None:
                     vin,
                     make,
                     concern,
+                    max(0, int(p.get("wrong_count") or 0)),
+                    _norm(p.get("wrong_note")),
                 )
             )
     if rows:
         conn.executemany(
             """
             INSERT INTO ro_parts (
-                ro_id, work_item_id, part_id, part_number, manufacturer, brand,
+                ro_id, work_item_id, part_id, part_number, oem_part_number,
+                manufacturer, brand, supplier,
                 description, status, requested_at, ordered_at, received_at,
-                updated_at, customer, vehicle, vin, make, concern
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                updated_at, customer, vehicle, vin, make, concern,
+                wrong_count, wrong_note
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -402,16 +418,18 @@ def search_parts(
         args.append(rid)
     if qn:
         clauses.append(
-            "(LOWER(description) LIKE ? OR LOWER(part_number) LIKE ? OR LOWER(manufacturer) LIKE ? OR LOWER(brand) LIKE ? OR LOWER(concern) LIKE ?)"
+            "(LOWER(description) LIKE ? OR LOWER(part_number) LIKE ? OR LOWER(oem_part_number) LIKE ? OR LOWER(manufacturer) LIKE ? OR LOWER(brand) LIKE ? OR LOWER(supplier) LIKE ? OR LOWER(concern) LIKE ?)"
         )
         like = f"%{qn}%"
-        args.extend([like, like, like, like, like])
+        args.extend([like, like, like, like, like, like, like])
 
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     sql = f"""
-        SELECT ro_id, work_item_id, part_id, part_number, manufacturer, brand,
+        SELECT ro_id, work_item_id, part_id, part_number, oem_part_number,
+               manufacturer, brand, supplier,
                description, status, requested_at, ordered_at, received_at,
-               updated_at, customer, vehicle, vin, make, concern
+               updated_at, customer, vehicle, vin, make, concern,
+               wrong_count, wrong_note
         FROM ro_parts
         {where}
         ORDER BY COALESCE(NULLIF(requested_at, ''), updated_at) DESC
@@ -420,14 +438,17 @@ def search_parts(
     args.append(max(1, min(int(limit), 2000)))
     rows = []
     for r in conn.execute(sql, args).fetchall():
+        keys = r.keys()
         rows.append(
             {
                 "ro_id": r["ro_id"],
                 "work_item_id": r["work_item_id"],
                 "part_id": r["part_id"],
                 "part_number": r["part_number"],
+                "oem_part_number": r["oem_part_number"] if "oem_part_number" in keys else "",
                 "manufacturer": r["manufacturer"],
-                "brand": r["brand"] if "brand" in r.keys() else "",
+                "brand": r["brand"] if "brand" in keys else "",
+                "supplier": r["supplier"] if "supplier" in keys else "",
                 "description": r["description"],
                 "status": r["status"],
                 "requested_at": r["requested_at"],
@@ -440,7 +461,8 @@ def search_parts(
                 "make": r["make"],
                 "concern": r["concern"],
                 "item_type": "",
-                "wrong_note": "",
+                "wrong_count": int(r["wrong_count"] or 0) if "wrong_count" in keys else 0,
+                "wrong_note": r["wrong_note"] if "wrong_note" in keys else "",
             }
         )
     return rows

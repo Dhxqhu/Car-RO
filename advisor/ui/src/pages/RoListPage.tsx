@@ -5,6 +5,7 @@ import { api, type RepairOrder, type Technician } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { NewRoDialog } from "@/components/NewRoDialog";
 import { formatStatus } from "@/lib/utils";
 
 type Tab = "local" | "server";
@@ -26,11 +27,18 @@ export function RoListPage() {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [me, setMe] = useState<Technician | null>(null);
-  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "billed_out">("all");
+  const [statusFilter, setStatusFilter] = useState<
+    "all" | "active" | "billed_out" | "canceled" | "no_call_no_show"
+  >("active");
+  const [newRoOpen, setNewRoOpen] = useState(false);
 
   const visibleOrders = orders.filter((o) => {
     if (statusFilter === "billed_out") return o.status === "billed_out";
-    if (statusFilter === "active") return o.status !== "billed_out";
+    if (statusFilter === "canceled") return o.status === "canceled";
+    if (statusFilter === "no_call_no_show") return o.status === "no_call_no_show";
+    if (statusFilter === "active") {
+      return !["billed_out", "canceled", "no_call_no_show"].includes(o.status);
+    }
     return true;
   });
 
@@ -159,15 +167,7 @@ export function RoListPage() {
   }
 
   async function create() {
-    setBusy(true);
-    try {
-      const o = await api.createRo();
-      nav(`/ro/${o.id}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Create failed");
-    } finally {
-      setBusy(false);
-    }
+    setNewRoOpen(true);
   }
 
   async function sync() {
@@ -195,6 +195,7 @@ export function RoListPage() {
 
   return (
     <div className="space-y-6">
+      <NewRoDialog open={newRoOpen} onClose={() => setNewRoOpen(false)} />
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
@@ -254,6 +255,7 @@ export function RoListPage() {
       {tab === "local" ? (
         <form
           className="flex gap-2"
+          autoComplete="off"
           onSubmit={(e) => {
             e.preventDefault();
             void loadLocal(q);
@@ -275,6 +277,7 @@ export function RoListPage() {
       ) : (
         <form
           className="space-y-3 rounded-2xl border border-border bg-surface p-4"
+          autoComplete="off"
           onSubmit={(e) => {
             e.preventDefault();
             void loadServer();
@@ -349,6 +352,8 @@ export function RoListPage() {
               ["all", "All"],
               ["active", "Active"],
               ["billed_out", "Billed out"],
+              ["canceled", "Canceled"],
+              ["no_call_no_show", "No call / no show"],
             ] as const
           ).map(([key, label]) => (
             <Button
@@ -397,7 +402,7 @@ export function RoListPage() {
               ) ||
               (o.work_items || [])[0] ||
               null;
-            const isClosed = o.status === "billed_out";
+            const isClosed = ["billed_out", "canceled", "no_call_no_show"].includes(o.status);
             const badge = sourceBadge(o.id);
             return (
               <li
@@ -461,7 +466,9 @@ export function RoListPage() {
                               Mark billed out
                             </Button>
                           </>
-                        ) : o.status === "billed_out" ? (
+                        ) : o.status === "billed_out" ||
+                          o.status === "canceled" ||
+                          o.status === "no_call_no_show" ? (
                           <Button
                             type="button"
                             size="sm"

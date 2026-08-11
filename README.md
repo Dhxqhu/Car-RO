@@ -264,8 +264,14 @@ Prior work is looked up by **car**, not by person — same vehicle / new owner s
 - Menu **4** — full-screen VIN / name lookup (same style as Search) for stop-ins  
 - Menu **5** — history for the **current** RO’s VIN (diag context; excludes the open job)  
 - After OBD/VIN autofill — offered when prior ROs exist  
-- After the history list: **text** (default diag pack: complaint / notes / OBD), **pdf** (full pack with photos; confirms if about more than 10 pages), **pdf-lite** (same without photos), or **pick** one RO to open / start new from vehicle  
+- After the history list: **text** (default diag pack: complaint / notes / OBD), **pdf** (full pack with photos; confirms if about more than 10 pages), **pdf-lite** (same without photos), or **pick** one RO to open / start new from customer+vehicle  
 - Packs land in `~/.local/share/carro/history/`
+
+**GUI New RO** (tech Orders list + advisor header): choose **Blank RO** or **Returning customer** (search VIN / name / phone → Use). That creates a fresh job with name, phone, and vehicle filled in — not mileage, notes, or work items. History’s **New RO for customer** does the same from a prior row.
+
+If the shop server drops out (road test / Wi‑Fi gap), history and returning-customer search still use jobs already cached on that laptop (5s remote timeout). Creating a new RO from a prior that isn’t local yet needs the server or a Blank RO; once created, the new job stays local and syncs when the mesh is back.
+
+**Autosync** (Config on tech + advisor): default **15 minutes** while the engine is open — pushes **dirty** ROs only, skips work when the queue is empty, and backs off if the server is unreachable. Set to `0` to turn the timer off; pending edits still retry every couple of minutes. On reconnect, the bell flushes pending sync then catches up missed events/messages. Shop messages show **Sent → Delivered → Read** on the sender’s Sent tab (Delivered = recipient bay received the message).
 
 ### Forms (Textual)
 
@@ -369,13 +375,15 @@ Also: `carro messages` (tech or advisor session). From the main `carro` menu, **
 
 ### Shop messaging
 
-Person-to-person only (pick a specific tech or advisor). Optional RO + work-item tags. Needs an updated **carro-server** (`/messages`). Compose from the GUI Messages page, or from the bay / RO **Message** button (work item pre-filled). Not on the customer PDF.
+Person-to-person only (pick a specific tech or advisor — full staff roster). Optional RO + work-item tags. Needs an updated **carro-server** (`/messages`). Compose from the GUI Messages page, or from the bay / RO **Message** button (work item pre-filled). Not on the customer PDF.
 
-The recipient’s bell badge updates within a few seconds and plays a short chime. Toggle categories and sound under **Config → Notifications** (all on by default; this PC only) or **Sound on/off** in the bell panel. Browser autoplay rules mean the first click in the app unlocks sound.
+Tech and advisor can stay logged in together on one PC (**dual login** on the shared local engine). Each app sends/receives as its own role so inboxes stay separate.
 
-**Sent tab:** shows whether the recipient has read the message. **Renotify** pings them again if it’s still unread (15-minute cooldown). Needs server update for `last_notified_at` / `/messages/{id}/renotify`.
+The recipient’s bell badge updates within a few seconds and plays a short chime. The bell panel auto-closes after a short idle. Toggle categories and sound under **Config → Notifications** (all on by default; this PC only) or **Sound on/off** in the bell panel. Browser autoplay rules mean the first click in the app unlocks sound.
 
-### Day start / day end + weekly reports + efficiency
+**Sent tab:** shows **Sent → Delivered → Read**. **Renotify** pings them again if it’s still unread (15-minute cooldown). Needs server update for `last_notified_at` / `/messages/{id}/renotify`.
+
+### Day start / day end + weekly reports + efficiency + time cards
 
 Technicians **Day start** / **Day end** (header in the tech GUI, or `carro shift start|end|status|active`) mark shop presence on the server. Techs can **Edit punch** on their own day start/end times; that requires the **shop admin PIN** (advisors can edit any punch without a PIN from the desk). Advisors see **Available techs (on the clock)** on the desk pool, can clock techs in/out (**Set time** for backdated clock-in), and can edit or delete today’s punches.
 
@@ -383,7 +391,9 @@ Advisor **Reports** (Sun–Sat): per-tech job hours (timers) and presence hours,
 
 Advisor **Efficiency** (Sun–Sat): shop metric against a **40h normal-week baseline** (5×8 — not a cap). Per tech and shop rollup show **worked vs clocked**, **utilized vs downtime** (waiting parts, wrong parts, customer waits, between-job gaps), baseline fill (can exceed 100%), and **OT** (clocked hours over baseline). Marking a part **wrong** tags `wrong_parts` downtime. API: `/reports/efficiency`.
 
-Needs an updated **carro-server** (`tech_shifts`, weekly report tables).
+Advisor **Time cards**: day grid plus **Worked time by RO** (RO totals with nested work items).
+
+Needs an updated **carro-server** (`tech_shifts`, weekly report tables, messages).
 
 ### Advisor Admin
 
@@ -398,17 +408,23 @@ Work items (not whole cars) sit in floor lanes:
 - **Next day** — advisor push, or tech request (advisor approves); if the tech is on the job, the move applies on **clock-out**. At midnight: next-day items become today’s daily; unfinished daily items roll into next day
 - **Long-term** — long-stay project work (advisor moves in/out)
 
+Tech **request next day** pings every advisor (shop message + desk). Advisor **approve** / **decline** messages the requesting tech (decline also marks **due end of day**).
+
 **Waiter** = customer waiting on-site (RO flag, sorts first). **Urgent** = desk push on an RO to finish faster. Advisor sets both from Assigned work or the RO editor.
 
-### Found-issue photos
+### Found issues
 
-When sending a found-issue request (tech or advisor RO editor), attach photos in the compose form or use **Add photos** on a pending request. Thumbs show on the RO and photo counts on the desk pool. CLI:
+Techs (and working advisors) save **draft** found-issue requests on the RO, **edit** description/notes before send, add photos, then **Send to advisor**. Pending requests show on the desk / Needs attention. **Approve** / **Decline** / **Undo approval** are advisor-only. Approve can leave the new work item **Unassigned** or assign a tech; completing a **diag** item auto-opens a pending repair request for the desk.
 
 ```bash
 carro photo add path.jpg --id RO-… --found-issue FI-001
 ```
 
-Pending/declined found-issue pics stay off the customer PDF until the issue is approved (converted to a work item).
+CLI desk: `carroadviser pool` (approve / decline / undo / bill-out / assign). Pending/declined found-issue pics stay off the customer PDF until approved.
+
+### Found-issue photos
+
+Attach photos in the compose form or **Add photos** on a draft/pending request. Thumbs show on the RO and photo counts on the desk pool.
 
 ### Adding another drive later
 

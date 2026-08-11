@@ -96,15 +96,17 @@ class RemoteClient:
             r.raise_for_status()
             return r.json()
 
-    def search_ros(self, query: str = "", **filters: str) -> list[dict[str, Any]]:
+    def search_ros(
+        self, query: str = "", *, timeout: float = 30.0, **filters: str
+    ) -> list[dict[str, Any]]:
         params = {k: v for k, v in {"q": query, **filters}.items() if v}
-        with httpx.Client(timeout=30.0) as client:
+        with httpx.Client(timeout=timeout) as client:
             r = client.get(f"{self.base}/ros", headers=self._headers(), params=params)
             r.raise_for_status()
             return r.json()
 
-    def get_ro(self, ro_id: str) -> dict[str, Any]:
-        with httpx.Client(timeout=30.0) as client:
+    def get_ro(self, ro_id: str, *, timeout: float = 30.0) -> dict[str, Any]:
+        with httpx.Client(timeout=timeout) as client:
             r = client.get(f"{self.base}/ros/{ro_id}", headers=self._headers())
             r.raise_for_status()
             return r.json()
@@ -218,6 +220,77 @@ class RemoteClient:
                 f"{self.base}/advisors",
                 headers=self._headers(),
                 json=roster,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    def get_suppliers(self) -> dict[str, Any]:
+        with httpx.Client(timeout=15.0) as client:
+            r = client.get(f"{self.base}/suppliers", headers=self._headers())
+            r.raise_for_status()
+            return r.json()
+
+    def put_suppliers(self, roster: dict[str, Any]) -> dict[str, Any]:
+        with httpx.Client(timeout=15.0) as client:
+            r = client.put(
+                f"{self.base}/suppliers",
+                headers=self._headers(),
+                json=roster,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    def post_bug_report(self, report: dict[str, Any]) -> dict[str, Any]:
+        with httpx.Client(timeout=20.0) as client:
+            r = client.post(
+                f"{self.base}/bug-reports",
+                headers=self._headers(),
+                json=report,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    def list_bug_reports(self, *, limit: int = 50) -> dict[str, Any]:
+        with httpx.Client(timeout=20.0) as client:
+            r = client.get(
+                f"{self.base}/bug-reports",
+                headers=self._headers(),
+                params={"limit": limit},
+            )
+            r.raise_for_status()
+            return r.json()
+
+    def post_advisor_presence(
+        self, *, advisor_id: str, name: str = "", client_host: str = ""
+    ) -> dict[str, Any]:
+        with httpx.Client(timeout=10.0) as client:
+            r = client.post(
+                f"{self.base}/advisors/presence",
+                headers=self._headers(),
+                json={
+                    "advisor_id": advisor_id,
+                    "name": name,
+                    "client_host": client_host,
+                },
+            )
+            r.raise_for_status()
+            return r.json()
+
+    def list_advisor_presence(self, *, within_seconds: int = 90) -> dict[str, Any]:
+        with httpx.Client(timeout=10.0) as client:
+            r = client.get(
+                f"{self.base}/advisors/presence",
+                headers=self._headers(),
+                params={"within_seconds": within_seconds},
+            )
+            r.raise_for_status()
+            return r.json()
+
+    def clear_advisor_presence(self, advisor_id: str) -> dict[str, Any]:
+        with httpx.Client(timeout=10.0) as client:
+            r = client.delete(
+                f"{self.base}/advisors/presence/{advisor_id}",
+                headers=self._headers(),
             )
             r.raise_for_status()
             return r.json()
@@ -375,6 +448,18 @@ class RemoteClient:
                 f"{self.base}/messages/{int(message_id)}/read",
                 headers=self._headers(),
                 json={"for_id": for_id},
+            )
+            r.raise_for_status()
+            return r.json()
+
+    def mark_messages_delivered(
+        self, message_ids: list[int], *, for_id: str
+    ) -> dict[str, Any]:
+        with httpx.Client(timeout=15.0) as client:
+            r = client.post(
+                f"{self.base}/messages/delivered",
+                headers=self._headers(),
+                json={"for_id": for_id, "ids": [int(x) for x in message_ids]},
             )
             r.raise_for_status()
             return r.json()

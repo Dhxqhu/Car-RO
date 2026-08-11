@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { LoginPage } from "@/pages/LoginPage";
 import { RoEditorPage } from "@/pages/RoEditorPage";
 import { AssignedWorkPage } from "@/pages/AssignedWorkPage";
+import { RoListPage } from "@/pages/RoListPage";
 import { HistoryPage } from "@/pages/HistoryPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { PartsPage } from "@/pages/PartsPage";
@@ -13,6 +14,7 @@ import { MessagesPage } from "@/pages/MessagesPage";
 import { PeoplePage } from "@/pages/PeoplePage";
 import { WeeklyReportsPage } from "@/pages/WeeklyReportsPage";
 import { EfficiencyPage } from "@/pages/EfficiencyPage";
+import { TimeCardsPage } from "@/pages/TimeCardsPage";
 import { AdminPage } from "@/pages/AdminPage";
 
 export default function App() {
@@ -70,9 +72,11 @@ export default function App() {
               }
             >
               <Route index element={<AssignedWorkPage />} />
+              <Route path="orders" element={<RoListPage />} />
               <Route path="ro/:id" element={<RoEditorPage />} />
               <Route path="parts" element={<PartsPage />} />
               <Route path="messages" element={<MessagesPage />} />
+              <Route path="timecards" element={<TimeCardsPage />} />
               <Route path="efficiency" element={<EfficiencyPage />} />
               <Route path="reports" element={<WeeklyReportsPage />} />
               <Route path="history" element={<HistoryPage />} />

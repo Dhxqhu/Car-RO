@@ -66,5 +66,6 @@ echo "  carro config"
 echo "  carroadviser          # advisor desk CLI"
 echo "  carroadviser pool"
 echo
+echo "Local engine defaults to port 8788; GUI launchers auto-pick another if busy."
 echo "Optional home-lab server: ./scripts/install-server.sh"
 echo "Docs: README.md"

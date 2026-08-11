@@ -57,7 +57,9 @@ export function HistoryPage() {
       setMatchedBy(r.matched_by);
       setRemote(r.remote_enabled);
       setSearched(true);
-      if (r.orders.length === 0) {
+      if (r.note) {
+        setMsg(r.note);
+      } else if (r.orders.length === 0) {
         setMsg(
           r.remote_enabled
             ? "No prior repair history on this machine or the server."
@@ -126,12 +128,16 @@ export function HistoryPage() {
         <p className="mt-1 text-sm text-muted">
           VIN-first lookup against local cache and the shop server (when configured). Includes
           billed-out jobs — closing an RO does not remove VIN, work items, or notes from history.
-          Name is used only if VIN is blank or finds nothing.
+          Name or phone is used if VIN is blank or finds nothing. If the shop server is unreachable
+          (road test / Wi‑Fi gap), lookup still returns jobs already on this bay.{" "}
+          <span className="text-fg">New RO for customer</span> copies name, phone, and vehicle onto
+          a fresh job (not mileage, notes, or work items).
         </p>
       </div>
 
       <form
         className="space-y-4 rounded-2xl border border-border bg-surface p-5"
+        autoComplete="off"
         onSubmit={(e) => {
           e.preventDefault();
           void lookup();
@@ -280,7 +286,7 @@ export function HistoryPage() {
                     </Link>
                     <Button size="sm" disabled={busy} onClick={() => void newFrom(o.id)}>
                       <Plus className="h-3.5 w-3.5" />
-                      New from vehicle
+                      New RO for customer
                     </Button>
                   </div>
                 </li>

@@ -32,6 +32,7 @@ from carro_server.messages import (
     ensure_messages_table,
     list_inbox,
     list_sent,
+    mark_delivered,
     mark_read,
     renotify,
     send_message,
@@ -48,6 +49,7 @@ from carro_server.shifts import (
     start_shift,
     update_shift,
 )
+from carro_server import advisor_presence as adv_presence
 from carro_server.weekly_reports import (
     ensure_weekly_reports_table,
     get_report as get_weekly_report,
@@ -84,6 +86,7 @@ def _db() -> sqlite3.Connection:
     ensure_index_tables(conn)
     ensure_messages_table(conn)
     ensure_shifts_table(conn)
+    adv_presence.ensure_advisor_presence_table(conn)
     ensure_weekly_reports_table(conn)
     maybe_backfill_if_empty(conn)
     return conn
@@ -237,6 +240,152 @@ def put_advisors(body: dict, _: None = Depends(require_auth)):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return {"ok": True, **payload}
+
+
+@app.post("/advisors/presence")
+def post_advisor_presence(body: dict, _: None = Depends(require_auth)):
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    aid = str(body.get("advisor_id") or "").strip()
+    if not aid:
+        raise HTTPException(400, "advisor_id required")
+    with _db() as conn:
+        try:
+            row = adv_presence.heartbeat(
+                conn,
+                advisor_id=aid,
+                name=str(body.get("name") or ""),
+                client_host=str(body.get("client_host") or ""),
+            )
+            conn.commit()
+            return {"ok": True, **row}
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/advisors/presence")
+def get_advisor_presence(
+    within_seconds: int = 90, _: None = Depends(require_auth)
+):
+    with _db() as conn:
+        rows = adv_presence.list_online(conn, within_seconds=within_seconds)
+        return {"advisors": rows, "count": len(rows)}
+
+
+@app.delete("/advisors/presence/{advisor_id}")
+def delete_advisor_presence(advisor_id: str, _: None = Depends(require_auth)):
+    with _db() as conn:
+        adv_presence.clear_presence(conn, advisor_id)
+        conn.commit()
+        return {"ok": True}
+
+
+def _suppliers_path() -> Path:
+    return VOLUMES.root / "suppliers.json"
+
+
+def _load_suppliers() -> dict:
+    path = _suppliers_path()
+    if not path.is_file():
+        return {"version": 1, "updated": "", "suppliers": []}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"version": 1, "updated": "", "suppliers": []}
+    if not isinstance(raw, dict):
+        return {"version": 1, "updated": "", "suppliers": []}
+    suppliers = raw.get("suppliers")
+    if not isinstance(suppliers, list):
+        suppliers = []
+    return {
+        "version": 1,
+        "updated": str(raw.get("updated") or ""),
+        "suppliers": [s for s in suppliers if isinstance(s, dict)],
+    }
+
+
+@app.get("/suppliers")
+def get_suppliers(_: None = Depends(require_auth)):
+    return _load_suppliers()
+
+
+@app.put("/suppliers")
+def put_suppliers(body: dict, _: None = Depends(require_auth)):
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    suppliers = body.get("suppliers")
+    if suppliers is not None and not isinstance(suppliers, list):
+        raise HTTPException(400, "suppliers must be a list")
+    payload = {
+        "version": 1,
+        "updated": str(body.get("updated") or ""),
+        "suppliers": [s for s in (suppliers or []) if isinstance(s, dict)],
+    }
+    if not payload["updated"]:
+        from datetime import datetime
+
+        payload["updated"] = datetime.now().isoformat(timespec="seconds")
+    path = _suppliers_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return {"ok": True, **payload}
+
+
+def _bug_reports_path() -> Path:
+    return VOLUMES.root / "bug_reports.jsonl"
+
+
+def _append_bug_report(report: dict) -> dict:
+    path = _bug_reports_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Store without nested sync bookkeeping from bays
+    row = {k: v for k, v in report.items() if k not in ("sync_status",)}
+    row["received_at"] = row.get("received_at") or row.get("created_at") or ""
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return row
+
+
+def _list_bug_reports(*, limit: int = 50) -> list[dict]:
+    path = _bug_reports_path()
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    rows: list[dict] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(raw, dict):
+            rows.append(raw)
+    rows.reverse()
+    lim = max(1, min(int(limit or 50), 500))
+    return rows[:lim]
+
+
+@app.post("/bug-reports")
+def post_bug_report(body: dict, _: None = Depends(require_auth)):
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    title = str(body.get("title") or "").strip()
+    description = str(body.get("description") or "").strip()
+    if not title or not description:
+        raise HTTPException(400, "title and description required")
+    saved = _append_bug_report(body)
+    return {"ok": True, "report": saved}
+
+
+@app.get("/bug-reports")
+def get_bug_reports(limit: int = 50, _: None = Depends(require_auth)):
+    rows = _list_bug_reports(limit=limit)
+    return {"reports": rows, "count": len(rows)}
 
 
 @app.get("/volumes")
@@ -451,6 +600,9 @@ def put_ro(ro_id: str, body: dict, _: None = Depends(require_auth)):
         clean_body = {k: v for k, v in body.items() if k not in strip_keys}
         sync_ro_projections(conn, clean_body)
         for ev in diff_ro_events(before, body, actor=actor):
+            ev_payload = dict(ev.get("payload") or {})
+            if actor_id:
+                ev_payload.setdefault("actor_id", actor_id)
             append_event(
                 conn,
                 type=ev["type"],
@@ -459,7 +611,7 @@ def put_ro(ro_id: str, body: dict, _: None = Depends(require_auth)):
                 actor=ev.get("actor") or "",
                 summary=ev.get("summary") or "",
                 at=ev.get("at"),
-                payload={"actor_id": actor_id} if actor_id else None,
+                payload=ev_payload or None,
             )
     return {k: v for k, v in body.items() if k not in strip_keys}
 
@@ -689,9 +841,13 @@ def post_message(body: dict, _: None = Depends(require_auth)):
             summary=" ".join(bits)[:240],
             payload={
                 "message_id": msg["id"],
+                "from_id": msg["from_id"],
+                "from_name": msg["from_name"],
+                "from_role": msg["from_role"],
                 "to_id": msg["to_id"],
                 "to_name": msg["to_name"],
                 "to_role": msg["to_role"],
+                "actor_id": msg["from_id"],
             },
         )
     return {"ok": True, "message": msg}
@@ -711,6 +867,27 @@ def post_message_read(message_id: int, body: dict | None = None, _: None = Depen
     if not msg:
         raise HTTPException(404, "Message not found")
     return {"ok": True, "message": msg}
+
+
+@app.post("/messages/delivered")
+def post_messages_delivered(body: dict | None = None, _: None = Depends(require_auth)):
+    """Recipient bay ack that messages reached this machine (batch, idempotent)."""
+    body = body if isinstance(body, dict) else {}
+    for_id = str(body.get("for_id") or "").strip()
+    if not for_id:
+        raise HTTPException(400, "for_id required (recipient id)")
+    raw_ids = body.get("ids") or []
+    if not isinstance(raw_ids, list):
+        raise HTTPException(400, "ids must be a list of message ids")
+    ids: list[int] = []
+    for x in raw_ids:
+        try:
+            ids.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    with _db() as conn:
+        messages = mark_delivered(conn, ids, for_id=for_id)
+    return {"ok": True, "messages": messages, "count": len(messages)}
 
 
 @app.post("/messages/{message_id}/renotify")
@@ -742,9 +919,13 @@ def post_message_renotify(
             summary=" ".join(bits)[:240],
             payload={
                 "message_id": msg["id"],
+                "from_id": msg["from_id"],
+                "from_name": msg["from_name"],
+                "from_role": msg["from_role"],
                 "to_id": msg["to_id"],
                 "to_name": msg["to_name"],
                 "to_role": msg["to_role"],
+                "actor_id": msg["from_id"],
                 "renotify": True,
             },
         )

@@ -432,7 +432,11 @@ def run_desk_pool_menu(store: LocalStore) -> None:
         bill_out_ro,
         build_assigned_board,
     )
-    from carro.core.found_issues import approve_found_issue, decline_found_issue
+    from carro.core.found_issues import (
+        approve_found_issue,
+        decline_found_issue,
+        unapprove_found_issue,
+    )
 
     while True:
         CONSOLE.clear()
@@ -441,9 +445,10 @@ def run_desk_pool_menu(store: LocalStore) -> None:
         table = Table(show_header=False, box=None, padding=(0, 2))
         table.add_row("[bold cyan]1[/]", "Approve found issue → work item")
         table.add_row("[bold cyan]2[/]", "Decline found issue")
-        table.add_row("[bold cyan]3[/]", "Mark RO billed out (ready-to-bill)")
-        table.add_row("[bold cyan]4[/]", "Assign work item to a technician")
-        table.add_row("[bold cyan]5[/]", "Show advisor action trail on an RO")
+        table.add_row("[bold cyan]3[/]", "Undo found-issue approval")
+        table.add_row("[bold cyan]4[/]", "Mark RO billed out (ready-to-bill)")
+        table.add_row("[bold cyan]5[/]", "Assign work item to a technician")
+        table.add_row("[bold cyan]6[/]", "Show advisor action trail on an RO")
         table.add_row("[bold cyan]r[/]", "Refresh")
         table.add_row("[bold cyan]b[/]", "Back")
         CONSOLE.print(
@@ -465,10 +470,12 @@ def run_desk_pool_menu(store: LocalStore) -> None:
             elif choice == "2":
                 _desk_decline_fi(store, advisor, decline_found_issue, append_advisor_action)
             elif choice == "3":
-                _desk_bill_out(store, advisor, bill_out_ro, append_advisor_action)
+                _desk_unapprove_fi(store, advisor, unapprove_found_issue, append_advisor_action)
             elif choice == "4":
-                _desk_assign(store, advisor, assign_work_item, append_advisor_action)
+                _desk_bill_out(store, advisor, bill_out_ro, append_advisor_action)
             elif choice == "5":
+                _desk_assign(store, advisor, assign_work_item, append_advisor_action)
+            elif choice == "6":
                 _desk_show_trail(store)
             else:
                 CONSOLE.print("[yellow]Unknown option[/]")
@@ -523,13 +530,26 @@ def _desk_approve_fi(store, advisor, approve_found_issue, append_advisor_action)
     order = store.get(ro_id)
     if not order:
         raise ValueError("RO not found")
+    item_type = Prompt.ask("Item type", default="repair").strip() or "repair"
+    assign_id = Prompt.ask(
+        "Assign to tech id (blank = Needs attention Unassigned)",
+        default="",
+    ).strip()
+    assign_name = ""
+    if assign_id:
+        tech = techmod.get_technician(assign_id)
+        if not tech:
+            raise ValueError(f"Unknown technician id: {assign_id}")
+        assign_name = tech.name
     approve_found_issue(
         order,
         fi_id,
-        item_type=Prompt.ask("Item type", default="repair").strip() or "repair",
+        item_type=item_type,
         actor=advisor.name,
         actor_id=advisor.id,
         actor_role="advisor",
+        assign_to_id=assign_id,
+        assign_to_name=assign_name,
     )
     append_advisor_action(
         order,
@@ -540,7 +560,34 @@ def _desk_approve_fi(store, advisor, approve_found_issue, append_advisor_action)
     )
     store.save(order)
     _push_ro(order)
-    CONSOLE.print("[green]Approved → work item[/]")
+    if assign_name:
+        CONSOLE.print(f"[green]Approved → assigned to {assign_name}[/]")
+    else:
+        CONSOLE.print("[green]Approved → Unassigned (Needs attention)[/]")
+
+
+def _desk_unapprove_fi(store, advisor, unapprove_found_issue, append_advisor_action) -> None:
+    ro_id = Prompt.ask("RO id").strip()
+    fi_id = Prompt.ask("Found-issue id (FI-…)").strip()
+    order = store.get(ro_id)
+    if not order:
+        raise ValueError("RO not found")
+    unapprove_found_issue(
+        order,
+        fi_id,
+        actor=advisor.name,
+        actor_id=advisor.id,
+    )
+    append_advisor_action(
+        order,
+        action="found_issue_unapproved",
+        advisor_id=advisor.id,
+        advisor_name=advisor.name,
+        found_issue_id=fi_id,
+    )
+    store.save(order)
+    _push_ro(order)
+    CONSOLE.print("[green]Approval undone — found issue is pending again[/]")
 
 
 def _desk_decline_fi(store, advisor, decline_found_issue, append_advisor_action) -> None:

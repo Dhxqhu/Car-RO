@@ -4,6 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath, URL } from "node:url";
 
 const host = process.env.TAURI_DEV_HOST;
+const engineTarget = process.env.VITE_ENGINE_URL || "http://127.0.0.1:8788";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -15,7 +16,7 @@ export default defineConfig({
   clearScreen: false,
   server: {
     port: 1422,
-    strictPort: true,
+    strictPort: false,
     host: host || false,
     hmr: host
       ? {
@@ -29,7 +30,7 @@ export default defineConfig({
     },
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8788",
+        target: engineTarget,
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/api/, ""),
       },

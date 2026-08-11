@@ -4,6 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# shellcheck disable=SC1091
+source "$ROOT/scripts/lib/pick-port.sh"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/lib/engine-port.sh"
+
 export PYTHONPATH="$ROOT/cli:$ROOT/server:$ROOT/engine${PYTHONPATH:+:$PYTHONPATH}"
 if [[ -d "$(dirname "$ROOT")/obdscan" ]]; then
   export OBDSCAN_ROOT="${OBDSCAN_ROOT:-$(dirname "$ROOT")/obdscan}"
@@ -15,13 +20,15 @@ if [[ ! -x "$PY" ]]; then
   exit 1
 fi
 
-PORT="${CARRO_ENGINE_PORT:-8788}"
+resolve_engine_port
+PORT="$ENGINE_PORT"
 ENGINE_PID=""
 if curl -sf -m 1 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
   echo "==> Engine already on http://127.0.0.1:$PORT"
 else
   echo "==> Starting engine on http://127.0.0.1:$PORT"
-  "$PY" -m uvicorn carro_engine.main:app --host 127.0.0.1 --port "$PORT" &
+  # --no-access-log: UI polls /events /messages every few seconds; keep terminal readable.
+  "$PY" -m uvicorn carro_engine.main:app --host 127.0.0.1 --port "$PORT" --no-access-log &
   ENGINE_PID=$!
   trap 'kill $ENGINE_PID 2>/dev/null || true' EXIT
   # Wait briefly for listen
@@ -37,5 +44,5 @@ cd "$ROOT/advisor/ui"
 if [[ ! -d node_modules ]]; then
   npm install
 fi
-echo "==> Advisor UI on http://127.0.0.1:1422 (proxies /api → engine)"
+echo "==> Advisor UI on http://127.0.0.1:1422 (proxies /api → $VITE_ENGINE_URL)"
 exec npm run dev

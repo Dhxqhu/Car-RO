@@ -15,14 +15,17 @@ STATUSES = (
     "waiting_customer",
     "done",
     "billed_out",
+    "canceled",
+    "no_call_no_show",
 )
 
-# Shop-floor queues (not yet left / billed)
+# Shop-floor queues (not yet left / billed / archived)
 ACTIVE_STATUSES = frozenset(
     {"open", "assigned", "in_progress", "waiting_parts", "waiting_customer", "done"}
 )
 WAITING_STATUSES = frozenset({"waiting_parts", "waiting_customer"})
-CLOSED_STATUSES = frozenset({"billed_out"})
+CLOSED_STATUSES = frozenset({"billed_out", "canceled", "no_call_no_show"})
+ARCHIVE_STATUSES = frozenset({"canceled", "no_call_no_show"})
 
 
 @dataclass
@@ -67,6 +70,8 @@ class RepairOrder:
     started_at: str = ""  # first in_progress
     done_at: str = ""  # work finished → advisor billing queue
     billed_out_at: str = ""  # left / billed (final close)
+    canceled_at: str = ""  # appointment canceled (archived)
+    no_call_no_show_at: str = ""  # NCNS (archived)
     waiting_since: str = ""  # entered waiting_parts or waiting_customer
     # Tech → advisor: order parts (advisor typically sources / orders)
     parts_requested_at: str = ""

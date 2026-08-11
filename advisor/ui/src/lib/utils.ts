@@ -24,6 +24,8 @@ const STATUS_LABELS: Record<string, string> = {
   waiting_customer: "Awaiting customer approval",
   done: "Done — ready to bill",
   billed_out: "Billed out",
+  canceled: "Canceled",
+  no_call_no_show: "No call / no show",
   declined: "Declined",
 };
 
@@ -132,17 +134,33 @@ export function formatShopTime(iso: string | undefined | null): string {
 }
 
 /**
- * Format free-text that may embed snake_case statuses
- * (e.g. notification summaries: "open → in_progress").
+ * Format free-text that may embed snake_case tokens
+ * (e.g. notification summaries: "open → in_progress", "daily → long_term").
  */
 export function formatEmbeddedLabels(text: string | undefined | null): string {
   const raw = (text || "").trim();
   if (!raw) return "";
-  const keys = Object.keys(STATUS_LABELS).sort((a, b) => b.length - a.length);
+  const known: Record<string, string> = {
+    ...STATUS_LABELS,
+    daily: "Today",
+    next_day: "Next day",
+    long_term: "Long-term",
+    new_request: "New request",
+    ordered: "Ordered",
+    received: "Received",
+    received_wrong: "Received wrong",
+    draft: "Draft",
+    pending: "Pending",
+    approved: "Approved",
+    declined: "Declined",
+  };
+  const keys = Object.keys(known).sort((a, b) => b.length - a.length);
   let out = raw;
   for (const key of keys) {
     const re = new RegExp(`\\b${key}\\b`, "gi");
-    out = out.replace(re, STATUS_LABELS[key]);
+    out = out.replace(re, known[key]);
   }
+  // Any remaining snake_case tokens (underscores only) → Title Case words
+  out = out.replace(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/gi, (tok) => formatLabel(tok));
   return out;
 }

@@ -44,6 +44,8 @@ def ensure_messages_table(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE shop_messages ADD COLUMN renotify_count INTEGER NOT NULL DEFAULT 0"
         )
+    if "delivered_at" not in cols:
+        conn.execute("ALTER TABLE shop_messages ADD COLUMN delivered_at TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_shop_messages_to ON shop_messages(to_id, at DESC)"
     )
@@ -82,6 +84,11 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "work_item_id": str(row["work_item_id"] or ""),
         "reply_to": int(row["reply_to"]) if row["reply_to"] is not None else None,
         "read_at": str(row["read_at"] or "") or None,
+        "delivered_at": (
+            str(row["delivered_at"] or "") or None
+            if "delivered_at" in keys
+            else None
+        ),
         "last_notified_at": last_notified,
         "renotify_count": renotify_count,
     }
@@ -251,14 +258,66 @@ def mark_read(
     if row["read_at"]:
         return _row_to_dict(row)
     at = now_iso()
-    conn.execute(
-        "UPDATE shop_messages SET read_at = ? WHERE id = ?",
-        (at, int(message_id)),
-    )
+    # Read implies the message reached this machine.
+    keys = set(row.keys())
+    if "delivered_at" in keys and not str(row["delivered_at"] or "").strip():
+        conn.execute(
+            "UPDATE shop_messages SET read_at = ?, delivered_at = ? WHERE id = ?",
+            (at, at, int(message_id)),
+        )
+    else:
+        conn.execute(
+            "UPDATE shop_messages SET read_at = ? WHERE id = ?",
+            (at, int(message_id)),
+        )
     row = conn.execute(
         "SELECT * FROM shop_messages WHERE id = ?", (int(message_id),)
     ).fetchone()
     return _row_to_dict(row) if row else None
+
+
+def mark_delivered(
+    conn: sqlite3.Connection,
+    message_ids: list[int],
+    *,
+    for_id: str,
+) -> list[dict[str, Any]]:
+    """Recipient bay ack: message reached this machine (idempotent)."""
+    ensure_messages_table(conn)
+    for_id = (for_id or "").strip()
+    if not for_id or not message_ids:
+        return []
+    at = now_iso()
+    out: list[dict[str, Any]] = []
+    for mid in message_ids:
+        try:
+            mid_i = int(mid)
+        except (TypeError, ValueError):
+            continue
+        row = conn.execute(
+            "SELECT * FROM shop_messages WHERE id = ?", (mid_i,)
+        ).fetchone()
+        if not row:
+            continue
+        if str(row["to_id"] or "") != for_id:
+            continue
+        keys = set(row.keys())
+        already = ""
+        if "delivered_at" in keys:
+            already = str(row["delivered_at"] or "").strip()
+        if already:
+            out.append(_row_to_dict(row))
+            continue
+        conn.execute(
+            "UPDATE shop_messages SET delivered_at = ? WHERE id = ? AND to_id = ?",
+            (at, mid_i, for_id),
+        )
+        row = conn.execute(
+            "SELECT * FROM shop_messages WHERE id = ?", (mid_i,)
+        ).fetchone()
+        if row:
+            out.append(_row_to_dict(row))
+    return out
 
 
 def _parse_iso(ts: str) -> float | None:

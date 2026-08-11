@@ -120,10 +120,12 @@ Defaults:
 | Setting | Default |
 | --- | --- |
 | Data directory | `~/carro-data` |
-| Port | `8787` |
+| Port | `8787` (auto-falls back if busy) |
 | Token file | `~/.config/carro-server.env` |
 
-If you run `install-server.sh` again later (updates), it **keeps** the existing token file. It does **not** invent a new token unless you delete or edit that file yourself.
+If port **8787** is already in use, `install-server.sh` picks the next free port (8788–8807, then an OS ephemeral port), writes `CARRO_PORT` into `~/.config/carro-server.env`, and prints the **actual** Server URL in the handoff block. Use that URL on every bay — do not assume 8787.
+
+If you run `install-server.sh` again later (updates), it **keeps** the existing token file. It does **not** invent a new token unless you delete or edit that file yourself. `update-server.sh` reuses the stored `CARRO_PORT`; if that port was taken by something else, it re-picks and reminds you to update bay `server_url` values.
 
 ---
 

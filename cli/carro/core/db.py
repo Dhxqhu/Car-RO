@@ -322,18 +322,28 @@ class LocalStore:
         photo_keep = int(
             photo_keep if photo_keep is not None else resolve_local_photo_keep(cfg)
         )
+        from carro.core.models import CLOSED_STATUSES
+
         orders = self.list_orders()
         removed: list[str] = []
 
-        active = [o for o in orders if o.status != "billed_out"]
-        billed = [o for o in orders if o.status == "billed_out"]
-        billed.sort(
-            key=lambda o: (o.billed_out_at or o.updated or o.created or ""),
-            reverse=True,
-        )
+        active = [o for o in orders if (o.status or "") not in CLOSED_STATUSES]
+        closed = [o for o in orders if (o.status or "") in CLOSED_STATUSES]
+
+        def _closed_sort_key(o: RepairOrder) -> str:
+            return (
+                o.billed_out_at
+                or o.canceled_at
+                or o.no_call_no_show_at
+                or o.updated
+                or o.created
+                or ""
+            )
+
+        closed.sort(key=_closed_sort_key, reverse=True)
 
         retain_active = active[: max(0, keep)]
-        retain_billed = billed[: max(0, billed_keep)]
+        retain_billed = closed[: max(0, billed_keep)]
         retain_ids = {o.id for o in retain_active} | {o.id for o in retain_billed}
         # Never drop ROs that have not reached the shop server yet.
         retain_ids |= set(self.list_pending_sync_ids())

@@ -8,7 +8,8 @@ from typing import Any
 
 from carro.core.models import now_iso
 
-FOUND_ISSUE_STATUSES = ("pending", "converted", "declined")
+FOUND_ISSUE_STATUSES = ("draft", "pending", "converted", "declined")
+FOUND_ISSUE_KINDS = ("inspection", "diag_complete")
 DECLINE_REASONS = ("customer_declined", "pickup_unresolved")
 
 
@@ -17,7 +18,8 @@ class FoundIssue:
     id: str
     description: str = ""
     notes: str = ""  # shop-only advisor context
-    status: str = "pending"
+    status: str = "draft"
+    kind: str = "inspection"  # inspection | diag_complete
     decline_reason: str = ""
     found_by: str = ""
     found_by_id: str = ""
@@ -43,8 +45,10 @@ class FoundIssue:
         clean = {k: v for k, v in data.items() if k in known}
         fid = str(clean.get("id") or "").strip() or "FI-001"
         clean["id"] = fid
-        st = str(clean.get("status") or "pending").strip().lower()
-        clean["status"] = st if st in FOUND_ISSUE_STATUSES else "pending"
+        st = str(clean.get("status") or "draft").strip().lower()
+        clean["status"] = st if st in FOUND_ISSUE_STATUSES else "draft"
+        kind = str(clean.get("kind") or "inspection").strip().lower()
+        clean["kind"] = kind if kind in FOUND_ISSUE_KINDS else "inspection"
         reason = str(clean.get("decline_reason") or "").strip().lower()
         clean["decline_reason"] = reason if reason in DECLINE_REASONS else ""
         clean["description"] = str(clean.get("description") or "")
@@ -216,10 +220,14 @@ def create_found_issue(
     tech_name: str = "",
     source_work_item_id: str = "",
     finish_compose: bool = True,
+    status: str = "draft",
 ) -> FoundIssue:
     desc = (description or "").strip()
     if not desc:
         raise ValueError("Describe the found issue")
+    st = (status or "draft").strip().lower()
+    if st not in ("draft", "pending"):
+        st = "draft"
     items = ensure_found_issues_on_order(order)
     src = (
         (source_work_item_id or "").strip()
@@ -238,7 +246,7 @@ def create_found_issue(
         id=new_found_issue_id(items),
         description=desc,
         notes=(notes or "").strip(),
-        status="pending",
+        status=st,
         found_by=(tech_name or "").strip(),
         found_by_id=(tech_id or "").strip(),
         found_at=now_iso(),
@@ -249,6 +257,103 @@ def create_found_issue(
     items.append(fi)
     _save_found_issues(order, items)
     return fi
+
+
+def update_found_issue(
+    order: Any,
+    fi_id: str,
+    *,
+    description: str | None = None,
+    notes: str | None = None,
+) -> FoundIssue:
+    """Edit a draft found issue before it is sent to the advisor desk."""
+    items, fi = _find_fi(order, fi_id)
+    if fi.status != "draft":
+        raise ValueError("Only draft found issues can be edited — send or discard first")
+    if description is not None:
+        desc = (description or "").strip()
+        if not desc:
+            raise ValueError("Describe the found issue")
+        fi.description = desc
+    if notes is not None:
+        fi.notes = (notes or "").strip()
+    fi.updated = now_iso()
+    _save_found_issues(order, items)
+    return fi
+
+
+def create_diag_repair_request(
+    order: Any,
+    work_item: Any,
+    *,
+    actor: str = "",
+    actor_id: str = "",
+) -> FoundIssue | None:
+    """
+    After a diag work item is completed, open a pending repair request for the advisor desk
+    (same Approve → repair / Decline flow as found issues).
+    """
+    wid = str(getattr(work_item, "id", "") or "").strip()
+    if not wid:
+        return None
+    item_type = str(getattr(work_item, "item_type", "") or "").strip().lower()
+    if item_type != "diag":
+        return None
+    items = ensure_found_issues_on_order(order)
+    for fi in items:
+        if (fi.source_work_item_id or "").strip() != wid:
+            continue
+        if fi.kind == "diag_complete" and fi.status in ("pending", "converted"):
+            return None  # already requested / approved
+    concern = str(getattr(work_item, "concern", "") or "").strip() or f"Diag {wid}"
+    notes_bits = [f"From completed diag {wid}."]
+    tech_notes = str(getattr(work_item, "notes", "") or "").strip()
+    if tech_notes:
+        notes_bits.append(tech_notes)
+    fi = FoundIssue(
+        id=new_found_issue_id(items),
+        description=concern,
+        notes="\n".join(notes_bits),
+        status="pending",
+        kind="diag_complete",
+        found_by=(actor or "").strip(),
+        found_by_id=(actor_id or "").strip(),
+        found_at=now_iso(),
+        source_work_item_id=wid,
+        updated=now_iso(),
+    )
+    items.append(fi)
+    _save_found_issues(order, items)
+    return fi
+
+
+def submit_found_issues(
+    order: Any,
+    issue_ids: list[str] | None = None,
+) -> list[FoundIssue]:
+    """
+    Promote draft found issues to pending (ready for the advisor desk).
+
+    If issue_ids is None or empty, submit every draft on the RO.
+    Returns the list of promoted issues.
+    """
+    items = ensure_found_issues_on_order(order)
+    want: set[str] | None = None
+    if issue_ids:
+        want = {str(x).strip() for x in issue_ids if str(x).strip()}
+    promoted: list[FoundIssue] = []
+    ts = now_iso()
+    for fi in items:
+        if fi.status != "draft":
+            continue
+        if want is not None and fi.id not in want:
+            continue
+        fi.status = "pending"
+        fi.updated = ts
+        promoted.append(fi)
+    if promoted:
+        _save_found_issues(order, items)
+    return promoted
 
 
 def decline_found_issue(
@@ -283,8 +388,13 @@ def approve_found_issue(
     actor: str = "",
     actor_id: str = "",
     actor_role: str = "advisor",
+    assign_to_id: str = "",
+    assign_to_name: str = "",
 ) -> tuple[FoundIssue, Any]:
-    """Convert pending found issue into a new work item; notify via RO events on sync."""
+    """Convert pending found issue into a new work item; notify via RO events on sync.
+
+    Assignee is explicit: empty → Needs attention Unassigned (never auto-assign the advisor).
+    """
     from carro.core.work_items import upsert_work_item
 
     items, fi = _find_fi(order, fi_id)
@@ -293,9 +403,13 @@ def approve_found_issue(
         return fi, None
     if fi.status == "declined":
         raise ValueError("Cannot approve a declined found issue")
+    if fi.status == "draft":
+        raise ValueError("Send this found issue to the advisor before approving")
     notes = "Found during inspection."
     if (fi.notes or "").strip():
         notes = f"{notes}\n{(fi.notes or '').strip()}"
+    aid = (assign_to_id or "").strip()
+    aname = (assign_to_name or "").strip()
     wi = upsert_work_item(
         order,
         concern=fi.description,
@@ -304,6 +418,9 @@ def approve_found_issue(
         actor=actor,
         actor_id=actor_id,
         actor_role=actor_role or "advisor",
+        allow_manual_assign=True,
+        assign_to_id=aid,
+        assign_to_name=aname,
     )
     fi.status = "converted"
     fi.work_item_id = wi.id
@@ -316,18 +433,80 @@ def approve_found_issue(
     return fi, wi
 
 
+def _work_item_safe_to_unapprove(order: Any, work_item_id: str) -> tuple[bool, str]:
+    """Return (ok, reason) — undo only when the converted item is still unused."""
+    from carro.core.work_items import ensure_work_items_on_order
+
+    wid = (work_item_id or "").strip()
+    if not wid:
+        return False, "No linked work item"
+    cur = str(getattr(order, "current_item_id", "") or "").strip()
+    if cur and cur == wid:
+        return False, "Work item is currently in progress — stop work before undoing approval"
+    for w in ensure_work_items_on_order(order):
+        if w.id != wid:
+            continue
+        st = (w.status or "open").strip().lower()
+        if st in ("done", "canceled", "cancelled"):
+            return False, f"Work item is {st} — cannot undo approval"
+        if st.startswith("waiting"):
+            return False, "Work item is waiting — release or handle it before undoing approval"
+        if int(w.worked_minutes or 0) > 0 or (w.time_log or []):
+            return False, "Work has already been logged on this item"
+        if (w.timer_started_at or "").strip():
+            return False, "A timer is running on this item"
+        if w.parts:
+            return False, "Parts were added to this item — remove them or handle the concern another way"
+        return True, ""
+    return False, "Linked work item not found"
+
+
+def unapprove_found_issue(
+    order: Any,
+    fi_id: str,
+    *,
+    actor: str = "",
+    actor_id: str = "",
+) -> FoundIssue:
+    """Take back a mistaken approval: restore FI to pending and remove the unused work item."""
+    from carro.core.work_items import remove_work_item
+
+    items, fi = _find_fi(order, fi_id)
+    if fi.status != "converted":
+        raise ValueError("Only an approved (converted) found issue can be undone")
+    wid = (fi.work_item_id or "").strip()
+    if not wid:
+        raise ValueError("Found issue has no linked work item")
+    ok, reason = _work_item_safe_to_unapprove(order, wid)
+    if not ok:
+        raise ValueError(reason)
+    if not remove_work_item(order, wid):
+        raise ValueError("Could not remove the linked work item")
+    fi.status = "pending"
+    fi.work_item_id = ""
+    fi.resolved_by = ""
+    fi.resolved_by_id = ""
+    fi.resolved_at = ""
+    fi.decline_reason = ""
+    fi.updated = now_iso()
+    _save_found_issues(order, items)
+    # actor reserved for audit trail via advisor_actions on the engine/CLI
+    _ = (actor, actor_id)
+    return fi
+
+
 def close_pending_found_issues_on_bill_out(
     order: Any,
     *,
     actor: str = "",
     actor_id: str = "",
 ) -> list[FoundIssue]:
-    """Auto-decline still-pending found issues when the car is billed out / picked up."""
+    """Auto-decline still-open found issues (draft or pending) when billed out / picked up."""
     items = ensure_found_issues_on_order(order)
     closed: list[FoundIssue] = []
     ts = now_iso()
     for fi in items:
-        if fi.status != "pending":
+        if fi.status not in ("pending", "draft"):
             continue
         fi.status = "declined"
         fi.decline_reason = "pickup_unresolved"
@@ -355,6 +534,7 @@ def summarize_found_issue_for_board(order: Any, fi: FoundIssue | dict[str, Any])
         "ro_id": d.get("id") or "",
         "description": (f.get("description") or "")[:160],
         "status": f.get("status") or "pending",
+        "kind": f.get("kind") or "inspection",
         "found_by": f.get("found_by") or "",
         "found_by_id": f.get("found_by_id") or "",
         "found_at": f.get("found_at") or "",

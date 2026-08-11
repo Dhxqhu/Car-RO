@@ -168,14 +168,14 @@ export function TechShiftControls({ techId }: { techId?: string | null }) {
           <div className="flex flex-wrap gap-2">
             <Input
               type="datetime-local"
-              className="h-9 w-[12.5rem] text-xs"
+              className="h-10 min-w-[16.5rem] w-[16.5rem] text-sm"
               value={editStart}
               onChange={(e) => setEditStart(e.target.value)}
               aria-label="Start time"
             />
             <Input
               type="datetime-local"
-              className="h-9 w-[12.5rem] text-xs"
+              className="h-10 min-w-[16.5rem] w-[16.5rem] text-sm"
               value={editEnd}
               onChange={(e) => setEditEnd(e.target.value)}
               aria-label="End time"

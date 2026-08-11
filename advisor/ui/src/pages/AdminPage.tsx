@@ -112,7 +112,7 @@ export function AdminPage() {
         {!hasPin ? (
           <p className="text-sm text-danger">
             No shop admin PIN set yet. Create the first technician or advisor with an admin PIN
-            (People / setup), or use the CLI.
+            (Staff / setup), or use the CLI.
           </p>
         ) : active ? (
           <div className="flex flex-wrap items-center gap-3">
@@ -588,7 +588,7 @@ export function AdminPage() {
             <p className="text-xs text-muted">
               Quick adds also on{" "}
               <Link to="/people" className="text-accent hover:underline">
-                People
+                Staff
               </Link>
               .
             </p>

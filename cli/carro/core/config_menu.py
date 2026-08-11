@@ -202,12 +202,12 @@ def recommend_pair() -> str:
 
 
 def _edit_autosync(cfg: dict) -> None:
-    """0 = off; otherwise minutes between background syncs."""
-    cur = str(int(cfg.get("autosync_minutes") or 0))
+    """0 = off; otherwise minutes between background syncs (default 15)."""
+    cur = str(int(cfg.get("autosync_minutes") or 15))
     CONSOLE.print(
-        "[dim]Push local ROs to the shop server on a timer while the engine or "
-        "CLI menu is open. 0 = off (default). Useful later for an advisor desk "
-        "pulling recent jobs.[/]"
+        "[dim]Push dirty local ROs to the shop server on a timer while the engine or "
+        "CLI menu is open. Default 15. 0 = off (pending edits still retry every few "
+        "minutes when a server is configured). Quiet when nothing is pending.[/]"
     )
     raw = Prompt.ask("Autosync interval in minutes (0 = off)", default=cur).strip()
     try:

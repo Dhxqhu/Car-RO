@@ -1,7 +1,8 @@
 import { Moon, Plus, Sun } from "lucide-react";
-import { useState } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useState } from "react";
+import { NavLink, Outlet } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { NewRoDialog } from "@/components/NewRoDialog";
 import { TechNotifications } from "@/components/TechNotifications";
 import { useTheme } from "@/hooks/useTheme";
 import { api } from "@/lib/api";
@@ -12,15 +13,29 @@ import carroWordmarkOnDark from "@/assets/carro-wordmark-on-dark.png";
 
 const links = [
   { to: "/", label: "Desk pool", end: true },
+  { to: "/orders", label: "Orders" },
   { to: "/parts", label: "Parts" },
   { to: "/messages", label: "Messages" },
+  { to: "/timecards", label: "Time cards" },
   { to: "/efficiency", label: "Efficiency" },
   { to: "/reports", label: "Reports" },
   { to: "/history", label: "History" },
-  { to: "/people", label: "People" },
+  { to: "/people", label: "Staff" },
   { to: "/admin", label: "Admin" },
   { to: "/settings", label: "Config" },
 ];
+
+type PresenceRow = {
+  advisor_id: string;
+  name: string;
+  status: "at_desk" | "away" | string;
+  working_privilege?: boolean;
+  on_job_ro?: string;
+  on_job_item?: string;
+  is_me?: boolean;
+};
+
+const PRESENCE_MS = 25_000;
 
 export function AppShell({
   advisorName,
@@ -33,20 +48,32 @@ export function AppShell({
 }) {
   const { theme, toggle } = useTheme();
   const dark = theme === "dark";
-  const nav = useNavigate();
-  const [creating, setCreating] = useState(false);
+  const [newRoOpen, setNewRoOpen] = useState(false);
+  const [online, setOnline] = useState<PresenceRow[]>([]);
 
-  async function newRo() {
-    setCreating(true);
-    try {
-      const o = await api.createRo();
-      nav(`/ro/${o.id}`);
-    } catch {
-      /* ignore — engine will surface on next action */
-    } finally {
-      setCreating(false);
+  const refreshPresence = useCallback(async () => {
+    if (!advisorName) {
+      setOnline([]);
+      return;
     }
-  }
+    try {
+      await api.advisorPresenceHeartbeat().catch(() => undefined);
+      const r = await api.listAdvisorPresence();
+      setOnline(r.advisors || []);
+    } catch {
+      /* presence is best-effort */
+    }
+  }, [advisorName]);
+
+  useEffect(() => {
+    if (!advisorName) {
+      setOnline([]);
+      return;
+    }
+    void refreshPresence();
+    const id = window.setInterval(() => void refreshPresence(), PRESENCE_MS);
+    return () => window.clearInterval(id);
+  }, [advisorName, refreshPresence]);
 
   return (
     <div className="min-h-screen">
@@ -74,7 +101,7 @@ export function AppShell({
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button type="button" size="sm" disabled={creating} onClick={() => void newRo()}>
+            <Button type="button" size="sm" onClick={() => setNewRoOpen(true)}>
               <Plus className="h-4 w-4" />
               New RO
             </Button>
@@ -116,10 +143,47 @@ export function AppShell({
             </NavLink>
           ))}
         </nav>
+        {advisorName ? (
+          <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-2 px-5 pb-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">
+              Online advisors
+            </span>
+            {online.length === 0 ? (
+              <span className="text-xs text-muted">Just you (or shop presence offline)</span>
+            ) : (
+              online.map((row) => {
+                const away = row.status === "away";
+                return (
+                  <span
+                    key={row.advisor_id}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs",
+                      away
+                        ? "border-amber-500/40 bg-amber-500/10 text-amber-900 dark:text-amber-100"
+                        : "border-border bg-surface text-muted",
+                    )}
+                    title={
+                      away && row.on_job_ro
+                        ? `On ${row.on_job_ro}${row.on_job_item ? ` / ${row.on_job_item}` : ""}`
+                        : "At desk"
+                    }
+                  >
+                    <span className="font-medium text-fg">
+                      {row.name || row.advisor_id}
+                      {row.is_me ? " (you)" : ""}
+                    </span>
+                    <span>{away ? "Away" : "At desk"}</span>
+                  </span>
+                );
+              })
+            )}
+          </div>
+        ) : null}
       </header>
       <main className="mx-auto max-w-6xl px-5 py-6">
         <Outlet />
       </main>
+      <NewRoDialog open={newRoOpen} onClose={() => setNewRoOpen(false)} />
     </div>
   );
 }

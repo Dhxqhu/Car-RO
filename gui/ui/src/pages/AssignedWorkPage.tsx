@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import {
   api,
@@ -14,7 +14,9 @@ import {
   formatDurationMinutes,
   formatShopTime,
   formatStatus,
+  formatWorkedHours,
   formatWorkedMinutes,
+  cn,
 } from "@/lib/utils";
 
 type QueueAct =
@@ -71,8 +73,66 @@ function roTiming(o: AssignedOrderSummary): string {
   }
   if (o.done_at) bits.push(`done ${formatShopTime(o.done_at)}`);
   if (o.billed_out_at) bits.push(`billed ${formatShopTime(o.billed_out_at)}`);
-  if (o.worked_minutes) bits.push(`worked ${formatWorkedMinutes(o.worked_minutes)}`);
   return bits.join(" · ");
+}
+
+function OrderWorkedBreakdown({
+  o,
+  emphasize = false,
+}: {
+  o: AssignedOrderSummary;
+  emphasize?: boolean;
+}) {
+  const byTech = o.tech_worked || [];
+  const total =
+    Number(o.worked_minutes) ||
+    byTech.reduce((sum, t) => sum + Math.max(0, Number(t.minutes) || 0), 0);
+  if (total <= 0 && byTech.length === 0) return null;
+  return (
+    <div
+      className={cn(
+        emphasize
+          ? "mt-2 rounded-lg border border-accent/25 bg-accent/5 px-3 py-2"
+          : "mt-1 text-xs text-muted",
+      )}
+    >
+      {emphasize ? (
+        <>
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">
+            Time worked
+          </div>
+          <div className="mt-0.5 text-sm font-semibold tabular-nums text-fg">
+            Total {formatWorkedHours(total)}
+            <span className="ml-1 font-normal text-muted">({formatWorkedMinutes(total)})</span>
+          </div>
+          {byTech.length > 0 ? (
+            <ul className="mt-1.5 space-y-0.5 text-xs text-muted">
+              {byTech.map((t) => (
+                <li
+                  key={`${t.tech_id || ""}-${t.tech_name}`}
+                  className="flex items-baseline justify-between gap-3"
+                >
+                  <span className="min-w-0 truncate">{t.tech_name || "Unknown"}</span>
+                  <span className="shrink-0 tabular-nums text-fg/90">
+                    {formatWorkedHours(t.minutes)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-1 text-xs text-muted">No per-tech time log on this RO yet.</p>
+          )}
+        </>
+      ) : (
+        <>
+          Worked {formatWorkedMinutes(total)}
+          {byTech.length
+            ? ` · ${byTech.map((t) => `${t.tech_name} ${formatWorkedMinutes(t.minutes)}`).join(", ")}`
+            : ""}
+        </>
+      )}
+    </div>
+  );
 }
 
 function JobCard({
@@ -99,6 +159,11 @@ function JobCard({
             {j.urgent ? (
               <span className="rounded bg-danger/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-danger">
                 Urgent
+              </span>
+            ) : null}
+            {j.due_eod ? (
+              <span className="rounded bg-danger/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-danger">
+                EOD
               </span>
             ) : null}
             {j.queue_lane && j.queue_lane !== "daily" ? (
@@ -131,7 +196,7 @@ function JobCard({
           <div className="mt-1 text-sm font-medium tabular-nums">
             Worked {formatWorkedMinutes(worked)}
           </div>
-          {Number(j.downtime_minutes) > 0 ? (
+          {j.queue_lane !== "long_term" && Number(j.downtime_minutes) > 0 ? (
             <div className="text-xs text-muted">
               Downtime {formatDurationMinutes(j.downtime_minutes)}
             </div>
@@ -157,9 +222,11 @@ function JobCard({
 function OrderCard({
   o,
   actions,
+  emphasizeWorked = false,
 }: {
   o: AssignedOrderSummary;
   actions?: ReactNode;
+  emphasizeWorked?: boolean;
 }) {
   const timing = roTiming(o);
   return (
@@ -172,6 +239,7 @@ function OrderCard({
           <div className="text-sm">{o.customer}</div>
           <div className="text-sm text-muted">{o.vehicle}</div>
           {timing ? <div className="mt-1 text-xs text-muted">{timing}</div> : null}
+          <OrderWorkedBreakdown o={o} emphasize={emphasizeWorked} />
         </div>
         <div className="text-right text-xs text-muted">
           <div className="font-medium text-fg/80">{formatStatus(o.status)}</div>
@@ -194,6 +262,7 @@ function OrderCard({
 }
 
 export function AssignedWorkPage() {
+  const nav = useNavigate();
   const [board, setBoard] = useState<AssignedBoard | null>(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -238,6 +307,10 @@ export function AssignedWorkPage() {
     setErr("");
     try {
       await api.setCurrentTask(roId, active, active ? itemId : undefined);
+      if (active && itemId) {
+        nav(`/ro/${encodeURIComponent(roId)}?bay=${encodeURIComponent(itemId)}`);
+        return;
+      }
       await refresh();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Could not update current work");
@@ -334,7 +407,6 @@ export function AssignedWorkPage() {
     return (
       <>
         {btn(o.id, "Reopen", () => void runQueue(o.id, "reopen"))}
-        {btn(o.id, "Mark billed out", () => void runQueue(o.id, "billed_out"), "default")}
       </>
     );
   }
@@ -393,6 +465,7 @@ export function AssignedWorkPage() {
     empty: string,
     actionFor?: (o: AssignedOrderSummary) => ReactNode,
     accent = true,
+    emphasizeWorked = false,
   ) {
     const list = items || [];
     return (
@@ -410,7 +483,12 @@ export function AssignedWorkPage() {
         ) : (
           <ul className="space-y-3">
             {list.map((o) => (
-              <OrderCard key={o.id} o={o} actions={actionFor?.(o)} />
+              <OrderCard
+                key={o.id}
+                o={o}
+                actions={actionFor?.(o)}
+                emphasizeWorked={emphasizeWorked}
+              />
             ))}
           </ul>
         )}
@@ -527,13 +605,13 @@ export function AssignedWorkPage() {
 
       <section className="space-y-3">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
-          Found issues awaiting approval
+          Found issues & repair requests
           {(board?.found_issues_pending || []).length
             ? ` · ${(board?.found_issues_pending || []).length}`
             : ""}
         </h2>
         {(board?.found_issues_pending || []).length === 0 ? (
-          <p className="text-sm text-muted">No pending found-issue requests.</p>
+          <p className="text-sm text-muted">No pending found-issue or diag repair requests.</p>
         ) : (
           <ul className="space-y-3">
             {(board?.found_issues_pending || []).map((fi: FoundIssueSummary) => (
@@ -550,6 +628,11 @@ export function AssignedWorkPage() {
                       {fi.id}
                       <span className="font-normal text-muted"> · {fi.ro_id}</span>
                     </Link>
+                    <div className="mt-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
+                      {fi.kind === "diag_complete"
+                        ? "Repair request (diag)"
+                        : "Found issue"}
+                    </div>
                     <div className="mt-0.5 text-sm">{fi.description || "(no description)"}</div>
                     <div className="text-sm text-muted">
                       {fi.vehicle} · {fi.customer}
@@ -558,39 +641,16 @@ export function AssignedWorkPage() {
                         ? ` · ${fi.photo_count} photo${fi.photo_count === 1 ? "" : "s"}`
                         : ""}
                     </div>
+                    <p className="mt-1 text-xs text-muted">
+                      Advisor approves or declines at the desk.
+                    </p>
                   </div>
-                  {loggedIn ? (
-                    <div className="flex flex-wrap gap-2">
-                      {btn(fi.id, "Approve → work item", () =>
-                        void (async () => {
-                          setActingId(fi.id);
-                          setErr("");
-                          try {
-                            await api.approveFoundIssue(fi.ro_id, fi.id, "repair");
-                            await refresh();
-                          } catch (e) {
-                            setErr(e instanceof Error ? e.message : "Approve failed");
-                          } finally {
-                            setActingId(null);
-                          }
-                        })(),
-                      "default")}
-                      {btn(fi.id, "Decline", () =>
-                        void (async () => {
-                          setActingId(fi.id);
-                          setErr("");
-                          try {
-                            await api.declineFoundIssue(fi.ro_id, fi.id);
-                            await refresh();
-                          } catch (e) {
-                            setErr(e instanceof Error ? e.message : "Decline failed");
-                          } finally {
-                            setActingId(null);
-                          }
-                        })(),
-                      )}
-                    </div>
-                  ) : null}
+                  <Link
+                    to={`/ro/${fi.ro_id}`}
+                    className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-surface px-3 text-xs font-medium hover:bg-border/40"
+                  >
+                    Open RO
+                  </Link>
                 </div>
               </li>
             ))}
@@ -603,12 +663,30 @@ export function AssignedWorkPage() {
         board?.ready_to_bill,
         "No finished jobs waiting for billing.",
         loggedIn ? readyActions : undefined,
+        true,
+        true,
       )}
 
       {roSection(
         "Billed out (closed history)",
         board?.billed_out,
         "No billed-out jobs in the local/shop cache yet.",
+        loggedIn ? billedActions : undefined,
+        false,
+      )}
+
+      {roSection(
+        "Canceled",
+        board?.canceled,
+        "No canceled repair orders in the local/shop cache.",
+        loggedIn ? billedActions : undefined,
+        false,
+      )}
+
+      {roSection(
+        "No call / no show",
+        board?.no_call_no_show,
+        "No no-call/no-show repair orders in the local/shop cache.",
         loggedIn ? billedActions : undefined,
         false,
       )}
@@ -636,7 +714,7 @@ export function AssignedWorkPage() {
       {jobSection(
         "Unassigned work items",
         board?.unassigned,
-        "All open concerns have an assignee.",
+        "Nothing unassigned — ask an advisor to dish work, or check your Today / Next day / Long-term queues above.",
         loggedIn ? unassignedActions : undefined,
       )}
     </div>

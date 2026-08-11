@@ -25,6 +25,8 @@ class HistoryResult:
     matched_by: str  # "vin_exact" | "vin_partial" | "name" | ""
     vin_query: str = ""
     name_query: str = ""
+    remote_ok: bool = True
+    note: str = ""
 
 
 def vehicle_history(
@@ -36,47 +38,80 @@ def vehicle_history(
     remote: bool | None = None,
 ) -> HistoryResult:
     """
-    Prior ROs for a vehicle (VIN) or, if none, by customer name.
+    Prior ROs for a vehicle (VIN) or, if none, by customer name/phone.
     Merges local + server when remote is enabled (default: when server_url set).
+    If the shop server is unreachable, returns local-cache matches only (no error).
     Includes billed_out jobs — closing an RO does not remove it from history.
     """
     vin_n = normalize_vin(vin)
     name_q = (name or "").strip()
-    if remote is None:
-        remote = bool(RemoteClient().enabled)
+    want_remote = bool(RemoteClient().enabled) if remote is None else bool(remote)
+    remote_ok = True
+    note = ""
 
-    if vin_n:
-        exact = _collect(store, vin=vin_n, vin_mode="exact", remote=remote)
-        exact = _exclude(exact, exclude_id)
-        if exact:
-            return HistoryResult(
-                orders=_sort(exact),
-                matched_by="vin_exact",
-                vin_query=vin_n,
-                name_query=name_q,
-            )
-        if len(vin_n) >= MIN_PARTIAL_VIN:
-            partial = _collect(store, vin=vin_n, vin_mode="partial", remote=remote)
-            partial = _exclude(partial, exclude_id)
-            if partial:
-                return HistoryResult(
-                    orders=_sort(partial),
-                    matched_by="vin_partial",
-                    vin_query=vin_n,
-                    name_query=name_q,
+    def finish(
+        orders: list[RepairOrder], matched_by: str, *, rem_ok: bool, rem_note: str
+    ) -> HistoryResult:
+        n = rem_note
+        if want_remote and not rem_ok:
+            if orders:
+                n = (
+                    rem_note
+                    or "Shop server unreachable — showing jobs already on this bay."
                 )
-
-    if name_q:
-        by_name = _collect(store, name=name_q, remote=remote)
-        by_name = _exclude(by_name, exclude_id)
+            else:
+                n = (
+                    "Shop server unreachable and no matching jobs on this bay. "
+                    "Blank RO still works; sync when you're back online for full archive."
+                )
         return HistoryResult(
-            orders=_sort(by_name),
-            matched_by="name" if by_name else "",
+            orders=_sort(orders),
+            matched_by=matched_by,
             vin_query=vin_n,
             name_query=name_q,
+            remote_ok=rem_ok if want_remote else True,
+            note=n,
         )
 
-    return HistoryResult(orders=[], matched_by="", vin_query=vin_n, name_query=name_q)
+    if vin_n:
+        exact, rem_ok, rem_note = _collect(
+            store, vin=vin_n, vin_mode="exact", remote=want_remote
+        )
+        remote_ok = rem_ok
+        note = rem_note
+        exact = _exclude(exact, exclude_id)
+        if exact:
+            return finish(exact, "vin_exact", rem_ok=remote_ok, rem_note=note)
+        if len(vin_n) >= MIN_PARTIAL_VIN:
+            partial, rem_ok2, rem_note2 = _collect(
+                store, vin=vin_n, vin_mode="partial", remote=want_remote
+            )
+            remote_ok = remote_ok and rem_ok2
+            note = note or rem_note2
+            partial = _exclude(partial, exclude_id)
+            if partial:
+                return finish(partial, "vin_partial", rem_ok=remote_ok, rem_note=note)
+
+    if name_q:
+        by_name, rem_ok, rem_note = _collect(
+            store, name=name_q, remote=want_remote
+        )
+        # Keep VIN-era remote failure if name search skipped remote or also failed
+        if want_remote and vin_n:
+            remote_ok = remote_ok and rem_ok
+            note = note or rem_note
+        else:
+            remote_ok = rem_ok if want_remote else True
+            note = rem_note
+        by_name = _exclude(by_name, exclude_id)
+        return finish(
+            by_name,
+            "name" if by_name else "",
+            rem_ok=remote_ok,
+            rem_note=note,
+        )
+
+    return finish([], "", rem_ok=remote_ok, rem_note=note)
 
 
 def _exclude(orders: list[RepairOrder], exclude_id: str | None) -> list[RepairOrder]:
@@ -93,6 +128,10 @@ def _sort(orders: list[RepairOrder]) -> list[RepairOrder]:
     )
 
 
+# Short timeouts — bay laptops often hit Wi-Fi gaps on road tests
+_HISTORY_REMOTE_TIMEOUT = 5.0
+
+
 def _collect(
     store: LocalStore,
     *,
@@ -100,7 +139,8 @@ def _collect(
     vin_mode: str = "exact",
     name: str = "",
     remote: bool = False,
-) -> list[RepairOrder]:
+) -> tuple[list[RepairOrder], bool, str]:
+    """Return (orders, remote_ok, note). Always includes local hits first."""
     by_id: dict[str, RepairOrder] = {}
 
     if vin:
@@ -108,16 +148,20 @@ def _collect(
             if _vin_match(o.vin, vin, vin_mode):
                 by_id[o.id] = o
     elif name:
+        # Free-text matches name + phone (name= filter alone skips phone)
+        for o in store.search(query=name):
+            by_id[o.id] = o
         for o in store.search(name=name):
             by_id[o.id] = o
 
+    remote_ok = True
+    note = ""
     if remote:
         client = RemoteClient()
         if client.enabled:
             try:
                 if vin:
-                    # Server search is substring; filter client-side for exact/partial rules
-                    raw = client.search_ros(vin=vin)
+                    raw = client.search_ros(vin=vin, timeout=_HISTORY_REMOTE_TIMEOUT)
                     for r in raw:
                         o = RepairOrder.from_dict(r)
                         if _vin_match(o.vin, vin, vin_mode):
@@ -125,16 +169,20 @@ def _collect(
                                 store.save(o, mark_pending_sync=False)
                             by_id[o.id] = store.get(o.id) or o
                 elif name:
-                    raw = client.search_ros(name=name)
+                    # Free-text `q` matches phone; `name=` is last/first name filters
+                    raw = client.search_ros(
+                        name, name=name, timeout=_HISTORY_REMOTE_TIMEOUT
+                    )
                     for r in raw:
                         o = RepairOrder.from_dict(r)
                         if o.id not in by_id:
                             store.save(o, mark_pending_sync=False)
                         by_id[o.id] = store.get(o.id) or o
             except Exception:
-                pass
+                remote_ok = False
+                note = "Shop server unreachable — showing jobs already on this bay."
 
-    return list(by_id.values())
+    return list(by_id.values()), remote_ok, note
 
 
 def _vin_match(order_vin: str, query: str, mode: str) -> bool:
@@ -155,6 +203,21 @@ def vehicle_fields_from(order: RepairOrder) -> dict[str, str]:
         if val:
             out[key] = val
     # Prefer normalized VIN
+    if out.get("vin"):
+        out["vin"] = normalize_vin(out["vin"])
+    return out
+
+
+def customer_vehicle_fields_from(order: RepairOrder) -> dict[str, str]:
+    """
+    Prefill a new visit from a prior RO: customer + vehicle identity.
+    Skips mileage, complaint, notes, and work items (fresh job).
+    """
+    out: dict[str, str] = {}
+    for key in ("first_name", "last_name", "phone", "year", "make", "model", "vin", "plate"):
+        val = (getattr(order, key, "") or "").strip()
+        if val:
+            out[key] = val
     if out.get("vin"):
         out["vin"] = normalize_vin(out["vin"])
     return out

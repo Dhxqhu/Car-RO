@@ -16,10 +16,16 @@ SAVED_CODES = saved_codes_dir()
 LAST_VEHICLE = last_vehicle_file()
 
 _SNAPSHOT_MAX = 12000  # DTC block can be long; keep enough for PDF/notes
+_VIN_RE = re.compile(r"[A-HJ-NPR-Z0-9]{17}")
 
 
 def _which_obdscan() -> str | None:
     return shutil.which("obdscan")
+
+
+def _norm_vin(raw: object) -> str:
+    v = str(raw or "").strip().upper()
+    return v if _VIN_RE.fullmatch(v) else ""
 
 
 def pull_vehicle_fields(*, prefer_vin: str | None = None) -> dict[str, str]:
@@ -31,61 +37,97 @@ def pull_vehicle_fields(*, prefer_vin: str | None = None) -> dict[str, str]:
       2. Newest matching ``dtc_*.txt`` under Documents/Saved Codes
       3. ``obdscan info`` subprocess (needs a live adapter)
 
-    If ``prefer_vin`` is set (e.g. current RO VIN), prefer a Saved Codes report
-    whose filename or body matches that VIN over a newer unrelated car.
+    If ``prefer_vin`` is set (e.g. current RO VIN):
+      - Prefer sources whose VIN matches.
+      - Exclude sources whose VIN is present and differs (no silent wrong-car pick).
+      - If nothing matches, return the newest available scan with ``_vin_mismatch=1``
+        so the engine can warn before applying.
     """
-    prefer = (prefer_vin or "").strip().upper()
-    if prefer and not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", prefer):
-        prefer = ""
+    prefer = _norm_vin(prefer_vin)
 
-    candidates: list[tuple[float, str, dict[str, str]]] = []
+    matched: list[tuple[float, str, dict[str, str]]] = []
+    fallback: list[tuple[float, str, dict[str, str]]] = []
+
+    def _consider(mtime: float, source: str, fields: dict[str, str]) -> None:
+        if not fields.get("vin") and not fields.get("obd_snapshot"):
+            return
+        copy = dict(fields)
+        _enrich_vin(copy)
+        scan_vin = _norm_vin(copy.get("vin"))
+        if prefer:
+            if scan_vin and scan_vin == prefer:
+                # Prefer VIN-matched report even if slightly older than another source.
+                matched.append((mtime + 1e12, source, copy))
+            elif scan_vin and scan_vin != prefer:
+                # Different car — keep only as last-resort fallback for warning path.
+                fallback.append((mtime, source, copy))
+            else:
+                # No VIN on scan — usable but not a confirmed match.
+                matched.append((mtime, source, copy))
+        else:
+            matched.append((mtime, source, copy))
 
     cached = _load_last_vehicle()
     if cached:
         mtime, fields = cached
-        if not prefer or (fields.get("vin") or "").upper() == prefer:
-            candidates.append((mtime, "last_vehicle", fields))
+        _consider(mtime, "last_vehicle", fields)
 
     report = _pick_dtc_report(prefer_vin=prefer or None)
     if report:
         path, mtime = report
         parsed = _parse_saved_report(path)
-        if parsed.get("vin") or parsed.get("obd_snapshot"):
-            # Prefer VIN-matched report even if slightly older than last_vehicle
-            # for a different car.
-            score = mtime
-            if prefer and (parsed.get("vin") or "").upper() == prefer:
-                score += 1e12
-            candidates.append((score, f"saved:{path.name}", parsed))
+        _consider(mtime, f"saved:{path.name}", parsed)
 
-    if candidates:
-        candidates.sort(key=lambda t: t[0], reverse=True)
-        _src_mtime, _src, out = candidates[0]
-        _enrich_vin(out)
-        out.setdefault("_source", _src)
-        return {k: v for k, v in out.items() if not k.startswith("_")}
+    chosen: dict[str, str] | None = None
+    source = ""
+    if matched:
+        matched.sort(key=lambda t: t[0], reverse=True)
+        _m, source, chosen = matched[0]
+    elif fallback:
+        fallback.sort(key=lambda t: t[0], reverse=True)
+        _m, source, chosen = fallback[0]
+        chosen = dict(chosen)
+        chosen["_vin_mismatch"] = "1"
+    else:
+        live = _pull_live_obdscan()
+        if live:
+            _enrich_vin(live)
+            scan_vin = _norm_vin(live.get("vin"))
+            source = "obdscan_info"
+            if prefer and scan_vin and scan_vin != prefer:
+                live["_vin_mismatch"] = "1"
+            chosen = live
 
+    if not chosen:
+        return {}
+
+    chosen.setdefault("_source", source)
+    # Callers that ignore meta still get plain fields; engine may read _ keys.
+    return chosen
+
+
+def _pull_live_obdscan() -> dict[str, str]:
     out: dict[str, str] = {}
     exe = _which_obdscan()
-    if exe:
-        try:
-            proc = subprocess.run(
-                [exe, "info"],
-                capture_output=True,
-                text=True,
-                timeout=45,
-                check=False,
-            )
-            text = (proc.stdout or "") + "\n" + (proc.stderr or "")
-            snap = text.strip()
-            if snap:
-                out["obd_snapshot"] = snap[:_SNAPSHOT_MAX]
-            m = re.search(r"\b([A-HJ-NPR-Z0-9]{17})\b", text.upper())
-            if m:
-                out["vin"] = m.group(1)
-            _enrich_vin(out)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+    if not exe:
+        return out
+    try:
+        proc = subprocess.run(
+            [exe, "info"],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+        text = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        snap = text.strip()
+        if snap:
+            out["obd_snapshot"] = snap[:_SNAPSHOT_MAX]
+        m = re.search(r"\b([A-HJ-NPR-Z0-9]{17})\b", text.upper())
+        if m:
+            out["vin"] = m.group(1)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
     return out
 
 

@@ -27,7 +27,7 @@ from carro.core.config_menu import print_config_summary, run_config_menu
 from carro.core.logo_setup import run_logo_setup
 from carro.core.db import LocalStore
 from carro.core.form import run_ro_form
-from carro.core.history import HistoryResult, vehicle_fields_from, vehicle_history
+from carro.core.history import HistoryResult, vehicle_history
 from carro.core.history_form import run_history_form
 from carro.core.models import RepairOrder
 from carro.core.pdf import export_pdf
@@ -848,12 +848,14 @@ def _history_actions(store: LocalStore, prior: RepairOrder) -> str | None:
     if action == "open":
         cmd_open(store, prior.id)
         return prior.id
-    # new RO from vehicle
-    fields = vehicle_fields_from(prior)
+    # new RO from returning customer + vehicle
+    from carro.core.history import customer_vehicle_fields_from
+
+    fields = customer_vehicle_fields_from(prior)
     order = store.create(**fields)
     CONSOLE.print(
-        f"[green]New RO[/] {order.id} with vehicle from {prior.id} "
-        f"({order.vehicle_label() or order.vin})"
+        f"[green]New RO[/] {order.id} for {order.customer_label()} · "
+        f"{order.vehicle_label() or order.vin or 'vehicle'} (from {prior.id})"
     )
     saved = _open_ro_form(store, order)
     return (saved or order).id

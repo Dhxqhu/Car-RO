@@ -282,6 +282,26 @@ def diff_ro_events(
                     "summary": str(w.get("concern") or wid)[:120],
                 }
             )
+            # New item created already assigned (e.g. found-issue approve → tech)
+            # must also emit item_assigned so the tech bell can route it.
+            aid = str(w.get("assigned_to_id") or "").strip()
+            aname = str(w.get("assigned_to_name") or "").strip()
+            if aid or aname:
+                who = (aname or aid or "unassigned").strip()
+                events.append(
+                    {
+                        "type": "item_assigned",
+                        "ro_id": ro_id,
+                        "item_id": wid,
+                        "actor": actor,
+                        "at": at,
+                        "summary": who,
+                        "payload": {
+                            "assigned_to_id": aid,
+                            "assigned_to_name": aname,
+                        },
+                    }
+                )
             continue
         old = b_items[wid]
         if str(old.get("concern") or "") != str(w.get("concern") or ""):
@@ -307,6 +327,8 @@ def diff_ro_events(
                 }
             )
         if str(old.get("status") or "") != str(w.get("status") or ""):
+            old_st = str(old.get("status") or "").strip().lower()
+            new_st = str(w.get("status") or "").strip().lower()
             events.append(
                 {
                     "type": "item_status_changed",
@@ -317,6 +339,36 @@ def diff_ro_events(
                     "summary": f"{old.get('status')} → {w.get('status')}",
                 }
             )
+            # Wait cleared (parts in / customer approved) → notify assignee only when reassigned.
+            if old_st in ("waiting_parts", "waiting_customer") and new_st == "open":
+                who = str(
+                    w.get("assigned_to_name") or w.get("assigned_to_id") or ""
+                ).strip()
+                concern = str(w.get("concern") or wid)[:80]
+                reason = (
+                    "Parts received"
+                    if old_st == "waiting_parts"
+                    else "Customer approved"
+                )
+                events.append(
+                    {
+                        "type": "item_wait_cleared",
+                        "ro_id": ro_id,
+                        "item_id": wid,
+                        "actor": actor,
+                        "at": at,
+                        "summary": (
+                            f"{reason} · {who} · {concern}"
+                            if who
+                            else f"{reason} · Unassigned · {concern}"
+                        ),
+                        "payload": {
+                            "assigned_to_id": str(w.get("assigned_to_id") or ""),
+                            "assigned_to_name": str(w.get("assigned_to_name") or ""),
+                            "from_status": old_st,
+                        },
+                    }
+                )
         if (
             str(old.get("assigned_to_id") or "") != str(w.get("assigned_to_id") or "")
             or str(old.get("assigned_to_name") or "") != str(w.get("assigned_to_name") or "")
@@ -330,6 +382,33 @@ def diff_ro_events(
                     "actor": actor,
                     "at": at,
                     "summary": who,
+                    "payload": {
+                        "assigned_to_id": str(w.get("assigned_to_id") or ""),
+                        "assigned_to_name": str(w.get("assigned_to_name") or ""),
+                    },
+                }
+            )
+        old_eod = bool(old.get("due_eod"))
+        new_eod = bool(w.get("due_eod"))
+        if not old_eod and new_eod:
+            who = str(w.get("assigned_to_name") or w.get("assigned_to_id") or "").strip()
+            concern = str(w.get("concern") or wid)[:80]
+            events.append(
+                {
+                    "type": "item_due_eod",
+                    "ro_id": ro_id,
+                    "item_id": wid,
+                    "actor": actor,
+                    "at": at,
+                    "summary": (
+                        f"Needs done by end of day · {who} · {concern}"
+                        if who
+                        else f"Needs done by end of day · {concern}"
+                    ),
+                    "payload": {
+                        "assigned_to_id": str(w.get("assigned_to_id") or ""),
+                        "assigned_to_name": str(w.get("assigned_to_name") or ""),
+                    },
                 }
             )
         old_req = old.get("next_day_request") if isinstance(old.get("next_day_request"), dict) else {}
@@ -338,6 +417,15 @@ def diff_ro_events(
         new_req_st = str(new_req.get("status") or "")
         if old_req_st != new_req_st and new_req_st == "pending":
             who = str(new_req.get("by") or actor or "").strip()
+            who_id = str(new_req.get("by_id") or "").strip()
+            concern = str(w.get("concern") or wid)[:80]
+            if bool(w.get("due_eod")) or bool(old.get("due_eod")):
+                summary = (
+                    f"EOD job — {who or 'Tech'} requested next day · {concern} "
+                    "— contact customer if needed"
+                )
+            else:
+                summary = f"{who or 'Tech'} requested next day · {concern}"
             events.append(
                 {
                     "type": "next_day_requested",
@@ -345,10 +433,18 @@ def diff_ro_events(
                     "item_id": wid,
                     "actor": actor,
                     "at": at,
-                    "summary": f"{who or 'Tech'} requested next day · {str(w.get('concern') or wid)[:80]}",
+                    "summary": summary,
+                    "payload": {
+                        "requested_by_id": who_id,
+                        "requested_by_name": who,
+                        "assigned_to_id": str(w.get("assigned_to_id") or ""),
+                        "assigned_to_name": str(w.get("assigned_to_name") or ""),
+                    },
                 }
             )
         elif old_req_st != new_req_st and new_req_st == "approved":
+            by_id = str(new_req.get("by_id") or "").strip()
+            by_name = str(new_req.get("by") or "").strip()
             events.append(
                 {
                     "type": "next_day_approved",
@@ -357,9 +453,18 @@ def diff_ro_events(
                     "actor": actor,
                     "at": at,
                     "summary": f"Next day approved · {str(w.get('concern') or wid)[:80]}",
+                    "payload": {
+                        "requested_by_id": by_id,
+                        "requested_by_name": by_name,
+                        "to_id": by_id or str(w.get("assigned_to_id") or ""),
+                        "assigned_to_id": str(w.get("assigned_to_id") or ""),
+                        "assigned_to_name": str(w.get("assigned_to_name") or ""),
+                    },
                 }
             )
         elif old_req_st != new_req_st and new_req_st == "declined":
+            by_id = str(new_req.get("by_id") or "").strip()
+            by_name = str(new_req.get("by") or "").strip()
             events.append(
                 {
                     "type": "next_day_declined",
@@ -368,6 +473,13 @@ def diff_ro_events(
                     "actor": actor,
                     "at": at,
                     "summary": f"Next day declined · {str(w.get('concern') or wid)[:80]}",
+                    "payload": {
+                        "requested_by_id": by_id,
+                        "requested_by_name": by_name,
+                        "to_id": by_id or str(w.get("assigned_to_id") or ""),
+                        "assigned_to_id": str(w.get("assigned_to_id") or ""),
+                        "assigned_to_name": str(w.get("assigned_to_name") or ""),
+                    },
                 }
             )
         old_lane = str(old.get("queue_lane") or "daily")
@@ -396,6 +508,39 @@ def diff_ro_events(
                 }
             )
 
+    # Advisor merge: one item_merged event; drop per-source item_removed noise.
+    b_actions = (before or {}).get("advisor_actions") if before else None
+    a_actions = after.get("advisor_actions")
+    b_action_n = len(b_actions) if isinstance(b_actions, list) else 0
+    if isinstance(a_actions, list) and len(a_actions) > b_action_n:
+        for entry in a_actions[b_action_n:]:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("action") or "") != "item_merged":
+                continue
+            target = str(entry.get("work_item_id") or "").strip()
+            detail = str(entry.get("detail") or "").strip()
+            sources = [s.strip() for s in detail.split(",") if s.strip()]
+            events.append(
+                {
+                    "type": "item_merged",
+                    "ro_id": ro_id,
+                    "item_id": target,
+                    "actor": actor or str(entry.get("advisor_name") or ""),
+                    "at": at,
+                    "summary": str(entry.get("note") or f"{detail} → {target}")[:160],
+                }
+            )
+            if sources:
+                events = [
+                    e
+                    for e in events
+                    if not (
+                        e.get("type") == "item_removed"
+                        and str(e.get("item_id") or "") in sources
+                    )
+                ]
+
     def _fi_map(raw: object) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
         if not isinstance(raw, list):
@@ -411,7 +556,26 @@ def diff_ro_events(
     b_fi = _fi_map((before or {}).get("found_issues") if before else None)
     a_fi = _fi_map(after.get("found_issues"))
     for fid, fi in a_fi.items():
+        new_st = str(fi.get("status") or "").strip().lower()
         if fid not in b_fi:
+            # Drafts stay quiet until the tech forwards them to the advisor.
+            if new_st == "draft":
+                continue
+            if new_st == "pending":
+                events.append(
+                    {
+                        "type": "found_issue_created",
+                        "ro_id": ro_id,
+                        "item_id": fid,
+                        "actor": actor,
+                        "at": at,
+                        "summary": str(fi.get("description") or fid)[:120],
+                    }
+                )
+            continue
+        old = b_fi[fid]
+        old_st = str(old.get("status") or "").strip().lower()
+        if old_st != new_st and old_st == "draft" and new_st == "pending":
             events.append(
                 {
                     "type": "found_issue_created",
@@ -422,11 +586,7 @@ def diff_ro_events(
                     "summary": str(fi.get("description") or fid)[:120],
                 }
             )
-            continue
-        old = b_fi[fid]
-        old_st = str(old.get("status") or "")
-        new_st = str(fi.get("status") or "")
-        if old_st != new_st and new_st == "converted":
+        elif old_st != new_st and new_st == "converted":
             events.append(
                 {
                     "type": "found_issue_approved",

@@ -15,6 +15,8 @@ $env:PYTHONPATH = (@(
   (Join-Path $Root "engine")
 ) -join ";") + $(if ($env:PYTHONPATH) { ";$env:PYTHONPATH" } else { "" })
 
+. (Join-Path $PSScriptRoot "lib\Pick-Port.ps1")
+
 $CargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
 if (Test-Path $CargoBin) {
   $env:PATH = "$CargoBin;$env:PATH"
@@ -32,11 +34,18 @@ if (-not (Test-Path $Py)) {
   Write-Error "error: run .\scripts\install.ps1 (or Install-Car-RO.bat) first"
 }
 
-$engine = Start-Process -FilePath $Py -ArgumentList @(
-  "-m", "uvicorn", "carro_engine.main:app",
-  "--host", "127.0.0.1", "--port", "8788"
-) -PassThru -NoNewWindow -WorkingDirectory $Root
-Start-Sleep -Milliseconds 500
+$Port = Resolve-CarroEnginePort
+$engine = $null
+if (Test-CarroPortHealthy -Port $Port) {
+  Write-Host "==> Engine already on http://127.0.0.1:$Port"
+} else {
+  Write-Host "==> Engine on http://127.0.0.1:$Port"
+  $engine = Start-Process -FilePath $Py -ArgumentList @(
+    "-m", "uvicorn", "carro_engine.main:app",
+    "--host", "127.0.0.1", "--port", "$Port", "--no-access-log"
+  ) -PassThru -NoNewWindow -WorkingDirectory $Root
+  Start-Sleep -Milliseconds 500
+}
 
 try {
   Set-Location (Join-Path $Root "gui")
