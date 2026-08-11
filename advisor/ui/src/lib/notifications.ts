@@ -156,6 +156,8 @@ export const ADVISOR_DESK_EVENT_TYPES = new Set([
   "next_day_declined",
   "ro_waiter_flag",
   "ro_urgent_flag",
+  "tech_day_start",
+  "tech_day_end",
   "shop_message",
 ]);
 

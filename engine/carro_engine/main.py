@@ -217,111 +217,6 @@ def _push_ro(
     )
 
 
-def _notify_advisors_pending_found_issues(
-    order: RepairOrder,
-    issues: list[Any],
-    *,
-    from_id: str,
-    from_name: str,
-    from_role: str = "technician",
-) -> None:
-    """Inbox + bell ping every advisor when a found-issue / diag repair request hits the desk."""
-    pending = [fi for fi in (issues or []) if fi is not None]
-    if not pending:
-        return
-    remote = RemoteClient()
-    if not remote.enabled:
-        return
-    sender_id = (from_id or "").strip()
-    sender_name = (from_name or "").strip() or "Shop"
-    role = (from_role or "technician").strip().lower()
-    if role not in ("technician", "advisor"):
-        role = "technician"
-    ro_id = (order.id or "").strip()
-    for adv in advmod.list_advisors():
-        if not adv or not (adv.id or "").strip():
-            continue
-        if sender_id and adv.id == sender_id:
-            continue
-        for fi in pending:
-            fid = str(getattr(fi, "id", "") or "").strip()
-            desc = str(getattr(fi, "description", "") or "").strip()
-            kind = str(getattr(fi, "kind", "") or "").strip().lower()
-            label = (
-                "Diag repair request"
-                if kind == "diag_complete"
-                else "Found-issue request"
-            )
-            bits = [f"{label} on {ro_id or 'RO'}"]
-            if fid:
-                bits.append(fid)
-            if desc:
-                bits.append(desc[:120])
-            body = " — ".join(bits)
-            try:
-                remote.send_message(
-                    {
-                        "body": body,
-                        "from_id": sender_id or "system",
-                        "from_name": sender_name,
-                        "from_role": role,
-                        "to_id": adv.id,
-                        "to_name": adv.name or "",
-                        "to_role": "advisor",
-                        "ro_id": ro_id,
-                        "work_item_id": fid,
-                    }
-                )
-            except Exception:
-                # Soft-fail — desk board still shows the pending request.
-                pass
-
-
-def _notify_advisors_next_day_request(
-    order: RepairOrder,
-    *,
-    item_id: str,
-    from_id: str,
-    from_name: str,
-    note: str = "",
-) -> None:
-    """Inbox + bell ping every advisor when a tech asks to move a job to next day."""
-    remote = RemoteClient()
-    if not remote.enabled:
-        return
-    sender_id = (from_id or "").strip()
-    sender_name = (from_name or "").strip() or "Tech"
-    ro_id = (order.id or "").strip()
-    wid = (item_id or "").strip()
-    bits = [f"Next-day request on {ro_id or 'RO'}"]
-    if wid:
-        bits.append(wid)
-    if (note or "").strip():
-        bits.append((note or "").strip()[:120])
-    body = " — ".join(bits)
-    for adv in advmod.list_advisors():
-        if not adv or not (adv.id or "").strip():
-            continue
-        if sender_id and adv.id == sender_id:
-            continue
-        try:
-            remote.send_message(
-                {
-                    "body": body,
-                    "from_id": sender_id or "system",
-                    "from_name": sender_name,
-                    "from_role": "technician",
-                    "to_id": adv.id,
-                    "to_name": adv.name or "",
-                    "to_role": "advisor",
-                    "ro_id": ro_id,
-                    "work_item_id": wid,
-                }
-            )
-        except Exception:
-            pass
-
-
 def _notify_tech_message(
     *,
     to_id: str,
@@ -809,7 +704,7 @@ def engine_shift_start(body: ShiftStartBody | None = None) -> dict[str, Any]:
     if not tech_id:
         raise HTTPException(400, "tech_id required")
     try:
-        return remote.start_shift(
+        out = remote.start_shift(
             tech_id=tech_id,
             tech_name=tech_name,
             started_at=started_at,
@@ -819,6 +714,7 @@ def engine_shift_start(body: ShiftStartBody | None = None) -> dict[str, Any]:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, f"Could not day-start: {exc}") from exc
+    return out
 
 
 @app.post("/shifts/end")
@@ -837,13 +733,14 @@ def engine_shift_end(body: ShiftEndBody | None = None) -> dict[str, Any]:
     else:
         raise HTTPException(401, "Log in as a technician or advisor")
     try:
-        return remote.end_shift(
+        out = remote.end_shift(
             tech_id=tech_id, shift_id=shift_id, ended_at=ended_at
         )
     except RuntimeError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(502, f"Could not day-end: {exc}") from exc
+    return out
 
 
 @app.get("/shifts")
@@ -2319,17 +2216,6 @@ def queue_action_route(
     actor_id = (tech.id if tech else (advisor.id if advisor else "")) or ""
     actor_name = (tech.name if tech else (advisor.name if advisor else "")) or ""
 
-    pending_fi_before: set[str] = set()
-    if body.action in ("complete_item", "complete"):
-        for raw in getattr(order, "found_issues", None) or []:
-            if not isinstance(raw, dict):
-                continue
-            if str(raw.get("status") or "").strip().lower() != "pending":
-                continue
-            fid = str(raw.get("id") or "").strip()
-            if fid:
-                pending_fi_before.add(fid)
-
     if body.action == "add":
         try:
             add_to_my_queue(
@@ -2490,22 +2376,6 @@ def queue_action_route(
     elif body.action in ("item_release_wait", "item_return_to_requester") and advisor:
         who, who_id = advisor.name, advisor.id
     _push_ro(order, actor=who, actor_id=who_id)
-    if body.action in ("complete_item", "complete"):
-        from carro.core.found_issues import ensure_found_issues_on_order
-
-        newly = [
-            fi
-            for fi in ensure_found_issues_on_order(order)
-            if fi.status == "pending" and fi.id not in pending_fi_before
-        ]
-        if newly:
-            _notify_advisors_pending_found_issues(
-                order,
-                newly,
-                from_id=actor_id,
-                from_name=actor_name,
-                from_role="technician" if tech else "advisor",
-            )
     return order.to_dict()
 
 
@@ -2632,13 +2502,6 @@ def work_item_request_next_day_route(
         raise HTTPException(400, str(exc)) from exc
     store.save(order)
     _push_ro(order, actor=tech.name, actor_id=tech.id)
-    _notify_advisors_next_day_request(
-        order,
-        item_id=item_id,
-        from_id=tech.id,
-        from_name=tech.name,
-        note=note,
-    )
     return order.to_dict()
 
 
@@ -2843,11 +2706,6 @@ def found_issue_create(ro_id: str, body: FoundIssueCreateBody) -> dict[str, Any]
     if not order:
         raise HTTPException(404, "RO not found")
     worker_id, worker_name = _bay_worker()
-    sender_role = (
-        "technician"
-        if techmod.current_technician() and techmod.current_technician().id == worker_id
-        else "advisor"
-    )
     try:
         fi = create_found_issue(
             order,
@@ -2863,14 +2721,6 @@ def found_issue_create(ro_id: str, body: FoundIssueCreateBody) -> dict[str, Any]
         raise HTTPException(400, str(exc)) from exc
     store.save(order)
     _push_ro(order, actor=worker_name, actor_id=worker_id)
-    if (fi.status or "").strip().lower() == "pending":
-        _notify_advisors_pending_found_issues(
-            order,
-            [fi],
-            from_id=worker_id,
-            from_name=worker_name,
-            from_role=sender_role,
-        )
     out = order.to_dict()
     # Ephemeral — for clients that attach photos right after create
     out["created_found_issue_id"] = fi.id
@@ -2911,24 +2761,12 @@ def found_issue_submit(ro_id: str, body: FoundIssueSubmitBody) -> dict[str, Any]
     if not order:
         raise HTTPException(404, "RO not found")
     worker_id, worker_name = _bay_worker()
-    sender_role = (
-        "technician"
-        if techmod.current_technician() and techmod.current_technician().id == worker_id
-        else "advisor"
-    )
     try:
         promoted = submit_found_issues(order, body.ids or None)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     store.save(order)
     _push_ro(order, actor=worker_name, actor_id=worker_id)
-    _notify_advisors_pending_found_issues(
-        order,
-        promoted,
-        from_id=worker_id,
-        from_name=worker_name,
-        from_role=sender_role,
-    )
     out = order.to_dict()
     out["submitted_found_issue_ids"] = [fi.id for fi in promoted]
     out["submitted_count"] = len(promoted)

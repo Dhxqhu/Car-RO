@@ -583,7 +583,7 @@ export function SettingsPage() {
         </div>
         <NotifyToggle
           label="Global notifications"
-          detail="On: all shop activity. Off: desk ops only (needs assign, waiting parts, completed, billing, found issues, next-day requests, flags)."
+          detail="On: all shop activity. Off: desk ops only (needs assign, waiting parts, completed, billing, found issues, next-day requests, clock in/out, flags)."
           checked={notify.globalNotifications}
           onChange={(v) => setNotifyPref("globalNotifications", v)}
         />

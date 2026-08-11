@@ -436,10 +436,15 @@ def export_pdf(
         for fi in declined_fis:
             desc = (fi.get("description") or "—").strip() or "—"
             label = decline_reason_label(str(fi.get("decline_reason") or ""))
-            lines.append(f"• {desc}\n  ({label})")
+            notes = (fi.get("notes") or "").strip()
+            block = f"• {desc}\n  Status: Declined — {label}"
+            if notes:
+                block += f"\n  Notes: {notes}"
+            lines.append(block)
         box = _section_box(
-            "ADDITIONAL FINDINGS (NOT AUTHORIZED)",
-            "\n\n".join(lines),
+            "DECLINED FINDINGS (CUSTOMER RECORD)",
+            "These items were reviewed and not authorized. They remain on file for your records.\n\n"
+            + "\n\n".join(lines),
             head_style=box_head,
             body_style=box_body,
         )
@@ -466,21 +471,23 @@ def export_pdf(
             for fi in normalize_found_issues(getattr(order, "found_issues", None))
         }
         for meta in order.photos:
-            # Keep pending/declined found-issue shop pics off the customer PDF
+            # Pending/draft found-issue shop pics stay off the customer PDF.
+            # Declined findings are included so the customer has a photo record.
             fi_id = str(meta.get("found_issue_id") or "").strip()
             tag = str(meta.get("tag") or "").strip().lower()
             if fi_id:
                 st = fi_status_by_id.get(fi_id, "")
-                if st in ("pending", "declined"):
+                if st in ("pending", "draft"):
                     continue
             elif tag == "found_issue":
+                # Untagged-to-id found-issue shots: omit until linked / resolved
                 continue
             rel = meta.get("relpath") or meta.get("filename")
             if not rel:
                 continue
             p = photos_dir() / order.id / Path(rel).name
             if p.is_file():
-                photo_paths.append({**meta, "_path": p})
+                photo_paths.append({**meta, "_path": p, "_fi_status": fi_status_by_id.get(fi_id, "")})
 
         caption = ParagraphStyle(
             "PhotoCaption",
@@ -506,6 +513,8 @@ def export_pdf(
                 tag = _xml_escape(str(meta.get("tag") or "other")).upper()
                 note = _xml_escape(str(meta.get("notes") or meta.get("note") or "").strip())
                 bits = [f"<b>{tag}</b>"]
+                if str(meta.get("_fi_status") or "") == "declined":
+                    bits.append("Declined finding")
                 if note:
                     bits.append(note.replace("\n", "<br/>"))
                 cell = [img, Paragraph("<br/>".join(bits), caption)]

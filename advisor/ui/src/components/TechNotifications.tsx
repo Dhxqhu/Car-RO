@@ -157,10 +157,19 @@ export function TechNotifications({
 
   const mergeEvents = useCallback(
     (batch: RoEvent[], replace: boolean) => {
+      // Always advance the cursor from the raw batch — filtered-out types (e.g. punches
+      // when prefs/allowlists change) must not stall catch-up forever.
+      const batchMax = batch.reduce((m, e) => Math.max(m, Number(e.id) || 0), 0);
+      if (batchMax > lastId.current) lastId.current = batchMax;
+
       let scoped = filterOthersEvents(batch, self);
       if (!prefs.globalNotifications) {
         scoped = filterAdvisorDeskEvents(scoped);
       }
+      // Category prefs also gate what appears in the panel (not only badge/chime).
+      scoped = scoped.filter(
+        (e) => e.type === "shop_message" || prefsAllowEvent(prefs, e.type),
+      );
       const others = scoped.filter(
         (e) => !isDismissed(dismissed.current, eventDismissKey(e.id)),
       );
@@ -186,11 +195,9 @@ export function TechNotifications({
         }
         return Array.from(byId.values()).slice(0, 40);
       });
-      const maxId = still.reduce((m, e) => Math.max(m, Number(e.id) || 0), lastId.current);
-      if (maxId > lastId.current) lastId.current = maxId;
-      return { others: still, maxId };
+      return { others: still, maxId: lastId.current };
     },
-    [techName, techId, autoClearResolved, prefs.globalNotifications],
+    [techName, techId, autoClearResolved, prefs],
   );
 
   const mergeIdle = useCallback((rows: IdleNudge[]) => {
@@ -807,7 +814,7 @@ export function TechNotifications({
                         </button>
                       </span>
                     </div>
-                    {e.ro_id && e.ro_id !== "_message" ? (
+                    {e.ro_id && e.ro_id !== "_message" && e.ro_id !== "_shift" ? (
                       <Link
                         to={`/ro/${e.ro_id}`}
                         className="font-medium text-accent hover:underline"
@@ -826,10 +833,18 @@ export function TechNotifications({
                       >
                         Open message
                       </Link>
+                    ) : e.type === "tech_day_start" || e.type === "tech_day_end" ? (
+                      <span className="font-medium">{e.summary || eventLabel(e.type)}</span>
                     ) : null}
-                    {e.item_id ? <span className="text-muted"> · {e.item_id}</span> : null}
-                    {e.actor ? <div className="text-xs text-muted">{e.actor}</div> : null}
-                    {e.summary ? (
+                    {e.type === "tech_day_start" || e.type === "tech_day_end"
+                      ? null
+                      : e.item_id ? (
+                          <span className="text-muted"> · {e.item_id}</span>
+                        ) : null}
+                    {e.actor && e.type !== "tech_day_start" && e.type !== "tech_day_end" ? (
+                      <div className="text-xs text-muted">{e.actor}</div>
+                    ) : null}
+                    {e.summary && e.type !== "tech_day_start" && e.type !== "tech_day_end" ? (
                       <p className="mt-0.5 line-clamp-2 text-xs text-muted">
                         {formatEventSummary(e.summary)}
                       </p>

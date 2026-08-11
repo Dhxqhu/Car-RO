@@ -992,7 +992,11 @@ def post_shift_start(body: dict, _: None = Depends(require_auth)):
             item_id=tech_id,
             actor=tech_name or tech_id,
             summary=f"{tech_name or tech_id} day start",
-            payload={"tech_id": tech_id, "shift_id": shift["id"]},
+            payload={
+                "tech_id": tech_id,
+                "actor_id": tech_id,
+                "shift_id": shift["id"],
+            },
         )
     return {"ok": True, "shift": shift}
 
@@ -1019,7 +1023,11 @@ def post_shift_end(body: dict, _: None = Depends(require_auth)):
             item_id=str(shift.get("tech_id") or tech_id),
             actor=str(shift.get("tech_name") or tech_id),
             summary=f"{shift.get('tech_name') or tech_id} day end",
-            payload={"tech_id": shift.get("tech_id"), "shift_id": shift["id"]},
+            payload={
+                "tech_id": shift.get("tech_id"),
+                "actor_id": str(shift.get("tech_id") or tech_id),
+                "shift_id": shift["id"],
+            },
         )
     return {"ok": True, "shift": shift}
 

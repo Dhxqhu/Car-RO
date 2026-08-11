@@ -408,19 +408,19 @@ Work items (not whole cars) sit in floor lanes:
 - **Next day** — advisor push, or tech request (advisor approves); if the tech is on the job, the move applies on **clock-out**. At midnight: next-day items become today’s daily; unfinished daily items roll into next day
 - **Long-term** — long-stay project work (advisor moves in/out)
 
-Tech **request next day** pings every advisor (shop message + desk). Advisor **approve** / **decline** messages the requesting tech (decline also marks **due end of day**).
+Tech **request next day** shows on every advisor’s desk bell / Needs attention (not a personal inbox message). Advisor **approve** / **decline** messages the requesting tech (decline also marks **due end of day**).
 
 **Waiter** = customer waiting on-site (RO flag, sorts first). **Urgent** = desk push on an RO to finish faster. Advisor sets both from Assigned work or the RO editor.
 
 ### Found issues
 
-Techs (and working advisors) save **draft** found-issue requests on the RO, **edit** description/notes before send, add photos, then **Send to advisor**. Pending requests show on the desk / Needs attention. **Approve** / **Decline** / **Undo approval** are advisor-only. Approve can leave the new work item **Unassigned** or assign a tech; completing a **diag** item auto-opens a pending repair request for the desk.
+Techs (and working advisors) save **draft** found-issue requests on the RO, **edit** description/notes before send, add photos, then **Send to advisor**. Pending requests show on the desk / Needs attention and fire a desk **bell** event (not a personal Messages inbox blast to every advisor). **Approve** / **Decline** / **Undo approval** are advisor-only. Approve can leave the new work item **Unassigned** or assign a tech; completing a **diag** item auto-opens a pending repair request for the desk.
 
 ```bash
 carro photo add path.jpg --id RO-… --found-issue FI-001
 ```
 
-CLI desk: `carroadviser pool` (approve / decline / undo / bill-out / assign). Pending/declined found-issue pics stay off the customer PDF until approved.
+CLI desk: `carroadviser pool` (approve / decline / undo / bill-out / assign). **Declined** findings stay on the customer PDF (text + photos) as a record; **pending/draft** found-issue pics stay off the PDF until approved or declined.
 
 ### Found-issue photos
 
