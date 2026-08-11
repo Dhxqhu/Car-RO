@@ -683,7 +683,12 @@ export function RoEditorPage() {
   }
 
   async function remove() {
-    if (!confirm(`Delete ${order.id}?`)) {
+    const items = order.work_items || [];
+    if (items.length) {
+      setErr("Remove work items individually — only an advisor can delete this RO");
+      return;
+    }
+    if (!confirm(`Delete ${order.id}? This discards the blank RO.`)) {
       return;
     }
     try {
@@ -994,10 +999,13 @@ export function RoEditorPage() {
           </Button>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="danger" onClick={() => void remove()}>
-            <Trash2 className="h-4 w-4" />
-            Delete
-          </Button>
+          {/* Techs may only discard a blank RO (no work items) — not delete live jobs. */}
+          {(order.work_items || []).length === 0 ? (
+            <Button variant="danger" onClick={() => void remove()}>
+              <Trash2 className="h-4 w-4" />
+              Delete
+            </Button>
+          ) : null}
           <Button onClick={() => void save()} disabled={saving}>
             {saving ? "Saving…" : "Save"}
           </Button>

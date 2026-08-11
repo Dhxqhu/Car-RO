@@ -405,7 +405,7 @@ Work items (not whole cars) sit in floor lanes:
 
 - **Today (daily)** — per-tech queue; advisor assigns or tech picks up
 - **In progress** — while the tech is clocked onto that item
-- **Next day** — advisor push, or tech request (advisor approves); if the tech is on the job, the move applies on **clock-out**. At midnight: next-day items become today’s daily; unfinished daily items roll into next day
+- **Next day** — advisor push, or tech request (advisor approves); if the tech is on the job, the move applies on **clock-out**. Approved next-day work stays on **that tech’s next-day queue**. At local midnight: next-day items become today’s daily (assigned → that tech’s today queue; unassigned → Needs attention). Unfinished today work stays on today — it is **not** auto-moved to next day.
 - **Long-term** — long-stay project work (advisor moves in/out)
 
 Tech **request next day** shows on every advisor’s desk bell / Needs attention (not a personal inbox message). Advisor **approve** / **decline** messages the requesting tech (decline also marks **due end of day**).
@@ -414,7 +414,7 @@ Tech **request next day** shows on every advisor’s desk bell / Needs attention
 
 ### Found issues
 
-Techs (and working advisors) save **draft** found-issue requests on the RO, **edit** description/notes before send, add photos, then **Send to advisor**. Pending requests show on the desk / Needs attention and fire a desk **bell** event (not a personal Messages inbox blast to every advisor). **Approve** / **Decline** / **Undo approval** are advisor-only. Approve can leave the new work item **Unassigned** or assign a tech; completing a **diag** item auto-opens a pending repair request for the desk.
+Techs (and working advisors) save **draft** found-issue requests on the RO, **edit** description/notes before send, add photos, then **Send to advisor**. Pending requests show on the desk / Needs attention and fire a desk **bell** event (not a personal Messages inbox blast to every advisor). **Approve** / **Decline** / **Undo approval** are advisor-only. Approve can leave the new work item **Unassigned** or assign a tech; completing a **diag** item auto-opens a **draft** repair request (tech still hits **Send to advisor** before the desk is pinged).
 
 ```bash
 carro photo add path.jpg --id RO-… --found-issue FI-001

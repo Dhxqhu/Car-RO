@@ -6,6 +6,7 @@ import {
   eventLabel,
   filterAdvisorDeskEvents,
   filterOthersEvents,
+  filterSilentEvents,
   formatEventSummary,
 } from "@/lib/notifications";
 import {
@@ -27,7 +28,7 @@ import {
 } from "@/lib/notifyPrefs";
 import { playNotifyChime, unlockNotifySound } from "@/lib/notifySound";
 import { Button } from "@/components/ui/button";
-import { cn, formatShopTime, formatStatus } from "@/lib/utils";
+import { cn, formatShopClock, formatShopTime, formatStatus } from "@/lib/utils";
 
 const SEEN_KEY = "carro.notifications.seen_id";
 const IDLE_SEEN_KEY = "carro.notifications.idle_seen";
@@ -162,7 +163,7 @@ export function TechNotifications({
       const batchMax = batch.reduce((m, e) => Math.max(m, Number(e.id) || 0), 0);
       if (batchMax > lastId.current) lastId.current = batchMax;
 
-      let scoped = filterOthersEvents(batch, self);
+      let scoped = filterSilentEvents(filterOthersEvents(batch, self));
       if (!prefs.globalNotifications) {
         scoped = filterAdvisorDeskEvents(scoped);
       }
@@ -802,7 +803,7 @@ export function TechNotifications({
                     <div className="flex justify-between gap-2 text-xs text-muted">
                       <span>{eventLabel(e.type)}</span>
                       <span className="flex shrink-0 items-center gap-1">
-                        {e.at?.slice(11, 19) || ""}
+                        {formatShopClock(e.at)}
                         <button
                           type="button"
                           className="rounded p-0.5 text-muted hover:bg-border/50 hover:text-fg"

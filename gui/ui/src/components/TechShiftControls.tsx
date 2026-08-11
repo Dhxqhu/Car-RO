@@ -18,6 +18,20 @@ function todayIso(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** Local calendar YYYY-MM-DD for a punch timestamp (handles UTC/+0000 stamps). */
+function localDayIso(iso: string | null | undefined): string {
+  const raw = (iso || "").trim();
+  if (!raw) return "";
+  const normalized = raw.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  const d = new Date(normalized);
+  if (Number.isNaN(d.getTime())) {
+    const m = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+    return m ? m[1] : "";
+  }
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 /** Day start / day end + edit own punches (admin PIN required). */
 export function TechShiftControls({ techId }: { techId?: string | null }) {
   const [shift, setShift] = useState<TechShift | null>(null);
@@ -36,12 +50,20 @@ export function TechShiftControls({ techId }: { techId?: string | null }) {
       return;
     }
     try {
+      const today = todayIso();
       const [mine, listed] = await Promise.all([
         api.shiftMine(),
-        api.listShifts({ tech_id: techId, day_from: todayIso(), day_to: todayIso(), limit: 20 }),
+        // Over-fetch recent punches; filter by local start date so UTC-stamped
+        // `day` columns from older builds cannot stick past local midnight.
+        api.listShifts({ tech_id: techId, limit: 40 }),
       ]);
       setShift(mine.shift || null);
-      setTodayShifts(listed.shifts || []);
+      setTodayShifts(
+        (listed.shifts || []).filter((s) => {
+          const localDay = localDayIso(s.started_at) || String(s.day || "");
+          return localDay === today;
+        }),
+      );
       setErr("");
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Shift unavailable");

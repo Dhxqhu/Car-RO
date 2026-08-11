@@ -45,6 +45,31 @@ def today_local() -> str:
     return date.today().isoformat()
 
 
+def local_day_for_timestamp(raw: str) -> str:
+    """
+    Shop calendar day for a punch start — always this machine's local date.
+
+    Do not use iso[:10] on UTC stamps: late-afternoon Eastern punches stored as
+    UTC can land on the next UTC date and keep showing after local midnight.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return today_local()
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        # "+0000" / "-0400" → "+00:00" / "-04:00"
+        if len(s) >= 5 and s[-5] in "+-" and s[-3] != ":":
+            s = f"{s[:-2]}:{s[-2:]}"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            # Naive timestamps are treated as local wall clock.
+            return dt.date().isoformat()
+        return dt.astimezone().date().isoformat()
+    except ValueError:
+        return today_local()
+
+
 def _normalize_iso(raw: str) -> str:
     s = (raw or "").strip()
     if not s:
@@ -147,12 +172,7 @@ def start_shift(
     if open_row:
         raise ValueError("Already on the clock — day-end first")
     at = _normalize_iso(started_at) if (started_at or "").strip() else now_iso()
-    day_s = (day or "").strip()
-    if not day_s:
-        try:
-            day_s = date.fromisoformat(at[:10]).isoformat()
-        except ValueError:
-            day_s = today_local()
+    day_s = (day or "").strip() or local_day_for_timestamp(at)
     cur = conn.execute(
         """
         INSERT INTO tech_shifts (tech_id, tech_name, day, started_at, ended_at)
@@ -256,9 +276,9 @@ def update_shift(
             if "cannot be before" in str(exc):
                 raise
             raise ValueError(str(exc)) from exc
-    day_s = (day or "").strip() or row["day"]
+    day_s = (day or "").strip()
     if not day_s:
-        day_s = start[:10]
+        day_s = local_day_for_timestamp(start)
     name = row["tech_name"]
     if tech_name is not None and str(tech_name).strip():
         name = str(tech_name).strip()

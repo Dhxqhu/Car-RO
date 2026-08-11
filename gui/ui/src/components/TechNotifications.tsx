@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Bell, X } from "lucide-react";
 import { api, type IdleNudge, type RoEvent, type ShopMessage } from "@/lib/api";
-import { eventLabel, filterOthersEvents, filterTechRelevantEvents, formatEventSummary } from "@/lib/notifications";
+import { eventLabel, filterOthersEvents, filterSilentEvents, filterTechRelevantEvents, formatEventSummary } from "@/lib/notifications";
 import type { TechNotifyScope } from "@/lib/notifications";
 import {
   eventDismissKey,
@@ -23,7 +23,7 @@ import {
 } from "@/lib/notifyPrefs";
 import { playNotifyChime, unlockNotifySound } from "@/lib/notifySound";
 import { Button } from "@/components/ui/button";
-import { cn, formatShopTime, formatStatus } from "@/lib/utils";
+import { cn, formatShopClock, formatShopTime, formatStatus } from "@/lib/utils";
 
 const SEEN_KEY = "carro.notifications.seen_id";
 const IDLE_SEEN_KEY = "carro.notifications.idle_seen";
@@ -185,7 +185,7 @@ export function TechNotifications({
       if (batchMax > lastId.current) lastId.current = batchMax;
 
       const others = filterTechRelevantEvents(
-        filterOthersEvents(batch, self),
+        filterSilentEvents(filterOthersEvents(batch, self)),
         self,
         techScope.current,
       ).filter((e) => !isDismissed(dismissed.current, eventDismissKey(e.id)));
@@ -813,7 +813,7 @@ export function TechNotifications({
                     <div className="flex justify-between gap-2 text-xs text-muted">
                       <span>{eventLabel(e.type)}</span>
                       <span className="flex shrink-0 items-center gap-1">
-                        {e.at?.slice(11, 19) || ""}
+                        {formatShopClock(e.at)}
                         <button
                           type="button"
                           className="rounded p-0.5 text-muted hover:bg-border/50 hover:text-fg"

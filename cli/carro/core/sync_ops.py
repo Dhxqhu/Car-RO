@@ -99,14 +99,11 @@ def try_push_ro(
         store.mark_synced(order.id)
         return {"ok": True, "skipped": True, "reason": "no_server"}
 
-    who = actor
-    who_id = actor_id
+    who = (actor or "").strip()
+    who_id = (actor_id or "").strip()
     if not who and not who_id:
         who, who_id = _current_actor()
-    if not who:
-        who = order.technician_name or ""
-    if not who_id:
-        who_id = order.technician_id or ""
+    # Do not use order.technician_* as actor — stamped bay tech ≠ change author.
 
     photos_changed = False
     try:
@@ -244,13 +241,12 @@ def perform_sync(
     failed = 0
     errors: list[str] = []
     for order in orders:
-        who = actor or order.technician_name or ""
-        who_id = actor_id or order.technician_id or ""
+        # Retry with session actor only — never invent attribution from stamped tech.
         result = try_push_ro(
             store,
             order,
-            actor=who,
-            actor_id=who_id,
+            actor=actor,
+            actor_id=actor_id,
         )
         if result.get("ok"):
             pushed += 1

@@ -31,14 +31,34 @@ def assign_ro(
 
 
 def clear_current_task(order: RepairOrder) -> None:
-    from carro.core.queue_lanes import apply_pending_queue_lane
-    from carro.core.work_items import stop_all_work_timers
+    from carro.core.queue_lanes import apply_pending_queue_lane, normalize_queue_lane
+    from carro.core.work_items import (
+        ensure_work_items_on_order,
+        stop_all_work_timers,
+        stop_downtime,
+        work_items_to_dicts,
+    )
 
     wid = (order.current_item_id or "").strip()
-    # Bank any running work-item timers before leaving the bay task
-    stop_all_work_timers(order)
+    # If advisor already armed next_day/long_term for this item, do not open a
+    # between-sessions downtime window on clock-out — the job is parked.
+    park_on_stop = False
+    if wid:
+        items = ensure_work_items_on_order(order)
+        target = next((w for w in items if w.id == wid), None)
+        if target:
+            pending = (getattr(target, "pending_queue_lane", "") or "").strip().lower()
+            park_on_stop = pending in ("next_day", "long_term")
+    stop_all_work_timers(order, bank_between_sessions=not park_on_stop)
     if wid:
         apply_pending_queue_lane(order, wid)
+        items = ensure_work_items_on_order(order)
+        target = next((w for w in items if w.id == wid), None)
+        if target:
+            lane = normalize_queue_lane(getattr(target, "queue_lane", None), default="daily")
+            if lane in ("next_day", "long_term"):
+                stop_downtime(target)
+                order.work_items = work_items_to_dicts(items)
     order.current_tech_id = ""
     order.current_tech_name = ""
     order.current_since = ""
@@ -315,7 +335,7 @@ def complete_work_item(
     order.work_items = work_items_to_dicts(items)
     rollup_ro_status_from_items(order)
 
-    # Diag done → pending repair request for advisor (found-issues desk flow).
+    # Diag done → draft repair request (tech Send to advisor before desk ping).
     try:
         from carro.core.found_issues import create_diag_repair_request
 

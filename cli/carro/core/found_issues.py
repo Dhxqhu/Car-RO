@@ -290,8 +290,10 @@ def create_diag_repair_request(
     actor_id: str = "",
 ) -> FoundIssue | None:
     """
-    After a diag work item is completed, open a pending repair request for the advisor desk
-    (same Approve → repair / Decline flow as found issues).
+    After a diag work item is completed, open a draft repair request.
+
+    Stays off the advisor desk / bell until the tech hits Send to advisor
+    (same batch flow as inspection found issues).
     """
     wid = str(getattr(work_item, "id", "") or "").strip()
     if not wid:
@@ -303,8 +305,8 @@ def create_diag_repair_request(
     for fi in items:
         if (fi.source_work_item_id or "").strip() != wid:
             continue
-        if fi.kind == "diag_complete" and fi.status in ("pending", "converted"):
-            return None  # already requested / approved
+        if fi.kind == "diag_complete" and fi.status in ("draft", "pending", "converted"):
+            return None  # already drafted / requested / approved
     concern = str(getattr(work_item, "concern", "") or "").strip() or f"Diag {wid}"
     notes_bits = [f"From completed diag {wid}."]
     tech_notes = str(getattr(work_item, "notes", "") or "").strip()
@@ -314,7 +316,7 @@ def create_diag_repair_request(
         id=new_found_issue_id(items),
         description=concern,
         notes="\n".join(notes_bits),
-        status="pending",
+        status="draft",
         kind="diag_complete",
         found_by=(actor or "").strip(),
         found_by_id=(actor_id or "").strip(),

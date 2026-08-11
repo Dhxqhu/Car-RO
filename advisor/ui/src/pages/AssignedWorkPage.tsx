@@ -63,6 +63,20 @@ function todayLocalIso(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** Local calendar YYYY-MM-DD for a punch timestamp (handles UTC/+0000 stamps). */
+function localDayIso(iso: string | null | undefined): string {
+  const raw = (iso || "").trim();
+  if (!raw) return "";
+  const normalized = raw.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  const d = new Date(normalized);
+  if (Number.isNaN(d.getTime())) {
+    const m = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+    return m ? m[1] : "";
+  }
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 /** ISO → value for `<input type="datetime-local">`. */
 function toLocalInput(iso: string | null | undefined): string {
   if (!iso) return "";
@@ -471,9 +485,8 @@ export function AssignedWorkPage() {
         api.assignedBoard(),
         api.advisorWhoami().catch(() => ({ advisor: null })),
         api.shiftsActive().catch(() => ({ shifts: [] as TechShift[] })),
-        api
-          .listShifts({ day_from: day, day_to: day, limit: 200 })
-          .catch(() => ({ shifts: [] as TechShift[] })),
+        // Over-fetch; filter by local start date (older UTC `day` stamps drift).
+        api.listShifts({ limit: 400 }).catch(() => ({ shifts: [] as TechShift[] })),
         api.listTechs().catch(() => ({ technicians: [] as Technician[] })),
         api
           .listParts({ include_received: false, source: "auto" })
@@ -488,7 +501,12 @@ export function AssignedWorkPage() {
       setAdvisorId(who.advisor?.id || "");
       setAdvisorName(who.advisor?.name || "");
       setActiveShifts(shifts.shifts || []);
-      setTodayShifts(dayShifts.shifts || []);
+      setTodayShifts(
+        (dayShifts.shifts || []).filter((s) => {
+          const localDay = localDayIso(s.started_at) || String(s.day || "");
+          return localDay === day;
+        }),
+      );
       setTechs(roster.technicians || []);
       setOpenParts(parts.parts || []);
     } catch (e) {
@@ -1972,8 +1990,11 @@ export function AssignedWorkPage() {
       {deskTab === "queues" ? (
         <div className="space-y-8">
         <p className="text-sm text-muted">
-          Shop-wide parking lanes: next-day rolls into daily overnight; long-term parks unassigned
-          (no tech). Use Unmark long-term to put it on today&apos;s unassigned, or Back to long-term
+          Shop-wide parking lanes: next-day rolls into today at midnight (assigned stays
+          with that tech; unassigned returns to Needs attention). Today&apos;s unfinished
+          work stays on today — it is not auto-moved to next day. Long-term parks
+          unassigned (no tech). Use Unmark long-term to put it on today&apos;s unassigned,
+          or Back to long-term
           to park it again. Assign a tech when you plan to work it.
         </p>
 

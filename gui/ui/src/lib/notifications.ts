@@ -130,7 +130,6 @@ export function filterTechRelevantEvents(
 
 /** Advisor desk-ops allowlist when global notifications are off. */
 export const ADVISOR_DESK_EVENT_TYPES = new Set([
-  "ro_created",
   "item_added",
   "item_assigned",
   "ro_assigned",
@@ -160,8 +159,17 @@ export const ADVISOR_DESK_EVENT_TYPES = new Set([
   "shop_message",
 ]);
 
+/** Event types that are logged for audit but never shown in the bell. */
+export const SILENT_EVENT_TYPES = new Set(["ro_created"]);
+
 export function filterAdvisorDeskEvents(events: RoEvent[]): RoEvent[] {
-  return events.filter((e) => ADVISOR_DESK_EVENT_TYPES.has(e.type));
+  return events.filter(
+    (e) => ADVISOR_DESK_EVENT_TYPES.has(e.type) && !SILENT_EVENT_TYPES.has(e.type),
+  );
+}
+
+export function filterSilentEvents(events: RoEvent[]): RoEvent[] {
+  return events.filter((e) => !SILENT_EVENT_TYPES.has(e.type));
 }
 
 export function eventLabel(type: string): string {

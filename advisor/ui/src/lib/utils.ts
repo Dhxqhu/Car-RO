@@ -123,14 +123,42 @@ export function formatWorkedHours(minutes: number | undefined | null): string {
   return `${(m / 60).toFixed(2)}h`;
 }
 
+/** Parse shop ISO (naive local, or UTC/offset) into a Date when possible. */
+function parseShopDate(iso: string): Date | null {
+  let s = iso.trim();
+  if (!s) return null;
+  // "+0000" / "-0400" → "+00:00" / "-04:00" for reliable Date parsing
+  s = s.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
 /** Short shop-only timestamp for efficiency (never on customer PDF). */
 export function formatShopTime(iso: string | undefined | null): string {
   const raw = (iso || "").trim();
   if (!raw) return "";
+  // Timezone-aware stamps (e.g. server event UTC) → this PC's local wall clock
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)) {
+    const d = parseShopDate(raw);
+    if (d) {
+      return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    }
+  }
   // Prefer local-ish display from ISO without pulling in a date lib
   const m = raw.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
   if (m) return `${m[1]} ${m[2]}`;
   return raw.slice(0, 16);
+}
+
+/** Compact HH:MM for notification rows. */
+export function formatShopClock(iso: string | undefined | null): string {
+  const full = formatShopTime(iso);
+  const m = full.match(/\b(\d{2}:\d{2})(?:\b|$)/);
+  return m ? m[1] : full;
 }
 
 /**

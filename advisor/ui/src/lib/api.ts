@@ -856,7 +856,11 @@ export const api = {
     }>(`/ros/extended-search?${params.toString()}`);
   },
   getRo: (id: string) => req<RepairOrder>(`/ros/${encodeURIComponent(id)}`),
-  createRo: () => req<RepairOrder>("/ros", { method: "POST", body: "{}" }),
+  createRo: () =>
+    req<RepairOrder>("/ros", {
+      method: "POST",
+      body: JSON.stringify({ prefer_actor: "advisor" }),
+    }),
   saveRo: (order: RepairOrder) =>
     req<RepairOrder>(`/ros/${encodeURIComponent(order.id)}`, {
       method: "PUT",
@@ -977,7 +981,7 @@ export const api = {
   historyNewFrom: (priorId: string) =>
     req<RepairOrder>("/history/new-from", {
       method: "POST",
-      body: JSON.stringify({ prior_id: priorId }),
+      body: JSON.stringify({ prior_id: priorId, prefer_actor: "advisor" }),
     }),
   sync: () =>
     req<{

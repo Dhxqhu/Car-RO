@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 
@@ -32,7 +32,9 @@ def ensure_events_table(conn: sqlite3.Connection) -> None:
 
 
 def now_iso() -> str:
-    return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z")
+    # Match shop RO timestamps (local wall clock), not UTC — bell display
+    # used to look ~4h ahead in US Eastern when this was timezone.utc.
+    return datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
 def append_event(
@@ -616,19 +618,62 @@ def diff_ro_events(
                 }
             )
 
-    b_photos = len((before or {}).get("photos") or []) if before else 0
-    a_photos = len(after.get("photos") or [])
+    b_photos_raw = ((before or {}).get("photos") or []) if before else []
+    a_photos_raw = after.get("photos") or []
+    b_photos = len(b_photos_raw) if isinstance(b_photos_raw, list) else 0
+    a_photos = len(a_photos_raw) if isinstance(a_photos_raw, list) else 0
     if a_photos > b_photos:
-        events.append(
-            {
-                "type": "photo_added",
-                "ro_id": ro_id,
-                "item_id": "",
-                "actor": actor,
-                "at": at,
-                "summary": f"{a_photos - b_photos} photo(s)",
-            }
-        )
+
+        def _photo_key(p: object) -> str:
+            if not isinstance(p, dict):
+                return ""
+            return str(
+                p.get("id") or p.get("relpath") or p.get("filename") or ""
+            ).strip()
+
+        before_keys = {
+            _photo_key(p)
+            for p in (b_photos_raw if isinstance(b_photos_raw, list) else [])
+            if _photo_key(p)
+        }
+        new_photos = [
+            p
+            for p in (a_photos_raw if isinstance(a_photos_raw, list) else [])
+            if isinstance(p, dict) and _photo_key(p) and _photo_key(p) not in before_keys
+        ]
+        if not new_photos:
+            # Count grew but keys unknown — treat trailing rows as new.
+            new_photos = [
+                p
+                for p in (a_photos_raw if isinstance(a_photos_raw, list) else [])[
+                    b_photos:
+                ]
+                if isinstance(p, dict)
+            ]
+        draft_fi_ids = {
+            fid
+            for fid, fi in a_fi.items()
+            if str(fi.get("status") or "").strip().lower() == "draft"
+        }
+
+        def _linked_to_draft(p: dict[str, Any]) -> bool:
+            fi_id = str(p.get("found_issue_id") or "").strip()
+            return bool(fi_id and fi_id in draft_fi_ids)
+
+        # Draft found-issue pics stay quiet until the tech hits Send to advisor.
+        if new_photos and all(_linked_to_draft(p) for p in new_photos):
+            pass
+        else:
+            events.append(
+                {
+                    "type": "photo_added",
+                    "ro_id": ro_id,
+                    "item_id": "",
+                    "actor": actor,
+                    "at": at,
+                    "summary": f"{a_photos - b_photos} photo(s)",
+                }
+            )
     return events
 
 

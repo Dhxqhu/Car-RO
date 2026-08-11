@@ -577,11 +577,10 @@ def put_ro(ro_id: str, body: dict, _: None = Depends(require_auth)):
     updated = str(body.get("updated") or "")
     actor = str(
         body.get("_actor")
-        or body.get("technician_name")
         or body.get("updated_by")
         or ""
     )
-    actor_id = str(body.get("_actor_id") or body.get("technician_id") or "")
+    actor_id = str(body.get("_actor_id") or "")
     strip_keys = {"_actor", "_actor_id"}
     payload = json.dumps({k: v for k, v in body.items() if k not in strip_keys})
     with _db() as conn:

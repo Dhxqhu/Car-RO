@@ -155,6 +155,12 @@ class HistoryPackBody(BaseModel):
 
 class HistoryNewFromBody(BaseModel):
     prior_id: str
+    # Which session to attribute when both tech + advisor are logged into a shared engine.
+    prefer_actor: Literal["advisor", "tech"] = "advisor"
+
+
+class CreateRoBody(BaseModel):
+    prefer_actor: Literal["advisor", "tech"] = "advisor"
 
 
 class PhoneUploadBody(BaseModel):
@@ -209,11 +215,13 @@ def _push_ro(
             who, who_id = tech.name, tech.id
         elif adv:
             who, who_id = adv.name, adv.id
+    # Never fall back to order.technician_* — that is the stamped bay tech,
+    # not who made this change (advisor create would look like the tech).
     return try_push_ro(
         store,
         order,
-        actor=who or order.technician_name or "",
-        actor_id=who_id or order.technician_id or "",
+        actor=who,
+        actor_id=who_id,
     )
 
 
@@ -1731,14 +1739,17 @@ def extended_search(
 
 
 @app.post("/ros")
-def create_ro() -> dict[str, Any]:
+def create_ro(body: CreateRoBody | None = None) -> dict[str, Any]:
     order = store.create()
     tech = techmod.current_technician()
     if tech:
         order.technician_id = tech.id
         order.technician_name = tech.name
         store.save(order)
-    _push_ro(order)
+    # Prefer the calling app's role when both sessions exist on a shared engine.
+    prefer = (body.prefer_actor if body else "advisor") or "advisor"
+    who, who_id = _actor_from(tech, advmod.current_advisor(), prefer=prefer)
+    _push_ro(order, actor=who, actor_id=who_id)
     return order.to_dict()
 
 
@@ -1940,7 +1951,7 @@ def assigned_board() -> dict[str, Any]:
             source = "local+server"
         except Exception:
             source = "local"
-    # Midnight lane rollover on local copies we can save
+    # Local midnight: next_day → today (do not auto-park unfinished daily).
     local_ids = {o.id for o in store.list_orders()}
     changed = rollover_all_orders(
         [o for o in by_id.values() if o.id in local_ids]
@@ -3217,18 +3228,16 @@ def work_item_time_route(ro_id: str, item_id: str, body: WorkItemTimeBody) -> di
                 also_assign=True,
             )
         elif body.action == "stop":
-            stop_work_timer(order, item_id)
             if (order.current_item_id or "") == item_id and matches_tech(
                 order.current_tech_id,
                 order.current_tech_name,
                 me_id=tech.id,
                 me_name=tech.name,
             ):
-                # clear_current would double-stop; already stopped this item
-                order.current_tech_id = ""
-                order.current_tech_name = ""
-                order.current_since = ""
-                order.current_item_id = ""
+                # Apply pending next_day/long_term and stop downtime when parked.
+                clear_current_task(order)
+            else:
+                stop_work_timer(order, item_id)
         elif body.action == "checkpoint":
             checkpoint_work_timer(
                 order,
@@ -3342,6 +3351,17 @@ def delete_ro(ro_id: str) -> dict[str, Any]:
     order = store.get(ro_id)
     if not order:
         raise HTTPException(404, "RO not found")
+    # Advisors may delete any RO. Techs may only discard a blank new RO
+    # (no work items) so they don't wipe live jobs by accident.
+    advisor = advmod.current_advisor()
+    if not advisor:
+        items = order.work_items if isinstance(order.work_items, list) else []
+        if items:
+            raise HTTPException(
+                403,
+                "Only an advisor can delete an RO that has work items — "
+                "remove items individually instead",
+            )
     remote = RemoteClient()
     # Queue remote delete if server is down so it is not resurrected later.
     if not store.delete(ro_id, queue_remote=remote.enabled):
@@ -3781,7 +3801,10 @@ def history_new_from(body: HistoryNewFromBody) -> dict[str, Any]:
         order.technician_id = tech.id
         order.technician_name = tech.name
         store.save(order)
-    push = _push_ro(order)
+    who, who_id = _actor_from(
+        tech, advmod.current_advisor(), prefer=body.prefer_actor or "advisor"
+    )
+    push = _push_ro(order, actor=who, actor_id=who_id)
     out = order.to_dict()
     if isinstance(push, dict) and push.get("ok") is False:
         offline_note = (

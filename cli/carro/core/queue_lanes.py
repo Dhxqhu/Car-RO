@@ -74,6 +74,8 @@ def set_queue_lane(
     clear_pending: bool = True,
     set_day: bool = True,
 ) -> None:
+    from carro.core.work_items import stop_downtime
+
     lane_n = normalize_queue_lane(lane)
     item.queue_lane = lane_n
     if clear_pending:
@@ -82,6 +84,8 @@ def set_queue_lane(
         item.queue_day = today_local_iso()
     if lane_n in ("long_term", "next_day"):
         item.due_eod = False
+        # Parked until later — do not leave between-session downtime running overnight.
+        stop_downtime(item)
     if lane_n == "long_term":
         item.assigned_to_id = ""
         item.assigned_to_name = ""
@@ -108,11 +112,24 @@ def apply_pending_queue_lane(order: RepairOrder, item_id: str) -> bool:
     pending = (target.pending_queue_lane or "").strip().lower()
     if pending not in QUEUE_LANES:
         return False
-    set_queue_lane(target, pending, clear_pending=True, set_day=True)
+    # Preserve assignee across next_day park (tech's next-day queue).
+    keep_id = (target.assigned_to_id or "").strip()
+    keep_name = (target.assigned_to_name or "").strip()
+    keep_at = (target.assigned_at or "").strip()
     req = normalize_next_day_request(target.next_day_request)
-    if pending == "next_day" and req.get("status") == "approved":
-        # Keep approved status for trail; clear pending arm already done
-        pass
+    if pending == "next_day":
+        req_id = str(req.get("by_id") or "").strip()
+        req_name = str(req.get("by") or "").strip()
+        if req_id or req_name:
+            keep_id = req_id or keep_id
+            keep_name = req_name or keep_name
+            if not keep_at:
+                keep_at = now_iso()
+    set_queue_lane(target, pending, clear_pending=True, set_day=True)
+    if pending == "next_day" and (keep_id or keep_name):
+        target.assigned_to_id = keep_id
+        target.assigned_to_name = keep_name
+        target.assigned_at = keep_at or now_iso()
     order.work_items = work_items_to_dicts(items)
     return True
 
@@ -128,6 +145,9 @@ def advisor_set_queue_lane(
     Advisor push to a lane. If the item is currently being worked, arm
     pending_queue_lane and apply on clock-out; otherwise apply immediately.
 
+    Approving a pending next-day request assigns/keeps the job on the requesting
+    tech so it lands in their next-day queue (not yanked back to daily).
+
     Long-term always parks unassigned (clears assignee + due_eod via set_queue_lane).
     """
     lane_n = normalize_queue_lane(lane)
@@ -136,11 +156,20 @@ def advisor_set_queue_lane(
     if not target:
         raise ValueError(f"Work item not found: {item_id}")
     ensure_queue_defaults(target)
-    if approve_request or lane_n == "next_day":
-        req = normalize_next_day_request(target.next_day_request)
-        if req.get("status") == "pending" or approve_request:
-            req["status"] = "approved"
-            target.next_day_request = req
+    req = normalize_next_day_request(target.next_day_request)
+    was_pending = req.get("status") == "pending"
+    if was_pending or (approve_request and lane_n == "next_day"):
+        req["status"] = "approved"
+        target.next_day_request = req
+    # Pending ask approved → requesting tech owns the next-day queue slot.
+    if lane_n == "next_day" and was_pending:
+        req_id = str(req.get("by_id") or "").strip()
+        req_name = str(req.get("by") or "").strip()
+        if req_id or req_name:
+            target.assigned_to_id = req_id or (target.assigned_to_id or "")
+            target.assigned_to_name = req_name or (target.assigned_to_name or "")
+            if not (target.assigned_at or "").strip():
+                target.assigned_at = now_iso()
     if item_is_current(order, item_id):
         target.pending_queue_lane = lane_n
         if lane_n in ("long_term", "next_day"):
@@ -151,7 +180,15 @@ def advisor_set_queue_lane(
             target.assigned_at = ""
         target.updated = now_iso()
     else:
+        keep_id = (target.assigned_to_id or "").strip()
+        keep_name = (target.assigned_to_name or "").strip()
+        keep_at = (target.assigned_at or "").strip()
         set_queue_lane(target, lane_n, clear_pending=True, set_day=True)
+        # set_queue_lane only clears assignee for long_term; restore next_day tech.
+        if lane_n == "next_day" and (keep_id or keep_name):
+            target.assigned_to_id = keep_id
+            target.assigned_to_name = keep_name
+            target.assigned_at = keep_at or now_iso()
     order.work_items = work_items_to_dicts(items)
 
 
@@ -230,17 +267,17 @@ def ensure_daily_on_assign(item: Any) -> None:
 
 def rollover_queue_lanes(order: RepairOrder, *, today: str | None = None) -> int:
     """
-    Calendar-day rollover (promote before defer so they don't swap):
+    Calendar-day rollover at local midnight:
 
-    1. next_day + queue_day < today → daily (next-day pool becomes today's tasks)
-    2. daily + queue_day < today + not current → next_day (left undone overnight)
+    1. next_day + queue_day < today → daily
+       - Assigned items land in that tech's today queue
+       - Unassigned items land in Needs attention / unassigned for advisor reassignment
+    2. Today's daily items are left alone (do not auto-park unfinished work into next_day)
 
     Long-term and in-progress (current) items are untouched.
-    Clears due_eod when daily work rolls overnight to next_day.
     """
     today_s = (today or today_local_iso()).strip()
     items = ensure_work_items_on_order(order)
-    cur = (order.current_item_id or "").strip()
     changed = 0
 
     for w in items:
@@ -250,19 +287,9 @@ def rollover_queue_lanes(order: RepairOrder, *, today: str | None = None) -> int
             continue
         qd = (w.queue_day or "").strip() or today_s
         if qd < today_s:
-            set_queue_lane(w, "daily", clear_pending=False, set_day=True)
-            changed += 1
-
-    for w in items:
-        ensure_queue_defaults(w)
-        st = (w.status or "").strip().lower()
-        if st in ("done", "declined") or w.queue_lane != "daily":
-            continue
-        if w.id == cur:
-            continue
-        qd = (w.queue_day or "").strip() or today_s
-        if qd < today_s:
-            set_queue_lane(w, "next_day", clear_pending=False, set_day=True)
+            # Promote to today; keep assignee so tech next-day → tech today.
+            # Unassigned next-day becomes unassigned daily (Needs attention).
+            set_queue_lane(w, "daily", clear_pending=True, set_day=True)
             changed += 1
 
     if changed:

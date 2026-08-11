@@ -74,9 +74,10 @@ class RemoteClient:
         actor_id: str | None = None,
     ) -> dict[str, Any]:
         payload = order.to_dict()
-        # Who made this change (for notifications — other clients exclude self)
-        who = (actor if actor is not None else order.technician_name) or ""
-        who_id = (actor_id if actor_id is not None else order.technician_id) or ""
+        # Who made this change (for notifications — other clients exclude self).
+        # Empty actor is fine; never substitute stamped technician_* fields.
+        who = (actor or "").strip() if actor is not None else ""
+        who_id = (actor_id or "").strip() if actor_id is not None else ""
         if who:
             payload["_actor"] = who
         if who_id:
