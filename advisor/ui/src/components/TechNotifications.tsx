@@ -92,10 +92,11 @@ export function TechNotifications({
 
   // Auto-close the panel after idle. Do not reset on pointermove — poll re-renders
   // under the cursor can keep firing move events and the menu never hides.
-  const PANEL_IDLE_MS = 10_000;
+  const PANEL_IDLE_MS = 5_000;
   const idleTimer = useRef<number | null>(null);
   const openRef = useRef(open);
   openRef.current = open;
+  const rootRef = useRef<HTMLDivElement | null>(null);
 
   const clearIdleClose = useCallback(() => {
     if (idleTimer.current != null) {
@@ -121,6 +122,20 @@ export function TechNotifications({
     bumpIdleClose();
     return clearIdleClose;
   }, [open, bumpIdleClose, clearIdleClose]);
+
+  // Click / tap outside the bell + panel closes it (overlay alone fails under sticky header stacking).
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const root = rootRef.current;
+      if (!root) return;
+      const t = e.target;
+      if (t instanceof Node && root.contains(t)) return;
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [open]);
 
   const rememberDismiss = useCallback((key: string | null) => {
     if (!key) return;
@@ -602,7 +617,7 @@ export function TechNotifications({
   const empty = events.length === 0 && idle.length === 0 && recentMsgs.length === 0;
 
   return (
-    <div className="relative">
+    <div className="relative" ref={rootRef}>
       <Button
         type="button"
         variant="ghost"
@@ -623,13 +638,6 @@ export function TechNotifications({
         ) : null}
       </Button>
       {open ? (
-        <>
-          <button
-            type="button"
-            className="fixed inset-0 z-30 cursor-default"
-            aria-label="Close notifications"
-            onClick={() => setOpen(false)}
-          />
           <div
             className={cn(
               "absolute right-0 z-40 mt-2 w-80 max-w-[min(20rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-surface shadow-lg",
@@ -855,7 +863,6 @@ export function TechNotifications({
               </ul>
             )}
           </div>
-        </>
       ) : null}
     </div>
   );

@@ -448,6 +448,7 @@ export type TechShift = {
   day: string;
   started_at: string;
   ended_at?: string | null;
+  pending_sync?: boolean;
 };
 
 export type WeeklyTechDay = {
@@ -900,8 +901,17 @@ export const api = {
   syncStatus: () =>
     req<{
       ok: boolean;
-      pending?: { pending_total?: number };
+      pending?: {
+        pending_total?: number;
+        pending_ros?: number;
+        pending_deletes?: number;
+        pending_shifts?: number;
+        pending_messages?: number;
+      };
       server_configured?: boolean;
+      server_reachable?: boolean;
+      offline?: boolean;
+      connectivity_error?: string | null;
     }>("/sync/status"),
   upsertWorkItem: (
     roId: string,

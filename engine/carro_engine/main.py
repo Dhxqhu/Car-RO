@@ -499,16 +499,12 @@ def get_messages(
     as_role: str | None = None,
     x_carro_as_role: str | None = Header(default=None, alias="X-Carro-As-Role"),
 ) -> dict[str, Any]:
-    remote = _require_remote_for_messages()
+    from carro.core import message_offline as msg_off
+
+    _require_remote_for_messages()
     prefer = _messaging_prefer_from_request(as_role, x_carro_as_role)
     me_id, _, _ = _messaging_actor(prefer=prefer)
-    try:
-        return remote.list_messages(for_id=me_id, unread=unread, limit=limit)
-    except Exception as exc:
-        raise HTTPException(
-            502,
-            f"Messages unavailable on server ({exc}). Update carro-server for shop messaging.",
-        ) from exc
+    return msg_off.list_inbox(store, me_id=me_id, unread=unread, limit=limit)
 
 
 @app.get("/messages/sent")
@@ -517,13 +513,12 @@ def get_sent_messages(
     as_role: str | None = None,
     x_carro_as_role: str | None = Header(default=None, alias="X-Carro-As-Role"),
 ) -> dict[str, Any]:
-    remote = _require_remote_for_messages()
+    from carro.core import message_offline as msg_off
+
+    _require_remote_for_messages()
     prefer = _messaging_prefer_from_request(as_role, x_carro_as_role)
     me_id, _, _ = _messaging_actor(prefer=prefer)
-    try:
-        return remote.list_sent_messages(from_id=me_id, limit=limit)
-    except Exception as exc:
-        raise HTTPException(502, f"Messages unavailable on server ({exc})") from exc
+    return msg_off.list_sent(store, me_id=me_id, limit=limit)
 
 
 @app.get("/messages/thread")
@@ -534,17 +529,17 @@ def get_message_thread(
     x_carro_as_role: str | None = Header(default=None, alias="X-Carro-As-Role"),
 ) -> dict[str, Any]:
     """Chronological conversation between me and with_id (inbox + sent merged)."""
-    remote = _require_remote_for_messages()
+    from carro.core import message_offline as msg_off
+
+    _require_remote_for_messages()
     prefer = _messaging_prefer_from_request(as_role, x_carro_as_role)
     me_id, me_name, me_role = _messaging_actor(prefer=prefer)
     other = (with_id or "").strip()
     if not other:
         raise HTTPException(400, "with_id required")
-    try:
-        inbox = remote.list_messages(for_id=me_id, unread=False, limit=max(limit, 100))
-        sent = remote.list_sent_messages(from_id=me_id, limit=max(limit, 100))
-    except Exception as exc:
-        raise HTTPException(502, f"Messages unavailable on server ({exc})") from exc
+    inbox = msg_off.list_inbox(store, me_id=me_id, unread=False, limit=max(limit, 100))
+    sent = msg_off.list_sent(store, me_id=me_id, limit=max(limit, 100))
+    offline = bool(inbox.get("offline") or sent.get("offline"))
     rows: list[dict[str, Any]] = []
     for m in list(inbox.get("messages") or []) + list(sent.get("messages") or []):
         if not isinstance(m, dict):
@@ -554,22 +549,27 @@ def get_message_thread(
         if (a == me_id and b == other) or (a == other and b == me_id):
             rows.append(m)
     # de-dupe by id, oldest first
-    by_id: dict[int, dict[str, Any]] = {}
+    by_id: dict[str, dict[str, Any]] = {}
     for m in rows:
-        try:
-            mid = int(m.get("id") or 0)
-        except (TypeError, ValueError):
-            continue
-        if mid:
-            by_id[mid] = m
+        mid = m.get("id")
+        key = str(m.get("client_id") or mid or "")
+        if key:
+            by_id[key] = m
     messages = sorted(by_id.values(), key=lambda m: str(m.get("at") or ""))
     if len(messages) > limit:
         messages = messages[-limit:]
-    return {
+    out: dict[str, Any] = {
         "messages": messages,
         "me": {"id": me_id, "name": me_name, "role": me_role},
         "with_id": other,
+        "offline": offline,
     }
+    if offline:
+        out["note"] = (
+            "Shop server unreachable — showing cached / queued messages. "
+            "Updates sync on reconnect."
+        )
+    return out
 
 
 @app.post("/messages")
@@ -578,7 +578,9 @@ def post_message(
     as_role: str | None = None,
     x_carro_as_role: str | None = Header(default=None, alias="X-Carro-As-Role"),
 ) -> dict[str, Any]:
-    remote = _require_remote_for_messages()
+    from carro.core import message_offline as msg_off
+
+    _require_remote_for_messages()
     prefer = _messaging_prefer_from_request(as_role, x_carro_as_role)
     from_id, from_name, from_role = _messaging_actor(prefer=prefer)
     to_id = body.to_id.strip()
@@ -597,9 +599,9 @@ def post_message(
         "reply_to": body.reply_to,
     }
     try:
-        return remote.send_message(payload)
-    except Exception as exc:
-        raise HTTPException(502, f"Could not send message: {exc}") from exc
+        return msg_off.send_message(store, payload)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/messages/{message_id}/read")
@@ -609,16 +611,18 @@ def post_message_read(
     as_role: str | None = None,
     x_carro_as_role: str | None = Header(default=None, alias="X-Carro-As-Role"),
 ) -> dict[str, Any]:
-    remote = _require_remote_for_messages()
+    from carro.core import message_offline as msg_off
+
+    _require_remote_for_messages()
     prefer = _messaging_prefer_from_request(as_role, x_carro_as_role)
     me_id, _, _ = _messaging_actor(prefer=prefer)
     for_id = (body.for_id if body else "") or me_id
     if for_id != me_id:
         raise HTTPException(403, "Can only mark your own inbox messages as read")
     try:
-        return remote.mark_message_read(message_id, for_id=me_id)
-    except Exception as exc:
-        raise HTTPException(502, f"Could not mark read: {exc}") from exc
+        return msg_off.mark_read(store, message_id, for_id=me_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/messages/delivered")
@@ -628,20 +632,13 @@ def post_messages_delivered(
     x_carro_as_role: str | None = Header(default=None, alias="X-Carro-As-Role"),
 ) -> dict[str, Any]:
     """Ack that inbox messages reached this bay (batch)."""
-    remote = _require_remote_for_messages()
+    from carro.core import message_offline as msg_off
+
+    _require_remote_for_messages()
     prefer = _messaging_prefer_from_request(as_role, x_carro_as_role)
     me_id, _, _ = _messaging_actor(prefer=prefer)
     ids = [int(x) for x in (body.ids or []) if int(x) > 0]
-    if not ids:
-        return {"ok": True, "messages": [], "count": 0}
-    try:
-        return remote.mark_messages_delivered(ids, for_id=me_id)
-    except Exception as exc:
-        # Older shop servers may lack /messages/delivered — treat as optional ack.
-        detail = str(exc)
-        if "404" in detail or "Not Found" in detail:
-            return {"ok": True, "messages": [], "count": 0, "note": "delivered ack unsupported"}
-        raise HTTPException(502, f"Could not mark delivered: {exc}") from exc
+    return msg_off.mark_delivered(store, ids, for_id=me_id)
 
 
 @app.post("/messages/{message_id}/renotify")
@@ -658,43 +655,33 @@ def post_message_renotify(
     except RuntimeError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(502, f"Could not renotify: {exc}") from exc
-
-
-def _require_remote_for_shifts() -> RemoteClient:
-    remote = RemoteClient()
-    if not remote.enabled:
         raise HTTPException(
-            503,
-            "Day start/end needs shop server_url (presence is shared across bay PCs).",
-        )
-    return remote
+            502,
+            f"Could not renotify (will retry when online): {exc}",
+        ) from exc
 
 
 @app.get("/shifts/active")
 def engine_shifts_active() -> dict[str, Any]:
-    remote = _require_remote_for_shifts()
-    try:
-        return remote.list_active_shifts()
-    except Exception as exc:
-        raise HTTPException(502, f"Shifts unavailable: {exc}") from exc
+    from carro.core import shift_offline as shift_off
+
+    return shift_off.list_active_merged(store)
 
 
 @app.get("/shifts/mine")
 def engine_shift_mine() -> dict[str, Any]:
-    remote = _require_remote_for_shifts()
+    from carro.core import shift_offline as shift_off
+
     tech = techmod.current_technician()
     if not tech:
         raise HTTPException(401, "Log in as a technician")
-    try:
-        return remote.get_open_shift(tech.id)
-    except Exception as exc:
-        raise HTTPException(502, f"Shifts unavailable: {exc}") from exc
+    return shift_off.get_open_shift(store, tech.id)
 
 
 @app.post("/shifts/start")
 def engine_shift_start(body: ShiftStartBody | None = None) -> dict[str, Any]:
-    remote = _require_remote_for_shifts()
+    from carro.core import shift_offline as shift_off
+
     body = body or ShiftStartBody()
     advisor = advmod.current_advisor()
     tech = techmod.current_technician()
@@ -712,22 +699,23 @@ def engine_shift_start(body: ShiftStartBody | None = None) -> dict[str, Any]:
     if not tech_id:
         raise HTTPException(400, "tech_id required")
     try:
-        out = remote.start_shift(
+        return shift_off.start_shift(
+            store,
             tech_id=tech_id,
             tech_name=tech_name,
             started_at=started_at,
             day=day,
         )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(400, str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(502, f"Could not day-start: {exc}") from exc
-    return out
 
 
 @app.post("/shifts/end")
 def engine_shift_end(body: ShiftEndBody | None = None) -> dict[str, Any]:
-    remote = _require_remote_for_shifts()
+    from carro.core import shift_offline as shift_off
+
     body = body or ShiftEndBody()
     advisor = advmod.current_advisor()
     tech = techmod.current_technician()
@@ -741,14 +729,13 @@ def engine_shift_end(body: ShiftEndBody | None = None) -> dict[str, Any]:
     else:
         raise HTTPException(401, "Log in as a technician or advisor")
     try:
-        out = remote.end_shift(
-            tech_id=tech_id, shift_id=shift_id, ended_at=ended_at
+        return shift_off.end_shift(
+            store, tech_id=tech_id, shift_id=shift_id, ended_at=ended_at
         )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(400, str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(502, f"Could not day-end: {exc}") from exc
-    return out
 
 
 @app.get("/shifts")
@@ -758,37 +745,47 @@ def engine_list_shifts(
     day_to: str = "",
     limit: int = 200,
 ) -> dict[str, Any]:
-    remote = _require_remote_for_shifts()
+    from carro.core import shift_offline as shift_off
+
     if not advmod.current_advisor() and not techmod.current_technician():
         raise HTTPException(401, "Login required")
-    try:
-        return remote.list_shifts(
-            tech_id=tech_id, day_from=day_from, day_to=day_to, limit=limit
-        )
-    except Exception as exc:
-        raise HTTPException(502, f"Shifts unavailable: {exc}") from exc
+    return shift_off.list_shifts_merged(
+        store,
+        tech_id=tech_id,
+        day_from=day_from,
+        day_to=day_to,
+        limit=limit,
+    )
 
 
 @app.patch("/shifts/{shift_id}")
 def engine_patch_shift(
     shift_id: int, body: ShiftPatchBody | None = None
 ) -> dict[str, Any]:
-    remote = _require_remote_for_shifts()
+    from carro.core import shift_offline as shift_off
+    from carro.storage.remote import RemoteClient
+
     body = body or ShiftPatchBody()
     advisor = advmod.current_advisor()
     tech = techmod.current_technician()
     if not advisor and not tech:
         raise HTTPException(401, "Log in as a technician or advisor")
 
-    # Resolve the punch so techs can only edit their own
-    try:
-        listed = remote.list_shifts(limit=2000).get("shifts") or []
-    except Exception as exc:
-        raise HTTPException(502, f"Shifts unavailable: {exc}") from exc
-    target = next(
-        (s for s in listed if int(s.get("id") or 0) == int(shift_id)),
-        None,
-    )
+    target = shift_off.resolve_shift(store, int(shift_id))
+    if not target:
+        # Try refresh from remote list once
+        remote = RemoteClient()
+        if remote.enabled:
+            try:
+                listed = remote.list_shifts(limit=2000).get("shifts") or []
+                hit = next(
+                    (s for s in listed if int(s.get("id") or 0) == int(shift_id)),
+                    None,
+                )
+                if isinstance(hit, dict):
+                    target = shift_off.upsert_from_remote(store, hit)
+            except Exception:
+                target = None
     if not target:
         raise HTTPException(404, "Punch not found")
 
@@ -804,32 +801,60 @@ def engine_patch_shift(
         edited_by = f"{tech.name} (admin PIN)"
 
     try:
-        return remote.update_shift(
-            shift_id,
+        local = shift_off.patch_shift_local(
+            store,
+            int(shift_id),
             started_at=body.started_at,
             ended_at=body.ended_at,
-            clear_end=body.clear_end,
+            clear_end=bool(body.clear_end),
             day=body.day,
-            edited_by=edited_by,
         )
-    except RuntimeError as exc:
+    except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(502, f"Could not edit shift: {exc}") from exc
+
+    remote = RemoteClient()
+    server_id = local.get("server_id")
+    if remote.enabled and server_id:
+        try:
+            out = remote.update_shift(
+                int(server_id),
+                started_at=body.started_at,
+                ended_at=body.ended_at,
+                clear_end=bool(body.clear_end),
+                day=body.day,
+                edited_by=edited_by,
+            )
+            shift = out.get("shift") if isinstance(out, dict) else None
+            if isinstance(shift, dict):
+                synced = shift_off.upsert_from_remote(store, shift)
+                return {"ok": True, "shift": synced, "synced": True}
+        except RuntimeError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except Exception:
+            return {"ok": True, "shift": local, "synced": False, "pending": True}
+    return {"ok": True, "shift": local, "synced": False}
 
 
 @app.delete("/shifts/{shift_id}")
 def engine_delete_shift(shift_id: int) -> dict[str, Any]:
-    remote = _require_remote_for_shifts()
+    from carro.core import shift_offline as shift_off
+    from carro.storage.remote import RemoteClient
+
     if not advmod.current_advisor():
         raise HTTPException(401, "Only an advisor can delete punches")
     try:
-        return remote.delete_shift(shift_id)
-    except RuntimeError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(502, f"Could not delete shift: {exc}") from exc
-
+        out = shift_off.delete_shift_local(store, int(shift_id))
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    remote = RemoteClient()
+    if remote.enabled and int(shift_id) > 0:
+        try:
+            return remote.delete_shift(int(shift_id))
+        except RuntimeError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except Exception:
+            return {**out, "synced": False, "pending": True}
+    return out
 
 @app.get("/reports/weekly")
 def engine_weekly_report(week_start: str = "") -> dict[str, Any]:
@@ -3855,11 +3880,18 @@ def sync() -> dict[str, Any]:
 @app.get("/sync/status")
 def sync_status_route() -> dict[str, Any]:
     """How many local edits are waiting to reach the shop server."""
+    from carro.core.connectivity import server_connectivity
+
+    conn = server_connectivity()
+    pending = store.sync_status()
     return {
         "ok": True,
         "autosync": autosync_status(),
-        "pending": store.sync_status(),
-        "server_configured": RemoteClient().enabled,
+        "pending": pending,
+        "server_configured": bool(conn.get("configured")),
+        "server_reachable": bool(conn.get("reachable")),
+        "offline": bool(conn.get("offline")),
+        "connectivity_error": conn.get("error"),
     }
 
 

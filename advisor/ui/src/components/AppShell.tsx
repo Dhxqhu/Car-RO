@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { NewRoDialog } from "@/components/NewRoDialog";
+import { OfflineBanner } from "@/components/OfflineBanner";
 import { TechNotifications } from "@/components/TechNotifications";
 import { useTheme } from "@/hooks/useTheme";
 import { api } from "@/lib/api";
@@ -180,6 +181,7 @@ export function AppShell({
           </div>
         ) : null}
       </header>
+      <OfflineBanner />
       <main className="mx-auto max-w-6xl px-5 py-6">
         <Outlet />
       </main>

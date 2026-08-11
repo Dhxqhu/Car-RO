@@ -56,6 +56,70 @@ class LocalStore:
                 )
                 """
             )
+            # Offline shifts / messages (shop server unreachable; local engine up).
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS local_shifts (
+                    local_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    client_id TEXT NOT NULL UNIQUE,
+                    server_id INTEGER,
+                    tech_id TEXT NOT NULL,
+                    tech_name TEXT NOT NULL DEFAULT '',
+                    day TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT NOT NULL DEFAULT '',
+                    pending_sync INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_local_shifts_tech "
+                "ON local_shifts(tech_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_local_shifts_server "
+                "ON local_shifts(server_id)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_shift_ops (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    client_op_id TEXT NOT NULL UNIQUE,
+                    op TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_messages (
+                    client_id TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_message_acks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS message_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
 
     def list_ids(self) -> list[str]:
         with self._connect() as conn:
@@ -183,14 +247,6 @@ class LocalStore:
                 out.append(order)
         return out
 
-    def pending_sync_count(self) -> int:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n FROM repair_orders WHERE needs_sync = 1"
-            ).fetchone()
-            dels = conn.execute("SELECT COUNT(*) AS n FROM pending_deletes").fetchone()
-        return int(row["n"] if row else 0) + int(dels["n"] if dels else 0)
-
     def list_pending_deletes(self) -> list[str]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -202,16 +258,45 @@ class LocalStore:
         with self._connect() as conn:
             conn.execute("DELETE FROM pending_deletes WHERE id = ?", (ro_id,))
 
+    def pending_shift_ops_count(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM pending_shift_ops"
+            ).fetchone()
+        return int(row["n"] if row else 0)
+
+    def pending_messages_count(self) -> int:
+        with self._connect() as conn:
+            msgs = conn.execute(
+                "SELECT COUNT(*) AS n FROM pending_messages"
+            ).fetchone()
+            acks = conn.execute(
+                "SELECT COUNT(*) AS n FROM pending_message_acks"
+            ).fetchone()
+        return int(msgs["n"] if msgs else 0) + int(acks["n"] if acks else 0)
+
     def sync_status(self) -> dict:
         pending_ros = self.list_pending_sync_ids()
         pending_dels = self.list_pending_deletes()
+        pending_shifts = self.pending_shift_ops_count()
+        pending_msgs = self.pending_messages_count()
         return {
             "pending_ros": len(pending_ros),
             "pending_deletes": len(pending_dels),
-            "pending_total": len(pending_ros) + len(pending_dels),
+            "pending_shifts": pending_shifts,
+            "pending_messages": pending_msgs,
+            "pending_total": (
+                len(pending_ros)
+                + len(pending_dels)
+                + pending_shifts
+                + pending_msgs
+            ),
             "pending_ro_ids": pending_ros[:50],
             "pending_delete_ids": pending_dels[:50],
         }
+
+    def pending_sync_count(self) -> int:
+        return int(self.sync_status().get("pending_total") or 0)
 
     def search(
         self,

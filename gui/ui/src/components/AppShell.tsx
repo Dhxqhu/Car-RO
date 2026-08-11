@@ -1,6 +1,7 @@
 import { Cable, Moon, Sun } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { OfflineBanner } from "@/components/OfflineBanner";
 import { TechNotifications } from "@/components/TechNotifications";
 import { TechShiftControls } from "@/components/TechShiftControls";
 import { useTheme } from "@/hooks/useTheme";
@@ -162,6 +163,7 @@ export function AppShell({
           </nav>
         </div>
       </header>
+      {!scannerShell ? <OfflineBanner /> : null}
       <main className="mx-auto max-w-6xl px-5 py-8">
         <Outlet />
       </main>

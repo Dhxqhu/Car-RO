@@ -66,9 +66,9 @@ export function TechShiftControls({ techId }: { techId?: string | null }) {
       );
       setErr("");
     } catch (e) {
+      // Keep last-known shift UI when refresh fails (e.g. brief engine hiccup).
+      // Offline shop-server drops are handled by local shift cache + OfflineBanner.
       setErr(e instanceof Error ? e.message : "Shift unavailable");
-      setShift(null);
-      setTodayShifts([]);
     }
   }, [techId]);
 

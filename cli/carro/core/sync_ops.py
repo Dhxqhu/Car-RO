@@ -206,6 +206,12 @@ def perform_sync(
             "pending": pending,
         }
     except Exception as exc:
+        try:
+            from carro.core.connectivity import mark_server_unreachable
+
+            mark_server_unreachable(str(exc))
+        except Exception:
+            pass
         return {
             "ok": False,
             "skipped": False,
@@ -222,6 +228,13 @@ def perform_sync(
             "error": str(exc),
         }
 
+    try:
+        from carro.core.connectivity import mark_server_reachable
+
+        mark_server_reachable()
+    except Exception:
+        pass
+
     roster_status = "skipped"
     if want_roster:
         try:
@@ -232,6 +245,12 @@ def perform_sync(
             roster_status = "skipped"
 
     del_result = try_push_pending_deletes(store, remote)
+
+    from carro.core.message_offline import try_push_pending_messages
+    from carro.core.shift_offline import try_push_pending_shifts
+
+    shift_result = try_push_pending_shifts(store, remote)
+    msg_result = try_push_pending_messages(store, remote)
 
     actor, actor_id = _current_actor()
     # Efficiency: only dirty ROs — already-synced rows stay local without re-PUT.
@@ -258,11 +277,16 @@ def perform_sync(
     pending_after = store.sync_status()
     still_pending = int(pending_after.get("pending_total") or 0)
     removed: list[str] = []
+    extras_failed = (
+        int(del_result.get("failed") or 0)
+        + int(shift_result.get("failed") or 0)
+        + int(msg_result.get("failed") or 0)
+    )
     if (
         want_prune
         and still_pending == 0
         and failed == 0
-        and int(del_result.get("failed") or 0) == 0
+        and extras_failed == 0
     ):
         removed = store.prune()
     elif still_pending and want_prune:
@@ -275,12 +299,22 @@ def perform_sync(
     keep_n = resolve_local_keep(cfg)
     photo_n = resolve_local_photo_keep(cfg)
     billed_n = resolve_local_billed_keep(cfg)
-    ok = failed == 0 and int(del_result.get("failed") or 0) == 0
+    ok = failed == 0 and extras_failed == 0
+    shift_n = int(shift_result.get("cleared") or 0)
+    msg_n = int(msg_result.get("cleared") or 0)
     if ok:
-        if pushed == 0 and int(del_result.get("cleared") or 0) == 0:
+        if (
+            pushed == 0
+            and int(del_result.get("cleared") or 0) == 0
+            and shift_n == 0
+            and msg_n == 0
+        ):
             message = f"Nothing pending; roster: {roster_status}"
         else:
-            message = f"Pushed {pushed} RO(s); roster: {roster_status}"
+            message = (
+                f"Pushed {pushed} RO(s), {shift_n} shift op(s), "
+                f"{msg_n} message(s); roster: {roster_status}"
+            )
     else:
         message = (
             f"Synced {pushed} RO(s), {failed} failed — local copies kept "
@@ -296,6 +330,8 @@ def perform_sync(
         "pruned": removed,
         "roster": roster_status,
         "deletes": del_result,
+        "shifts": shift_result,
+        "messages": msg_result,
         "pending": pending_after,
         "local_keep": keep_n,
         "local_photo_keep": photo_n,
