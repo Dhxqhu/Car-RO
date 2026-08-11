@@ -319,6 +319,7 @@ The empty repo `share/` folder is unused. Branding/logo stay local (`branding/`,
 ## Optional home-lab server
 
 **Full beginner guide (multi-PC, shop token, forgot/rotate token):** [docs/SERVER_SETUP.md](docs/SERVER_SETUP.md)  
+**Take a bay laptop home (Tailscale):** [docs/SERVER_SETUP.md — Take a bay laptop home](docs/SERVER_SETUP.md#take-a-bay-laptop-home-tailscale)  
 **Updating a live shop (manual, opt-in):** [docs/UPDATING.md](docs/UPDATING.md)  
 **Windows bay PCs:** [docs/WINDOWS.md](docs/WINDOWS.md)  
 **Desktop GUI (Tauri + React — Orders + Scanner workspaces):** [docs/GUI.md](docs/GUI.md)

@@ -197,6 +197,8 @@ Day-one Windows GUI testing (after `Install-Car-RO.bat`):
 
 Join shop server: **`Join-Server.bat`** / `.\scripts\join-server.ps1`.
 
+Techs can take a bay laptop **home** over **Tailscale** (shop tailnet + each tech’s own account). See [SERVER_SETUP.md — Take a bay laptop home](SERVER_SETUP.md#take-a-bay-laptop-home-tailscale).
+
 ### Updating this PC later (opt-in)
 
 Working shops do **not** need to update. When you want new features:

@@ -40,7 +40,7 @@ People often mix these up. They are **not** the same thing.
 | --- | --- |
 | **carro-server** (Linux) | Stores all repair orders + photos |
 | **Shop token** (`CARRO_TOKEN`) | One secret every bay PC must use |
-| **Server URL** | e.g. `http://homebaseserver:8787` (Tailscale name is best) |
+| **Server URL** | e.g. `http://shop-server:8787` (Tailscale MagicDNS name is best) |
 | **Bay PCs** | Run Car-RO (CLI and/or GUI), sync to that URL + token |
 
 ```
@@ -82,10 +82,46 @@ Default is fine: `~/carro-data`.
 On the **server** and on **each bay PC**:
 
 1. Install Tailscale from https://tailscale.com/download  
-2. Log in with the **same** Tailscale account / tailnet  
-3. On the server, note its MagicDNS name (e.g. `homebaseserver` or `homebaseserver.tailXXXX.ts.net`)
+2. Prefer a **shop** Tailscale account / tailnet (not one personal login shared by everyone). Each tech should use **their own** Tailscale account and be **invited** into that shop tailnet — see [Take a bay laptop home](#take-a-bay-laptop-home-tailscale)  
+3. On the server, note its MagicDNS name (e.g. `shop-server` or `shop-server.tailXXXX.ts.net`)
 
 If you skip Tailscale, use the server’s LAN IP. That IP often changes when the router restarts — more breakage later.
+
+---
+
+## Take a bay laptop home (Tailscale)
+
+With Tailscale, a technician can leave the shop and still reach `carro-server` from home (or any network), using the **same Server URL + shop token**.
+
+**Recommended setup (easy to revoke when someone leaves):**
+
+| Piece | Who | Why |
+| --- | --- | --- |
+| **Shop Tailscale account / tailnet** | The shop (business-owned) | Owns the mesh; server and bay laptops join **this** network |
+| **Each tech’s own Tailscale account** | That person | They install Tailscale with **their** login; you **invite / grant** access to the shop tailnet |
+| **carro-server** | Always-on Linux box on the shop tailnet | Reachable via MagicDNS while they are away |
+
+When a tech leaves: remove them from the shop tailnet (and rotate the shop API token if they had it). Avoid one shared Tailscale login on every laptop — offboarding becomes hard.
+
+**Laptop requirements:**
+
+1. Tailscale installed, logged in as **that tech**, and accepted into the **shop** tailnet  
+2. Server URL uses the server’s **MagicDNS name** (e.g. `http://SHOP-SERVER.tailXXXX.ts.net:8787`), not a shop LAN-only IP like `192.168.x.x`  
+3. Same **shop token** as the other bays  
+4. Server online and `carro-server` running  
+
+Away from the shop, sync and messaging work the same; photos may feel slower than on LAN. If Tailscale or the server is offline, local ROs still work on the laptop and sync when the mesh is back.
+
+Prefer Tailscale over opening port **8787** to the public internet. Anyone with the shop token can read/write the archive.
+
+Quick check from home:
+
+```bash
+curl -s http://YOUR_SERVER_HOSTNAME:8787/health
+curl -s http://YOUR_SERVER_HOSTNAME:8787/version
+```
+
+You should get JSON with `"ok": true` (and `app_version` on current builds). If that fails, fix Tailscale login / server power before blaming Car-RO.
 
 ---
 
@@ -510,7 +546,7 @@ loginctl enable-linger $USER
 | Symptom | Fix |
 | --- | --- |
 | `connection refused` / unreachable | Is `carro-server` running? `systemctl --user status carro-server`. Enable linger: `loginctl enable-linger $USER` |
-| Health works on server, not from bay | Tailscale not logged in on both; wrong hostname; firewall blocking port **8787** |
+| Health works on server, not from bay | Tailscale not logged in / not invited to the shop tailnet; wrong hostname; firewall blocking port **8787**. Away from the shop: use MagicDNS URL, not a `192.168…` LAN IP — see [Take a bay laptop home](#take-a-bay-laptop-home-tailscale) |
 | `401` / unauthorized / “Invalid token” | Token mismatch. On the server: `grep CARRO_TOKEN ~/.config/carro-server.env`. Put **that exact value** on every bay PC. Do not “Generate new token” on the laptop unless you also changed the server. |
 | Sync OK but techs missing | Run sync / tech menu **Pull roster**; ensure server was updated for `/technicians` |
 | Deleted RO comes back | Server delete failed (old server). Update server, delete again |
