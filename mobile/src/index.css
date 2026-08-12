@@ -55,6 +55,15 @@
   }
 
   /* iOS Safari ignores Tailwind width on <input>; pin boxes must be explicit. */
+  select.who-select {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+
   input.pin-box {
     display: block;
     width: 100%;

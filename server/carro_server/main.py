@@ -70,6 +70,13 @@ from carro_server.sessions import (
     revoke_session,
 )
 from carro_server import push as webpush
+from carro_server.notify_targets import (
+    event_label as push_event_label,
+    push_body as push_event_body,
+    push_url as push_event_url,
+    recipients_for_event,
+    roster_people,
+)
 from carro_server.upload_tokens import SHORTCUT_PAGE, UPLOAD_PAGE, UploadTokenStore
 from carro_server.volumes import VolumeManager
 
@@ -196,6 +203,28 @@ def _pwa_dir() -> Path | None:
         if (candidate / "index.html").is_file():
             return candidate
     return None
+
+
+def _wants_pwa_shell(request: Request) -> bool:
+    """True for Safari/PWA document navigations, not JSON API fetches."""
+    dest = (request.headers.get("sec-fetch-dest") or "").lower()
+    mode = (request.headers.get("sec-fetch-mode") or "").lower()
+    if dest in ("document", "iframe") or mode == "navigate":
+        return True
+    accept = (request.headers.get("accept") or "").lower()
+    html_at = accept.find("text/html")
+    if html_at < 0:
+        return False
+    json_at = accept.find("application/json")
+    return json_at < 0 or html_at < json_at
+
+
+def _pwa_index_response() -> FileResponse | None:
+    pwa = _pwa_dir()
+    if not pwa:
+        return None
+    index = pwa / "index.html"
+    return FileResponse(index) if index.is_file() else None
 
 
 @app.get("/health")
@@ -801,6 +830,7 @@ def list_ros(
 
 @app.get("/parts")
 def list_parts(
+    request: Request,
     part_number: str = "",
     manufacturer: str = "",
     status: str = "",
@@ -808,8 +838,14 @@ def list_parts(
     q: str = "",
     include_received: bool = False,
     limit: int = 500,
-    _: None = Depends(require_auth),
+    authorization: str | None = Header(default=None),
+    carro_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ):
+    if _wants_pwa_shell(request):
+        page = _pwa_index_response()
+        if page is not None:
+            return page
+    principal_from(authorization, carro_session)
     with _db() as conn:
         rows = search_parts(
             conn,
@@ -907,10 +943,16 @@ def put_ro(ro_id: str, body: dict, principal: Principal = Depends(require_auth))
             (ro_id, payload, updated or merged.get("created") or ""),
         )
         sync_ro_projections(conn, merged)
+        stored_events: list[dict] = []
         for ev in diff_ro_events(before, merged, actor=actor):
             ev_payload = dict(ev.get("payload") or {})
             if actor_id:
                 ev_payload.setdefault("actor_id", actor_id)
+            if ev["type"] == "ro_assigned":
+                ev_payload.setdefault("assigned_to_id", str(merged.get("assigned_to_id") or ""))
+                ev_payload.setdefault(
+                    "assigned_to_name", str(merged.get("assigned_to_name") or "")
+                )
             append_event(
                 conn,
                 type=ev["type"],
@@ -921,7 +963,26 @@ def put_ro(ro_id: str, body: dict, principal: Principal = Depends(require_auth))
                 at=ev.get("at"),
                 payload=ev_payload or None,
             )
+            stored_events.append({**ev, "payload": ev_payload})
+    _fanout_event_push(stored_events, actor=actor, actor_id=actor_id)
     return merged
+
+
+def _fanout_event_push(events: list[dict], *, actor: str, actor_id: str) -> None:
+    if not events:
+        return
+    people = roster_people(_load_technicians(), _load_advisors())
+    for ev in events:
+        for pid in recipients_for_event(
+            ev, actor_id=actor_id, actor_name=actor, people=people
+        ):
+            webpush.notify_person(
+                VOLUMES.root,
+                person_id=pid,
+                title=push_event_label(str(ev.get("type") or "")),
+                body=push_event_body(ev),
+                url=push_event_url(ev),
+            )
 
 
 @app.get("/advisor/recent")
@@ -1052,12 +1113,19 @@ def _resolve_roster_person(person_id: str, role: str) -> tuple[str, str, str]:
 
 @app.get("/messages")
 def get_messages(
+    request: Request,
     for_id: str = "",
     unread: int = 0,
     limit: int = 100,
-    _: None = Depends(require_auth),
+    authorization: str | None = Header(default=None),
+    carro_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ):
-    """Inbox for a specific person (to_id)."""
+    """Inbox for a specific person (to_id). Browser opens of /messages get the phone app."""
+    if not (for_id or "").strip() and _wants_pwa_shell(request):
+        page = _pwa_index_response()
+        if page is not None:
+            return page
+    principal_from(authorization, carro_session)
     if not (for_id or "").strip():
         raise HTTPException(400, "for_id required")
     with _db() as conn:

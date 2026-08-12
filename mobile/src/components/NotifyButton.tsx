@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Bell, BellOff } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { isStandalone, pushBlockReason, subscribePush, unsubscribePush } from "@/lib/push";
+import { httpsPwaUrl, isStandalone, pushBlockReason, subscribePush, unsubscribePush } from "@/lib/push";
 
 export function NotifyButton() {
   const [subscribed, setSubscribed] = useState(false);
@@ -62,9 +62,9 @@ export function NotifyButton() {
           </p>
           <p className="text-xs text-muted">
             {subscribed
-              ? "New shop messages will alert this phone"
+              ? "Jobs, messages, and shop updates will alert this phone"
               : isStandalone()
-                ? "Get a ping for new messages"
+                ? "Get a ping for your jobs and messages"
                 : "Works after Add to Home Screen"}
           </p>
         </div>
@@ -81,6 +81,11 @@ export function NotifyButton() {
         )}
       </div>
       {hint && !subscribed ? <p className="mt-2 text-xs text-muted">{hint}</p> : null}
+      {!subscribed && httpsPwaUrl() ? (
+        <a className="mt-2 block text-xs font-medium text-accent underline-offset-2 hover:underline" href={httpsPwaUrl()!}>
+          Open HTTPS app
+        </a>
+      ) : null}
       {error ? <p className="mt-2 text-xs text-danger">{error}</p> : null}
     </div>
   );

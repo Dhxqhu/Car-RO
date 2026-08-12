@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger("carro.push")
 
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
@@ -122,10 +125,20 @@ def has_subscription(root: Path, person_id: str) -> bool:
 
 
 def vapid_mailto() -> str:
-    raw = (os.environ.get("CARRO_VAPID_MAILTO") or "mailto:carro@localhost").strip()
+    """Apple Web Push returns 403 BadJwtToken for mailto:…@localhost."""
+    raw = (os.environ.get("CARRO_VAPID_MAILTO") or "").strip()
+    if not raw:
+        raw = (
+            os.environ.get("CARRO_PUBLIC_HOST")
+            or os.environ.get("CARRO_VAPID_HOST")
+            or "homebaseserver.taila7bd22.ts.net"
+        ).strip()
     if raw.startswith("mailto:") or raw.startswith("https://"):
         return raw
-    return f"mailto:{raw}"
+    raw = raw.removeprefix("http://").removeprefix("https://").split("/")[0]
+    if "@" in raw:
+        return f"mailto:{raw}"
+    return f"mailto:carro@{raw}"
 
 
 def notify_person(
@@ -167,9 +180,11 @@ def notify_person(
             keep.append(sub)
         except WebPushException as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
+            log.warning("web push failed for %s: %s", pid, exc)
             if status not in (404, 410):
                 keep.append(sub)
         except Exception:
+            log.exception("web push error for %s", pid)
             keep.append(sub)
     _save_subs(root, keep)
     return sent

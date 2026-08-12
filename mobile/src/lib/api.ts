@@ -58,6 +58,18 @@ export type RepairOrder = {
   updated?: string;
 };
 
+export type RoEvent = {
+  id?: number;
+  at?: string;
+  type: string;
+  ro_id?: string;
+  item_id?: string;
+  actor?: string;
+  actor_id?: string;
+  summary?: string;
+  payload?: Record<string, string | undefined>;
+};
+
 export type ShopMessage = {
   id: number;
   body: string;
@@ -68,7 +80,9 @@ export type ShopMessage = {
   to_name: string;
   to_role: string;
   ro_id?: string;
+  work_item_id?: string;
   read_at?: string;
+  delivered_at?: string;
   at?: string;
 };
 
@@ -160,9 +174,27 @@ export const api = {
     }>(`/assigned?tech_id=${encodeURIComponent(techId)}`),
   recent: (minutes = 24 * 60) =>
     req<{ orders: RepairOrder[]; count: number }>(`/advisor/recent?minutes=${minutes}`),
-  messages: (forId: string) =>
+  listEvents: (opts?: {
+    since_id?: number;
+    limit?: number;
+    exclude_actor?: string;
+    exclude_actor_id?: string;
+  }) => {
+    const q = new URLSearchParams();
+    if (opts?.since_id) q.set("since_id", String(opts.since_id));
+    if (opts?.limit) q.set("limit", String(opts.limit));
+    if (opts?.exclude_actor) q.set("exclude_actor", opts.exclude_actor);
+    if (opts?.exclude_actor_id) q.set("exclude_actor_id", opts.exclude_actor_id);
+    const qs = q.toString();
+    return req<{ events: RoEvent[] }>(`/events${qs ? `?${qs}` : ""}`);
+  },
+  messages: (forId: string, limit = 200) =>
     req<{ messages: ShopMessage[]; unread: number }>(
-      `/messages?for_id=${encodeURIComponent(forId)}`,
+      `/messages?for_id=${encodeURIComponent(forId)}&limit=${limit}`,
+    ),
+  sentMessages: (fromId: string, limit = 200) =>
+    req<{ messages: ShopMessage[] }>(
+      `/messages/sent?from_id=${encodeURIComponent(fromId)}&limit=${limit}`,
     ),
   sendMessage: (body: Record<string, string>) =>
     req<{ ok: boolean; message: ShopMessage }>("/messages", {
@@ -173,6 +205,11 @@ export const api = {
     req(`/messages/${id}/read`, {
       method: "POST",
       body: JSON.stringify({ for_id: forId }),
+    }),
+  markDelivered: (ids: number[], forId: string) =>
+    req<{ ok: boolean; count: number }>("/messages/delivered", {
+      method: "POST",
+      body: JSON.stringify({ for_id: forId, ids }),
     }),
   myShift: (techId: string) =>
     req<{ shift: { id: number; started_at?: string; ended_at?: string } | null }>(

@@ -1,5 +1,6 @@
 import { ClipboardList, Home, MessageSquare, Plus, Wrench } from "lucide-react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { NotifyBell } from "@/components/NotifyBell";
 import { cn } from "@/lib/utils";
 
 const tabs = [
@@ -11,16 +12,21 @@ const tabs = [
 
 export function AppShell({
   name,
+  id,
   role,
   onExit,
 }: {
   name: string;
+  id: string;
   role: string;
   onExit: () => void;
 }) {
+  const { pathname } = useLocation();
+  const flush = pathname === "/messages";
+
   return (
-    <div className="mx-auto flex min-h-dvh max-w-lg flex-col">
-      <header className="flex items-center justify-between border-b border-border px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
+    <div className="mx-auto flex h-dvh max-w-lg flex-col overflow-hidden">
+      <header className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
         <div>
           <p className="font-display text-lg leading-none">Car-RO</p>
           <p className="mt-0.5 text-xs text-muted">
@@ -28,7 +34,7 @@ export function AppShell({
             {role === "advisor" ? " · advisor" : " · tech"}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           {role === "advisor" ? (
             <NavLink
               to="/new"
@@ -38,15 +44,21 @@ export function AppShell({
               New
             </NavLink>
           ) : null}
-          <button type="button" className="text-xs text-muted" onClick={onExit}>
+          <NotifyBell id={id} name={name} role={role} />
+          <button type="button" className="px-1 text-xs text-muted" onClick={onExit}>
             Sign out
           </button>
         </div>
       </header>
-      <main className="flex-1 px-4 pb-24 pt-4">
+      <main
+        className={cn(
+          "flex min-h-0 flex-1 flex-col",
+          flush ? "overflow-hidden" : "overflow-y-auto px-4 pt-4",
+        )}
+      >
         <Outlet />
       </main>
-      <nav className="fixed inset-x-0 bottom-0 mx-auto max-w-lg border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur">
+      <nav className="shrink-0 border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)]">
         <div className="grid grid-cols-4">
           {tabs.map((t) => (
             <NavLink

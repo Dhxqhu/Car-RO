@@ -61,7 +61,7 @@ export default function App() {
           <LoginPage onAuthed={enter} />
         ) : (
           <Routes>
-            <Route element={<AppShell name={name} role={role} onExit={exit} />}>
+            <Route element={<AppShell name={name} id={id} role={role} onExit={exit} />}>
               <Route index element={<HomePage id={id} name={name} role={role} />} />
               <Route path="orders" element={<OrdersPage />} />
               <Route path="ro/:id" element={<RoPage />} />

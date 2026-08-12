@@ -1,5 +1,5 @@
 /* Network-first shell. API routes are never cached. */
-const SHELL = "carro-pwa-v2";
+const SHELL = "carro-pwa-v3";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(self.skipWaiting());
@@ -48,6 +48,7 @@ self.addEventListener("push", (event) => {
       body: data.body || "Shop update",
       icon: "/icon-192.png",
       badge: "/icon-192.png",
+      silent: false,
       data: { url: data.url || "/" },
     }),
   );

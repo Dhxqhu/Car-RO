@@ -21,9 +21,22 @@ export function pushSupported(): boolean {
   );
 }
 
+export function httpsPwaUrl(): string | null {
+  const host = location.hostname;
+  if (!host || location.protocol === "https:") return null;
+  if (host.endsWith(".ts.net")) return `https://${host}:8443/`;
+  return null;
+}
+
 export function pushBlockReason(): string | null {
   if (location.protocol !== "https:" && location.hostname !== "localhost") {
-    return "Notifications need HTTPS. Use the Tailscale address (tailscale serve), not the shop http:// IP.";
+    const https = httpsPwaUrl();
+    if (location.hostname.endsWith(".ts.net") || location.port === "8787") {
+      return https
+        ? `Apple blocks notifications on http://. On the shop server run sudo ./scripts/enable-pwa-https.sh then open ${https} and Add to Home Screen from there.`
+        : "Apple blocks notifications on http://. Enable Tailscale Serve HTTPS (see docs/SERVER_SETUP.md).";
+    }
+    return "Notifications need HTTPS. Use the Tailscale HTTPS address, not shop http://.";
   }
   if (!pushSupported()) {
     if (!isStandalone()) {

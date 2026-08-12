@@ -1,11 +1,16 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { Moon, Sun } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { ChevronDown, Moon, Sun } from "lucide-react";
 import { api, setStoredToken, type Person } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import { useTheme } from "@/hooks/useTheme";
-import { cn } from "@/lib/utils";
 
 const PIN_LEN = 4;
+const LAST_PERSON_KEY = "carro-pwa-last-person";
+
+function byName(a: Person, b: Person) {
+  return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+}
 
 export function LoginPage({
   onAuthed,
@@ -22,13 +27,25 @@ export function LoginPage({
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
   const pin = digits.join("");
 
+  const advisors = useMemo(
+    () => people.filter((p) => p.role === "advisor").sort(byName),
+    [people],
+  );
+  const techs = useMemo(
+    () => people.filter((p) => p.role !== "advisor").sort(byName),
+    [people],
+  );
+
   useEffect(() => {
     api
       .people()
       .then((r) => {
-        setPeople(r.people || []);
-        setEmpty(!!r.empty || !(r.people || []).length);
-        if (r.people?.[0]) setPersonId(r.people[0].id);
+        const roster = r.people || [];
+        setPeople(roster);
+        setEmpty(!!r.empty || !roster.length);
+        const last = localStorage.getItem(LAST_PERSON_KEY) || "";
+        if (last && roster.some((p) => p.id === last)) setPersonId(last);
+        else if (roster[0]) setPersonId(roster[0].id);
       })
       .catch((e: Error) => setError(e.message));
   }, []);
@@ -75,6 +92,7 @@ export function LoginPage({
     try {
       const s = await api.login(personId, pin);
       if (s.token) setStoredToken(s.token);
+      localStorage.setItem(LAST_PERSON_KEY, s.id || personId);
       onAuthed(s.name || "", s.id || personId, s.kind || s.role || "");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
@@ -102,26 +120,37 @@ export function LoginPage({
       ) : (
         <form className="mt-8 flex flex-1 flex-col gap-5" onSubmit={onSubmit}>
           <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">Who</p>
-            <div className="grid gap-2">
-              {people.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => setPersonId(p.id)}
-                  className={cn(
-                    "flex items-center justify-between rounded-xl border px-4 py-3 text-left",
-                    personId === p.id
-                      ? "border-accent bg-accent/10"
-                      : "border-border bg-surface",
-                  )}
-                >
-                  <span className="font-medium">{p.name}</span>
-                  <span className="text-xs capitalize text-muted">
-                    {p.role === "technician" ? "Tech" : "Advisor"}
-                  </span>
-                </button>
-              ))}
+            <Label htmlFor="who">Who</Label>
+            <div className="relative mt-2">
+              <select
+                id="who"
+                value={personId}
+                onChange={(e) => setPersonId(e.target.value)}
+                className="who-select h-12 w-full appearance-none rounded-xl border border-border bg-surface py-2 pl-4 pr-11 text-base font-medium"
+              >
+                {advisors.length ? (
+                  <optgroup label="Advisors">
+                    {advisors.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
+                {techs.length ? (
+                  <optgroup label="Technicians">
+                    {techs.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
+              </select>
+              <ChevronDown
+                size={18}
+                className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 text-muted"
+              />
             </div>
           </div>
 

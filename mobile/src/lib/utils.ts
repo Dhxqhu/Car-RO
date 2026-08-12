@@ -47,3 +47,21 @@ export function formatShopTime(iso: string | undefined | null): string {
   if (m) return `${m[1]} ${m[2]}`;
   return raw.slice(0, 16);
 }
+
+/** Compact time for chat rows: today → 14:32, else 08-11. */
+export function formatMsgTime(iso: string | undefined | null): string {
+  const full = formatShopTime(iso);
+  const m = full.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}:\d{2})$/);
+  if (!m) return full;
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  if (`${m[1]}-${m[2]}-${m[3]}` === today) return m[4];
+  return `${m[2]}-${m[3]}`;
+}
+
+export function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0] || ""}${parts[parts.length - 1][0] || ""}`.toUpperCase();
+}

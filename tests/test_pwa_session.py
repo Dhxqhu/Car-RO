@@ -131,6 +131,30 @@ def test_missing_auth_rejected_when_token_set(server):
     assert r.status_code in (401, 403)
 
 
+def test_messages_browser_nav_serves_pwa_not_for_id_error(server):
+    client, _m = server
+    r = client.get(
+        "/messages",
+        headers={
+            "Accept": "text/html,application/xhtml+xml",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Dest": "document",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert "for_id" not in r.text
+    assert "text/html" in (r.headers.get("content-type") or "")
+    assert "<!doctype html>" in r.text.lower() or "<html" in r.text.lower()
+
+
+def test_messages_api_still_needs_for_id(server):
+    client, _m = server
+    client.post("/session/login", json={"id": "tech-1", "pin": "1234"})
+    r = client.get("/messages", headers={"Accept": "application/json"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "for_id required"
+
+
 def test_push_subscribe_after_pin_login(server):
     client, m = server
     client.post("/session/login", json={"id": "tech-1", "pin": "1234"})
