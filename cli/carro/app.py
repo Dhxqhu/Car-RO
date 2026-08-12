@@ -1365,7 +1365,9 @@ def _phone_upload_flow(
         )
     # Ensure RO exists on server before phone uploads
     try:
-        remote.upsert_ro(order)
+        remote.upsert_ro(
+            order, base_updated=store.last_synced_updated(order.id)
+        )
     except Exception as exc:
         raise RuntimeError(f"Could not sync RO to server before phone upload: {exc}") from exc
 

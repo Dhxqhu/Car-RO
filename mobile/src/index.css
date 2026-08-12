@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Fraunces", ui-serif, Georgia, serif;
+  --color-bg: var(--bg);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-surface: var(--surface);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-danger: var(--danger);
+}
+
+:root {
+  --bg: #f2f4f8;
+  --fg: #121820;
+  --muted: #5a6573;
+  --surface: #ffffff;
+  --border: #d4dae3;
+  --accent: #1a4f8c;
+  --accent-fg: #f4f8fc;
+  --danger: #b42318;
+}
+
+.dark {
+  --bg: #0c1016;
+  --fg: #e6ebf2;
+  --muted: #93a0b3;
+  --surface: #151b24;
+  --border: #2a3444;
+  --accent: #4d8fd6;
+  --accent-fg: #071018;
+  --danger: #f97066;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--fg);
+  }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background: var(--bg);
+  }
+
+  #root {
+    min-height: 100dvh;
+  }
+
+  /* iOS Safari ignores Tailwind width on <input>; pin boxes must be explicit. */
+  input.pin-box {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    height: 3rem;
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    appearance: none;
+    -webkit-appearance: none;
+    font-size: 1.125rem;
+    line-height: 3rem;
+    text-align: center;
+  }
+}

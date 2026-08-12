@@ -42,6 +42,10 @@ class LocalStore:
                 conn.execute(
                     "ALTER TABLE repair_orders ADD COLUMN needs_sync INTEGER NOT NULL DEFAULT 0"
                 )
+            if "last_synced_updated" not in cols:
+                conn.execute(
+                    "ALTER TABLE repair_orders ADD COLUMN last_synced_updated TEXT NOT NULL DEFAULT ''"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ro_updated ON repair_orders(updated DESC)"
             )
@@ -157,7 +161,10 @@ class LocalStore:
         from carro.core.work_items import apply_rollups
 
         apply_rollups(order)
-        order.updated = now_iso()
+        # Local edits get a fresh stamp. Caching a shop copy must keep the
+        # server's ``updated`` so the next PUT's _base_updated still matches.
+        if mark_pending_sync or not (order.updated or "").strip():
+            order.updated = now_iso()
         if not order.created:
             order.created = order.updated
         payload = json.dumps(order.to_dict())
@@ -181,10 +188,27 @@ class LocalStore:
             # Explicit clear when caching a remote copy with no local dirty flag.
             if not mark_pending_sync:
                 conn.execute(
-                    "UPDATE repair_orders SET needs_sync = 0 WHERE id = ?",
-                    (order.id,),
+                    """
+                    UPDATE repair_orders
+                    SET needs_sync = 0, last_synced_updated = ?
+                    WHERE id = ?
+                    """,
+                    (order.updated, order.id),
                 )
         return order
+
+    def last_synced_updated(self, ro_id: str) -> str:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT last_synced_updated FROM repair_orders WHERE id = ?",
+                (ro_id,),
+            ).fetchone()
+        if not row:
+            return ""
+        try:
+            return str(row["last_synced_updated"] or "")
+        except (KeyError, IndexError, TypeError):
+            return ""
 
     def create(self, **fields) -> RepairOrder:
         ro_id = new_ro_id(self.list_ids())

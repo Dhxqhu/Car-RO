@@ -84,6 +84,11 @@ echo "    data:    $DATA_DIR (untouched)"
 echo "    env:     $ENV_FILE (token preserved)"
 echo "    port:    $PORT"
 
+if command -v npm >/dev/null 2>&1 && [[ -f "$ROOT/mobile/package.json" ]]; then
+  echo "==> Building phone PWA"
+  "$ROOT/scripts/build-pwa.sh" || echo "warning: phone PWA build failed (server still updates)"
+fi
+
 rsync -a --delete \
   --exclude '.venv' \
   --exclude '__pycache__' \

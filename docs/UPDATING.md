@@ -34,6 +34,7 @@ On the machine that runs **carro-server** (after the new code is in your Car-RO 
 This:
 
 - Refreshes `~/carro-server` from `server/`
+- Builds the phone PWA when Node/npm is available (`./scripts/build-pwa.sh`)
 - Installs Python deps
 - Restarts the user systemd unit
 - **Keeps** `~/.config/carro-server.env` (shop token) and the data dir (`CARRO_DATA_DIR` / volumes)

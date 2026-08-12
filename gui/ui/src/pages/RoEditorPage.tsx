@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { RO_CHANGED_EVENT } from "@/lib/notifications";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -246,6 +247,7 @@ export function RoEditorPage() {
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
+  const dirtyRef = useRef(false);
   const [photoTag, setPhotoTag] = useState<(typeof PHOTO_TAGS)[number]>("intake");
   const [photoNotes, setPhotoNotes] = useState("");
   const [phoneSession, setPhoneSession] = useState<{
@@ -481,6 +483,7 @@ export function RoEditorPage() {
     api
       .getRo(id)
       .then((o) => {
+        dirtyRef.current = false;
         setOrder(o);
         // Intake / new RO: customer + vehicle editable until they lock with Done.
         setRoDetailsEditing(!(o.work_items || []).length);
@@ -513,6 +516,23 @@ export function RoEditorPage() {
     // Only re-run when RO id changes; bay param is consumed once on load.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional
   }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    const onChanged = (ev: Event) => {
+      const ids = (ev as CustomEvent<{ roIds?: string[] }>).detail?.roIds || [];
+      if (!ids.includes(id) || dirtyRef.current || saving) return;
+      api
+        .getRo(id)
+        .then((o) => {
+          if (dirtyRef.current) return;
+          setOrder(o);
+        })
+        .catch(() => undefined);
+    };
+    window.addEventListener(RO_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(RO_CHANGED_EVENT, onChanged);
+  }, [id, saving]);
 
   async function startFoundIssueFromBay() {
     if (!order.id) return;
@@ -591,6 +611,7 @@ export function RoEditorPage() {
   }
 
   function set<K extends keyof RepairOrder>(key: K, value: RepairOrder[K]) {
+    dirtyRef.current = true;
     setOrder((o) => ({ ...o, [key]: value }));
   }
 
@@ -600,6 +621,7 @@ export function RoEditorPage() {
     setMsg("");
     try {
       const saved = await api.saveRo(order);
+      dirtyRef.current = false;
       setOrder(saved);
       setMsg("Saved");
     } catch (e) {
@@ -1710,14 +1732,20 @@ export function RoEditorPage() {
                       <Field label="Diagnosis / technician notes (customer PDF)">
                         <Textarea
                           value={bayNotes}
-                          onChange={(e) => setBayNotes(e.target.value)}
+                          onChange={(e) => {
+                            dirtyRef.current = true;
+                            setBayNotes(e.target.value);
+                          }}
                           placeholder="Findings while working…"
                         />
                       </Field>
                       <Field label="Private shop notes (techs only — never on customer PDF)">
                         <Textarea
                           value={bayPrivateNotes}
-                          onChange={(e) => setBayPrivateNotes(e.target.value)}
+                          onChange={(e) => {
+                            dirtyRef.current = true;
+                            setBayPrivateNotes(e.target.value);
+                          }}
                           placeholder="Internal tips, gotchas…"
                         />
                       </Field>
@@ -1737,6 +1765,7 @@ export function RoEditorPage() {
                                 item_type: bayItem.item_type,
                                 status: bayItem.status,
                               });
+                              dirtyRef.current = false;
                               setOrder(next);
                               setMsg(`Notes saved on ${bayItem.id}`);
                             } catch (e) {

@@ -31,4 +31,4 @@ where = ["cli"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["cli"]
+pythonpath = ["cli", "server"]

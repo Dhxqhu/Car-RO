@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Bell, X } from "lucide-react";
 import { api, type IdleNudge, type RoEvent, type ShopMessage } from "@/lib/api";
 import {
+  dispatchRoChanged,
   eventLabel,
   filterAdvisorDeskEvents,
   filterOthersEvents,
@@ -211,6 +212,7 @@ export function TechNotifications({
         }
         return Array.from(byId.values()).slice(0, 40);
       });
+      dispatchRoChanged(still);
       return { others: still, maxId: lastId.current };
     },
     [techName, techId, autoClearResolved, prefs],

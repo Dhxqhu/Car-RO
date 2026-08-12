@@ -114,7 +114,39 @@ Away from the shop, sync and messaging work the same; photos may feel slower tha
 
 Prefer Tailscale over opening port **8787** to the public internet. Anyone with the shop token can read/write the archive.
 
-Quick check from home:
+---
+
+## Phone app (PWA) — shop Wi‑Fi or Tailscale
+
+The shop server can serve a **lighter phone app** (orders, notes, messages, photos, time clock). No Apple fee. Employees Add to Home Screen from Safari.
+
+| Where | URL | Tailscale? |
+| --- | --- | --- |
+| On **shop Wi‑Fi** | `http://SHOP-SERVER:8787/` (LAN hostname or IP) | No |
+| **Away** (home, parts run) | `https://SHOP-SERVER.tailXXXX.ts.net/` after `tailscale serve` | Yes |
+
+**Do not** put the shop API token on phones. Staff sign in with the **same 4-digit PIN** they use on a bay PC. The roster must already be on the server (sync a bay at least once).
+
+### First-time
+
+1. On the Linux shop box, install/update the server (`./scripts/install-server.sh` or `./scripts/update-server.sh`). That builds the phone UI when Node/npm is available, or run `./scripts/build-pwa.sh` yourself.
+2. Confirm `curl -s http://127.0.0.1:8787/health` includes `"pwa": true`.
+3. **At the shop:** open `http://SHOP-SERVER:8787/` in Safari → Share → **Add to Home Screen**.
+4. **Away from the shop:** install [Tailscale](https://tailscale.com/download) on the phone, join the **shop** tailnet, then on the server:
+
+   ```bash
+   sudo tailscale serve --bg 8787
+   ```
+
+   Open the printed `https://….ts.net` URL in Safari and Add to Home Screen. That icon needs Tailscale **on** (it still works on shop Wi‑Fi if Tailscale is connected).
+
+5. Leave port **8787** off the public internet. Tailscale Serve is private to the tailnet; do **not** enable Funnel.
+
+The phone app is **not** the full bay GUI: no OBD scanner, no heavy admin. Advisors can create a basic RO; techs get assigned work + day clock.
+
+**Notifications:** Home → **Enable**. Apple allows this for Home Screen web apps (iOS 16.4+) with no App Store fee. It only works over **HTTPS** (Tailscale Serve), opened from the home-screen icon — not a Safari tab, and not `http://10.0.0.x`. New shop messages then ping that phone.
+
+Health check (LAN or Tailscale):
 
 ```bash
 curl -s http://YOUR_SERVER_HOSTNAME:8787/health

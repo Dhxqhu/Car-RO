@@ -55,6 +55,7 @@ Car-RO is the habit-forming middle step: open a job, dump complaint + notes + OB
 | **Local SQLite** | Fast cache of recent ROs on the laptop |
 | **Customer PDF** | Shop header/logo, boxed complaint & tech notes, OBD block, photos + captions |
 | **Optional server** | Bulk storage on *your* disk(s), multi-volume aware |
+| **Phone PWA** | Lighter orders / messages / photos app from the shop server (Wi‑Fi or Tailscale) |
 | **Photo ingress** | Modular: local files, inbox drop, Tailscale QR upload from phone |
 
 Local-only works fine. The server is for people who want history that outlives a laptop SSD and who already mesh their devices with something like Tailscale.

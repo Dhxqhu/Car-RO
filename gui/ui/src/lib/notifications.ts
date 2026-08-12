@@ -1,6 +1,21 @@
 import type { RoEvent } from "@/lib/api";
 import { formatEmbeddedLabels, formatLabel } from "@/lib/utils";
 
+/** Open RO editors listen for this and refetch when they have no unsaved draft. */
+export const RO_CHANGED_EVENT = "carro:ro-changed";
+
+export function dispatchRoChanged(events: RoEvent[]): void {
+  const roIds = [
+    ...new Set(
+      events
+        .map((e) => String(e.ro_id || "").trim())
+        .filter((id) => id && id !== "_message" && id !== "_shift"),
+    ),
+  ];
+  if (!roIds.length) return;
+  window.dispatchEvent(new CustomEvent(RO_CHANGED_EVENT, { detail: { roIds } }));
+}
+
 /** True if this event was created by the signed-in tech/advisor — never notify the maker. */
 export function isSelfEvent(
   event: RoEvent,

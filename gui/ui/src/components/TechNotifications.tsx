@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Bell, X } from "lucide-react";
 import { api, type IdleNudge, type RoEvent, type ShopMessage } from "@/lib/api";
-import { eventLabel, filterOthersEvents, filterSilentEvents, filterTechRelevantEvents, formatEventSummary } from "@/lib/notifications";
+import { dispatchRoChanged, eventLabel, filterOthersEvents, filterSilentEvents, filterTechRelevantEvents, formatEventSummary } from "@/lib/notifications";
 import type { TechNotifyScope } from "@/lib/notifications";
 import {
   eventDismissKey,
@@ -225,6 +225,7 @@ export function TechNotifications({
         }
         return Array.from(byId.values()).slice(0, 40);
       });
+      dispatchRoChanged(still);
       return { others: still, maxId: lastId.current };
     },
     [techName, techId, autoClearResolved],

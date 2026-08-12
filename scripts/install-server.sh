@@ -24,6 +24,10 @@ if ! command -v "$PY" >/dev/null 2>&1; then
 fi
 
 echo "==> Installing carro-server → $INSTALL_DIR"
+if command -v npm >/dev/null 2>&1 && [[ -f "$ROOT/mobile/package.json" ]]; then
+  echo "==> Building phone PWA"
+  "$ROOT/scripts/build-pwa.sh" || echo "warning: phone PWA build failed (server still installs)"
+fi
 mkdir -p "$INSTALL_DIR"
 rsync -a --delete \
   --exclude '.venv' \
@@ -171,6 +175,11 @@ else
   echo "#    carro config set token YOUR_TOKEN"
 fi
 echo "#    carro sync"
+echo "#"
+echo "#  Phone (Add to Home Screen):"
+echo "#    $SERVER_URL"
+echo "#  Shop Wi-Fi: that URL. Away from shop: Tailscale HTTPS / MagicDNS."
+echo "#  Staff use their PIN — do not put the shop token on phones."
 echo "#"
 echo "#  Full guide: docs/SERVER_SETUP.md"
 echo "############################################################"

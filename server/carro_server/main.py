@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import sqlite3
 import uuid
 from pathlib import Path
@@ -11,10 +12,11 @@ from pathlib import Path
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
 from carro_server.events import append_event, diff_ro_events, ensure_events_table, list_events
+from carro_server.ro_merge import merge_repair_order
 from carro_server.version import APP_VERSION, version_payload
 from carro_server.indexes import (
     backfill_projections,
@@ -56,12 +58,25 @@ from carro_server.weekly_reports import (
     list_reports as list_weekly_reports,
     upsert_report as upsert_weekly_report,
 )
+from carro_server.pin import verify_pin
+from carro_server.sessions import (
+    COOKIE_NAME,
+    Principal,
+    clear_failures,
+    create_session,
+    get_session,
+    login_allowed,
+    record_failure,
+    revoke_session,
+)
+from carro_server import push as webpush
 from carro_server.upload_tokens import SHORTCUT_PAGE, UPLOAD_PAGE, UploadTokenStore
 from carro_server.volumes import VolumeManager
 
 TOKEN = os.environ.get("CARRO_TOKEN", "").strip()
 VOLUMES = VolumeManager()
 UPLOADS = UploadTokenStore(VOLUMES.root / "upload_sessions.json")
+SESSIONS_PATH = VOLUMES.root / "app_sessions.json"
 
 
 def _db() -> sqlite3.Connection:
@@ -92,13 +107,41 @@ def _db() -> sqlite3.Connection:
     return conn
 
 
-def require_auth(authorization: str | None = Header(default=None)) -> None:
-    if not TOKEN:
-        return  # open mode for first-time lab use; set CARRO_TOKEN in production
+def _bearer(authorization: str | None) -> str:
     if not authorization or not authorization.startswith("Bearer "):
+        return ""
+    return authorization.removeprefix("Bearer ").strip()
+
+
+def principal_from(
+    authorization: str | None = None,
+    session_cookie: str | None = None,
+) -> Principal:
+    """Shop token (bay PCs) or PIN session (phone PWA). Open lab if CARRO_TOKEN unset."""
+    if not TOKEN:
+        return Principal(kind="shop", name="shop")
+    raw = _bearer(authorization) or (session_cookie or "").strip()
+    if not raw:
         raise HTTPException(401, "Missing bearer token")
-    if authorization.removeprefix("Bearer ").strip() != TOKEN:
-        raise HTTPException(403, "Invalid token")
+    if TOKEN and len(raw) == len(TOKEN) and secrets.compare_digest(raw, TOKEN):
+        return Principal(kind="shop", name="shop", token=raw)
+    sess = get_session(SESSIONS_PATH, raw)
+    if sess:
+        return sess
+    raise HTTPException(403, "Invalid token")
+
+
+def require_auth(
+    authorization: str | None = Header(default=None),
+    carro_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> Principal:
+    return principal_from(authorization, carro_session)
+
+
+def require_shop(principal: Principal = Depends(require_auth)) -> Principal:
+    if principal.kind != "shop":
+        raise HTTPException(403, "Shop token required")
+    return principal
 
 
 app = FastAPI(title="carro-server", version=APP_VERSION)
@@ -144,15 +187,28 @@ def _load_technicians() -> dict:
     }
 
 
+def _pwa_dir() -> Path | None:
+    here = Path(__file__).resolve()
+    for candidate in (
+        here.parents[1] / "pwa",  # ~/carro-server/pwa
+        here.parents[2] / "mobile" / "dist",  # monorepo checkout
+    ):
+        if (candidate / "index.html").is_file():
+            return candidate
+    return None
+
+
 @app.get("/health")
 def health():
     """Liveness + volume summary (no auth — used by install checks / monitoring)."""
     vols = VOLUMES.volume_stats()
+    pwa = _pwa_dir()
     return {
         "ok": True,
         "default_volume": VOLUMES.default_name,
         "meta_dir": str(VOLUMES.root),
         "volumes": vols,
+        "pwa": bool(pwa),
         **version_payload(),
     }
 
@@ -163,13 +219,189 @@ def version_info():
     return {"ok": True, **version_payload()}
 
 
+def _public_people() -> list[dict]:
+    people: list[dict] = []
+    for t in _load_technicians().get("technicians") or []:
+        if not isinstance(t, dict):
+            continue
+        pid = str(t.get("id") or "").strip()
+        name = str(t.get("name") or "").strip()
+        if pid and name:
+            people.append({"id": pid, "name": name, "role": "technician"})
+    for a in _load_advisors().get("advisors") or []:
+        if not isinstance(a, dict):
+            continue
+        pid = str(a.get("id") or "").strip()
+        name = str(a.get("name") or "").strip()
+        if pid and name:
+            people.append(
+                {
+                    "id": pid,
+                    "name": name,
+                    "role": "advisor",
+                    "working_privilege": bool(a.get("working_privilege")),
+                }
+            )
+    people.sort(key=lambda p: (p["role"], p["name"].lower()))
+    return people
+
+
+def _pin_hash_for(person: dict) -> str:
+    pid = person.get("id") or ""
+    role = person.get("role")
+    if role == "technician":
+        for t in _load_technicians().get("technicians") or []:
+            if isinstance(t, dict) and str(t.get("id") or "") == pid:
+                return str(t.get("pin_hash") or "")
+    if role == "advisor":
+        for a in _load_advisors().get("advisors") or []:
+            if isinstance(a, dict) and str(a.get("id") or "") == pid:
+                return str(a.get("pin_hash") or "")
+    return ""
+
+
+@app.get("/people")
+def list_people():
+    """Names + ids for the phone login picker. No PIN hashes."""
+    people = _public_people()
+    return {"people": people, "empty": not people}
+
+
+def _set_session_cookie(request: Request, response: Response, token: str) -> None:
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=14 * 24 * 3600,
+        path="/",
+        secure=request.url.scheme == "https",
+    )
+
+
+@app.post("/session/login")
+def session_login(body: dict, request: Request, response: Response):
+    """PIN login for the phone PWA. Does not use the shop API token."""
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    pin = str(body.get("pin") or "").strip()
+    person_id = str(body.get("id") or "").strip()
+    fail_key = f"{request.client.host if request.client else '?'}:{person_id or pin[:1]}"
+    if not login_allowed(fail_key):
+        raise HTTPException(429, "Too many PIN attempts — wait a few minutes")
+    people = _public_people()
+    if not people:
+        raise HTTPException(
+            400,
+            "No staff on the shop server yet — sync a bay PC first",
+        )
+    try:
+        candidates = [p for p in people if not person_id or p["id"] == person_id]
+        matched: dict | None = None
+        for person in candidates:
+            if verify_pin(pin, _pin_hash_for(person)):
+                matched = person
+                break
+        if not matched:
+            record_failure(fail_key)
+            raise HTTPException(401, "Incorrect PIN")
+    except ValueError:
+        record_failure(fail_key)
+        raise HTTPException(401, "Incorrect PIN") from None
+    clear_failures(fail_key)
+    token, _row = create_session(
+        SESSIONS_PATH,
+        kind=str(matched["role"]),
+        person_id=str(matched["id"]),
+        name=str(matched["name"]),
+    )
+    _set_session_cookie(request, response, token)
+    principal = Principal(
+        kind=str(matched["role"]),
+        id=str(matched["id"]),
+        name=str(matched["name"]),
+        token=token,
+    )
+    out = principal.to_public()
+    out["token"] = token
+    return out
+
+
+@app.get("/session")
+def session_whoami(principal: Principal = Depends(require_auth)):
+    if principal.kind == "shop":
+        return {"ok": True, "kind": "shop", "role": "shop", "id": "", "name": "shop"}
+    return principal.to_public()
+
+
+@app.post("/session/logout")
+def session_logout(
+    response: Response,
+    authorization: str | None = Header(default=None),
+    carro_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+):
+    raw = _bearer(authorization) or (carro_session or "").strip()
+    if raw and not (TOKEN and len(raw) == len(TOKEN) and secrets.compare_digest(raw, TOKEN)):
+        revoke_session(SESSIONS_PATH, raw)
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
+@app.get("/push/vapid")
+def push_vapid(principal: Principal = Depends(require_auth)):
+    keys = webpush.load_or_create_vapid(VOLUMES.root)
+    return {
+        "ok": True,
+        "public_key": keys["public_key"],
+        "subscribed": bool(principal.id)
+        and webpush.has_subscription(VOLUMES.root, principal.id),
+    }
+
+
+@app.post("/push/subscribe")
+def push_subscribe(body: dict, principal: Principal = Depends(require_auth)):
+    if principal.kind not in ("technician", "advisor") or not principal.id:
+        raise HTTPException(403, "Sign in with a staff PIN to enable notifications")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    keys = body.get("keys") if isinstance(body.get("keys"), dict) else {}
+    try:
+        row = webpush.upsert_subscription(
+            VOLUMES.root,
+            person_id=principal.id,
+            person_name=principal.name,
+            role=principal.kind,
+            endpoint=str(body.get("endpoint") or ""),
+            keys={
+                "p256dh": str(keys.get("p256dh") or ""),
+                "auth": str(keys.get("auth") or ""),
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "endpoint": row["endpoint"]}
+
+
+@app.post("/push/unsubscribe")
+def push_unsubscribe(body: dict | None = None, principal: Principal = Depends(require_auth)):
+    if principal.kind not in ("technician", "advisor") or not principal.id:
+        raise HTTPException(403, "Staff session required")
+    body = body if isinstance(body, dict) else {}
+    removed = webpush.remove_subscription(
+        VOLUMES.root,
+        person_id=principal.id,
+        endpoint=str(body.get("endpoint") or ""),
+    )
+    return {"ok": True, "removed": removed}
+
+
 @app.get("/technicians")
-def get_technicians(_: None = Depends(require_auth)):
+def get_technicians(_: Principal = Depends(require_shop)):
     return _load_technicians()
 
 
 @app.put("/technicians")
-def put_technicians(body: dict, _: None = Depends(require_auth)):
+def put_technicians(body: dict, _: Principal = Depends(require_shop)):
     if not isinstance(body, dict):
         raise HTTPException(400, "JSON object required")
     techs = body.get("technicians")
@@ -216,12 +448,12 @@ def _load_advisors() -> dict:
 
 
 @app.get("/advisors")
-def get_advisors(_: None = Depends(require_auth)):
+def get_advisors(_: Principal = Depends(require_shop)):
     return _load_advisors()
 
 
 @app.put("/advisors")
-def put_advisors(body: dict, _: None = Depends(require_auth)):
+def put_advisors(body: dict, _: Principal = Depends(require_shop)):
     if not isinstance(body, dict):
         raise HTTPException(400, "JSON object required")
     advisors = body.get("advisors")
@@ -310,7 +542,7 @@ def get_suppliers(_: None = Depends(require_auth)):
 
 
 @app.put("/suppliers")
-def put_suppliers(body: dict, _: None = Depends(require_auth)):
+def put_suppliers(body: dict, _: Principal = Depends(require_shop)):
     if not isinstance(body, dict):
         raise HTTPException(400, "JSON object required")
     suppliers = body.get("suppliers")
@@ -399,7 +631,7 @@ def list_volumes(_: None = Depends(require_auth)):
 
 
 @app.post("/volumes")
-def add_volume(body: dict, _: None = Depends(require_auth)):
+def add_volume(body: dict, _: Principal = Depends(require_shop)):
     """
     Register another drive for photo storage on a live server.
 
@@ -424,7 +656,7 @@ def add_volume(body: dict, _: None = Depends(require_auth)):
 
 
 @app.put("/volumes/{name}/default")
-def set_default_volume(name: str, _: None = Depends(require_auth)):
+def set_default_volume(name: str, _: Principal = Depends(require_shop)):
     """Point new photo uploads at an existing volume. Does not move the database."""
     try:
         VOLUMES.set_default(name)
@@ -440,7 +672,7 @@ def set_default_volume(name: str, _: None = Depends(require_auth)):
 
 
 @app.post("/volumes/reload")
-def reload_volumes(_: None = Depends(require_auth)):
+def reload_volumes(_: Principal = Depends(require_shop)):
     """Re-read volumes.json after a manual edit (no full service restart required)."""
     VOLUMES.reload()
     return {
@@ -448,6 +680,72 @@ def reload_volumes(_: None = Depends(require_auth)):
         "default": VOLUMES.default_name,
         "volumes": VOLUMES.volume_stats(),
     }
+
+
+def _new_ro_id(existing: list[str], when: datetime | None = None) -> str:
+    when = when or datetime.now()
+    day = when.strftime("%Y%m%d")
+    prefix = f"RO-{day}-"
+    seq = 1
+    for eid in existing:
+        if eid.startswith(prefix):
+            try:
+                seq = max(seq, int(eid.rsplit("-", 1)[-1]) + 1)
+            except ValueError:
+                pass
+    return f"{prefix}{seq:03d}"
+
+
+@app.post("/ros")
+def create_ro(body: dict | None = None, principal: Principal = Depends(require_auth)):
+    """Create a repair order on the shop server (phone PWA / advisor away from a bay)."""
+    body = dict(body or {})
+    now = datetime.now().isoformat(timespec="seconds")
+    with _db() as conn:
+        ids = [r["id"] for r in conn.execute("SELECT id FROM repair_orders").fetchall()]
+    ro_id = str(body.get("id") or "").strip() or _new_ro_id(ids)
+    if ro_id in ids:
+        raise HTTPException(409, f"RO already exists: {ro_id}")
+    actor = principal.name if principal.kind != "shop" else str(body.get("_actor") or "")
+    actor_id = principal.id if principal.kind != "shop" else str(body.get("_actor_id") or "")
+    order = {
+        "id": ro_id,
+        "first_name": str(body.get("first_name") or ""),
+        "last_name": str(body.get("last_name") or ""),
+        "phone": str(body.get("phone") or ""),
+        "year": str(body.get("year") or ""),
+        "make": str(body.get("make") or ""),
+        "model": str(body.get("model") or ""),
+        "vin": str(body.get("vin") or ""),
+        "mileage": str(body.get("mileage") or ""),
+        "plate": str(body.get("plate") or ""),
+        "complaint": str(body.get("complaint") or ""),
+        "tech_notes": str(body.get("tech_notes") or ""),
+        "status": str(body.get("status") or "open"),
+        "photos": [],
+        "work_items": [],
+        "found_issues": [],
+        "advisor_actions": [],
+        "created": now,
+        "updated": now,
+        "technician_id": actor_id if principal.kind == "technician" else "",
+        "technician_name": actor if principal.kind == "technician" else "",
+    }
+    concern = str(body.get("complaint") or "").strip()
+    if concern:
+        order["work_items"] = [
+            {
+                "id": "wi-1",
+                "kind": "diag",
+                "concern": concern,
+                "notes": str(body.get("tech_notes") or ""),
+                "status": "open",
+                "created_by": actor,
+                "created_by_id": actor_id,
+                "created_by_role": principal.kind if principal.kind != "shop" else "",
+            }
+        ]
+    return put_ro(ro_id, {**order, "_actor": actor, "_actor_id": actor_id}, principal)
 
 
 @app.get("/ros")
@@ -552,7 +850,7 @@ def parts_suggest(q: str = "", limit: int = 25, _: None = Depends(require_auth))
 
 
 @app.post("/admin/reindex")
-def admin_reindex(_: None = Depends(require_auth)):
+def admin_reindex(_: Principal = Depends(require_shop)):
     with _db() as conn:
         stats = backfill_projections(conn)
         conn.commit()
@@ -571,34 +869,45 @@ def get_ro(ro_id: str, _: None = Depends(require_auth)):
 
 
 @app.put("/ros/{ro_id}")
-def put_ro(ro_id: str, body: dict, _: None = Depends(require_auth)):
+def put_ro(ro_id: str, body: dict, principal: Principal = Depends(require_auth)):
     body = dict(body)
     body["id"] = ro_id
-    updated = str(body.get("updated") or "")
     actor = str(
         body.get("_actor")
         or body.get("updated_by")
-        or ""
+        or (principal.name if principal.kind != "shop" else "")
     )
-    actor_id = str(body.get("_actor_id") or "")
-    strip_keys = {"_actor", "_actor_id"}
-    payload = json.dumps({k: v for k, v in body.items() if k not in strip_keys})
+    actor_id = str(
+        body.get("_actor_id")
+        or (principal.id if principal.kind != "shop" else "")
+    )
+    base_updated = str(body.get("_base_updated") or "")
+    strip_keys = {"_actor", "_actor_id", "_base_updated"}
+    incoming = {k: v for k, v in body.items() if k not in strip_keys}
     with _db() as conn:
         prev_row = conn.execute(
             "SELECT data FROM repair_orders WHERE id = ?", (ro_id,)
         ).fetchone()
         before = json.loads(prev_row["data"]) if prev_row else None
+        merged = merge_repair_order(
+            server=before,
+            incoming=incoming,
+            base_updated=base_updated,
+            actor=actor,
+        )
+        merged["id"] = ro_id
+        updated = str(merged.get("updated") or incoming.get("updated") or "")
+        payload = json.dumps(merged)
         conn.execute(
             """
             INSERT INTO repair_orders (id, data, updated)
             VALUES (?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated = excluded.updated
             """,
-            (ro_id, payload, updated or body.get("created") or ""),
+            (ro_id, payload, updated or merged.get("created") or ""),
         )
-        clean_body = {k: v for k, v in body.items() if k not in strip_keys}
-        sync_ro_projections(conn, clean_body)
-        for ev in diff_ro_events(before, body, actor=actor):
+        sync_ro_projections(conn, merged)
+        for ev in diff_ro_events(before, merged, actor=actor):
             ev_payload = dict(ev.get("payload") or {})
             if actor_id:
                 ev_payload.setdefault("actor_id", actor_id)
@@ -612,7 +921,7 @@ def put_ro(ro_id: str, body: dict, _: None = Depends(require_auth)):
                 at=ev.get("at"),
                 payload=ev_payload or None,
             )
-    return {k: v for k, v in body.items() if k not in strip_keys}
+    return merged
 
 
 @app.get("/advisor/recent")
@@ -697,7 +1006,7 @@ async def events_stream(
     authorization: str | None = Header(default=None),
 ):
     """SSE stream of new RO events (poll-backed). Skips the caller's own events."""
-    require_auth(authorization)
+    principal_from(authorization, request.cookies.get(COOKIE_NAME))
     last_id = int(since_id or 0)
 
     async def gen():
@@ -849,6 +1158,16 @@ def post_message(body: dict, _: None = Depends(require_auth)):
                 "actor_id": msg["from_id"],
             },
         )
+    preview = (msg.get("body") or "").strip().replace("\n", " ")
+    if len(preview) > 80:
+        preview = preview[:79] + "…"
+    webpush.notify_person(
+        VOLUMES.root,
+        person_id=to_id,
+        title=f"Car-RO · {msg.get('from_name') or 'Shop'}",
+        body=preview or "New message",
+        url="/messages",
+    )
     return {"ok": True, "message": msg}
 
 
@@ -1125,7 +1444,7 @@ def put_weekly_report_route(
 
 
 @app.delete("/ros/{ro_id}")
-def delete_ro(ro_id: str, _: None = Depends(require_auth)):
+def delete_ro(ro_id: str, _: Principal = Depends(require_shop)):
     """Remove RO metadata and photo directories on all volumes."""
     import shutil
 
@@ -1350,3 +1669,35 @@ def upload_status(token: str):
         "uploads": sess.uploads,
         "expires": sess.expires,
     }
+
+
+_PWA_DIR = _pwa_dir()
+_PWA_INDEX = (_PWA_DIR / "index.html") if _PWA_DIR else None
+
+
+def _serve_pwa_file(rel: str) -> FileResponse | None:
+    if not _PWA_DIR:
+        return None
+    path = (_PWA_DIR / rel).resolve()
+    try:
+        path.relative_to(_PWA_DIR.resolve())
+    except ValueError:
+        return None
+    if path.is_file():
+        return FileResponse(path)
+    return None
+
+
+if _PWA_INDEX is not None:
+
+    @app.get("/")
+    def pwa_root():
+        return FileResponse(_PWA_INDEX)
+
+    @app.get("/{full_path:path}")
+    def pwa_spa(full_path: str):
+        """Phone PWA shell — static files, then index.html for client routes."""
+        direct = _serve_pwa_file(full_path)
+        if direct is not None:
+            return direct
+        return FileResponse(_PWA_INDEX)

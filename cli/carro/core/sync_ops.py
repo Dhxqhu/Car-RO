@@ -82,6 +82,32 @@ def retry_unsynced_photos(order: RepairOrder) -> int:
     return uploaded
 
 
+def refresh_ro_if_clean(
+    store: LocalStore,
+    ro_id: str,
+    order: RepairOrder | None = None,
+    *,
+    timeout: float = 3.0,
+) -> RepairOrder | None:
+    """
+    If this PC has no queued edits, replace the local RO with the shop copy.
+    Unreachable server or dirty local → keep local (offline edits stay queued).
+    """
+    current = order if order is not None else store.get(ro_id)
+    if current is not None and store.needs_sync(current.id):
+        return current
+    remote = RemoteClient()
+    if not remote.enabled:
+        return current
+    try:
+        raw = remote.get_ro(ro_id, timeout=timeout)
+        fresh = RepairOrder.from_dict(raw)
+        store.save(fresh, mark_pending_sync=False)
+        return fresh
+    except Exception:
+        return current
+
+
 def try_push_ro(
     store: LocalStore,
     order: RepairOrder,
@@ -93,6 +119,8 @@ def try_push_ro(
     """
     Best-effort upsert to the shop server after a local save.
     On failure the RO stays marked needs_sync for later retry — local data is never rolled back.
+    After a successful PUT, adopt the (possibly merged) shop body so this PC
+    matches the amended document. Offline queue is unchanged on failure.
     """
     remote = RemoteClient()
     if not remote.enabled:
@@ -110,13 +138,20 @@ def try_push_ro(
         remote.check_server_compat()
         if retry_unsynced_photos(order):
             photos_changed = True
-        remote.upsert_ro(order, actor=who, actor_id=who_id)
-        store.mark_synced(order.id)
-        if photos_changed and save_photo_meta:
-            # Persist remote=True flags without re-dirtying the RO.
-            store.save(order, mark_pending_sync=False)
-            store.mark_synced(order.id)
-        return {"ok": True, "skipped": False}
+        base_updated = store.last_synced_updated(order.id)
+        raw = remote.upsert_ro(
+            order, actor=who, actor_id=who_id, base_updated=base_updated
+        )
+        adopted = order
+        if isinstance(raw, dict) and raw.get("id"):
+            try:
+                adopted = RepairOrder.from_dict(raw)
+            except Exception:
+                adopted = order
+        # Shop copy is source of truth after a successful push (merged or as-sent).
+        store.save(adopted, mark_pending_sync=False)
+        store.mark_synced(adopted.id)
+        return {"ok": True, "skipped": False, "order": adopted.to_dict()}
     except ServerTooOldError as exc:
         store.mark_needs_sync(order.id)
         return {

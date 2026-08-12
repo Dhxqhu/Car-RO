@@ -225,6 +225,16 @@ def _push_ro(
     )
 
 
+def _require_order(ro_id: str) -> RepairOrder:
+    """Load RO for an edit: pull shop copy first unless this PC has queued changes."""
+    from carro.core.sync_ops import refresh_ro_if_clean
+
+    order = refresh_ro_if_clean(store, ro_id, store.get(ro_id))
+    if not order:
+        raise HTTPException(404, "RO not found")
+    return order
+
+
 def _notify_tech_message(
     *,
     to_id: str,
@@ -1627,9 +1637,7 @@ def admin_work_item_time(ro_id: str, item_id: str, body: AdminTimeBody) -> dict[
         admin_set_worked_minutes,
     )
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     try:
         if body.action == "set":
             mins = int(body.minutes if body.minutes is not None else -1)
@@ -1780,35 +1788,37 @@ def create_ro(body: CreateRoBody | None = None) -> dict[str, Any]:
 
 @app.get("/ros/{ro_id}")
 def get_ro(ro_id: str) -> dict[str, Any]:
-    order = store.get(ro_id)
-    if not order:
-        remote = RemoteClient()
-        if remote.enabled:
-            try:
-                raw = remote.get_ro(ro_id)
-                order = RepairOrder.from_dict(raw)
-                # Cache from server — do not mark dirty for re-push.
-                store.save(order, mark_pending_sync=False)
-            except Exception:
-                order = None
-        if not order:
-            raise HTTPException(404, "RO not found")
-    return order.to_dict()
+    return _require_order(ro_id).to_dict()
 
 
 @app.put("/ros/{ro_id}")
 def put_ro(ro_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    from carro_server.ro_merge import merge_repair_order
+
     body = dict(body)
     body["id"] = ro_id
-    order = RepairOrder.from_dict(body)
+    incoming = RepairOrder.from_dict(body)
     # Stamp tech if empty
     tech = techmod.current_technician()
-    if tech and not order.technician_id:
-        order.technician_id = tech.id
-        order.technician_name = tech.name
+    advisor = advmod.current_advisor()
+    if tech and not incoming.technician_id:
+        incoming.technician_id = tech.id
+        incoming.technician_name = tech.name
+    current = store.get(ro_id)
+    if current is not None:
+        who, _who_id = _actor_from(tech, advisor)
+        merged = merge_repair_order(
+            server=current.to_dict(),
+            incoming=incoming.to_dict(),
+            base_updated=str(body.get("updated") or ""),
+            actor=who,
+        )
+        order = RepairOrder.from_dict(merged)
+    else:
+        order = incoming
     store.save(order)
     _push_ro(order)
-    return order.to_dict()
+    return (store.get(order.id) or order).to_dict()
 
 
 class WorkItemBody(BaseModel):
@@ -2008,9 +2018,7 @@ def assign_ro_route(ro_id: str, body: AssignRoBody) -> dict[str, Any]:
     from carro.core.advisor_actions import append_advisor_action
     from carro.core.assignment import assign_ro, assign_work_item
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     advisor = advmod.current_advisor()
     item_id = (getattr(body, "item_id", None) or "").strip()
     if item_id:
@@ -2142,9 +2150,7 @@ def set_current_task_route(ro_id: str, body: CurrentTaskBody) -> dict[str, Any]:
             401,
             "Log in as a technician, or as an advisor with working privilege, to set current work",
         )
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
 
     if body.active:
         for other in clear_tech_current_elsewhere(
@@ -2244,9 +2250,7 @@ def queue_action_route(
             )
     elif not tech:
         raise HTTPException(401, "Log in as a technician to manage your queue")
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
 
     item_id = (body.item_id or "").strip()
     actor_id = (tech.id if tech else (advisor.id if advisor else "")) or ""
@@ -2424,9 +2428,7 @@ def ro_flags_route(ro_id: str, body: RoFlagsBody) -> dict[str, Any]:
     advisor = advmod.current_advisor()
     if not advisor:
         raise HTTPException(401, "Log in as an advisor to set floor flags")
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     if body.waiter is None and body.urgent is None:
         raise HTTPException(400, "Provide waiter and/or urgent")
     set_ro_flags(order, waiter=body.waiter, urgent=body.urgent)
@@ -2458,9 +2460,7 @@ def work_item_queue_lane_route(
     advisor = advmod.current_advisor()
     if not advisor:
         raise HTTPException(401, "Only an advisor can set queue lanes")
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     req_by_id = ""
     req_by_name = ""
     was_pending_next_day = False
@@ -2522,9 +2522,7 @@ def work_item_request_next_day_route(
     tech = techmod.current_technician()
     if not tech:
         raise HTTPException(401, "Log in as a technician to request next day")
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     note = (body.note if body else "") or ""
     try:
         request_next_day(
@@ -2553,9 +2551,7 @@ def work_item_next_day_decision_route(
     advisor = advmod.current_advisor()
     if not advisor:
         raise HTTPException(401, "Only an advisor can decide next-day requests")
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     req_by_id = ""
     req_by_name = ""
     for w in ensure_work_items_on_order(order):
@@ -2620,9 +2616,7 @@ def work_item_next_day_request_read_route(ro_id: str, item_id: str) -> dict[str,
     advisor = advmod.current_advisor()
     if not advisor:
         raise HTTPException(401, "Only an advisor can mark queue requests read")
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     try:
         mark_next_day_request_read(order, item_id)
     except ValueError as exc:
@@ -2637,9 +2631,7 @@ def upsert_work_item_route(ro_id: str, body: WorkItemBody) -> dict[str, Any]:
     from carro.core.advisor_actions import append_advisor_action
     from carro.core.work_items import upsert_work_item
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     tech = techmod.current_technician()
     advisor = advmod.current_advisor()
     if not tech and not advisor:
@@ -2694,9 +2686,7 @@ def upsert_work_item_route(ro_id: str, body: WorkItemBody) -> dict[str, Any]:
 def found_issue_compose_begin(ro_id: str, body: FoundIssueComposeBody) -> dict[str, Any]:
     from carro.core.found_issues import begin_found_issue_compose
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     worker_id, worker_name = _bay_worker()
     try:
         begin_found_issue_compose(
@@ -2716,9 +2706,7 @@ def found_issue_compose_begin(ro_id: str, body: FoundIssueComposeBody) -> dict[s
 def found_issue_compose_cancel(ro_id: str, body: FoundIssueComposeBody) -> dict[str, Any]:
     from carro.core.found_issues import cancel_found_issue_compose
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     worker_id, worker_name = _bay_worker()
     try:
         cancel_found_issue_compose(
@@ -2738,9 +2726,7 @@ def found_issue_compose_cancel(ro_id: str, body: FoundIssueComposeBody) -> dict[
 def found_issue_create(ro_id: str, body: FoundIssueCreateBody) -> dict[str, Any]:
     from carro.core.found_issues import create_found_issue
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     worker_id, worker_name = _bay_worker()
     try:
         fi = create_found_issue(
@@ -2768,9 +2754,7 @@ def found_issue_update(ro_id: str, fi_id: str, body: FoundIssueUpdateBody) -> di
     """Edit a draft found issue (description / notes) before sending to the desk."""
     from carro.core.found_issues import update_found_issue
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     worker_id, worker_name = _bay_worker()
     if body.description is None and body.notes is None:
         raise HTTPException(400, "Provide description and/or notes to update")
@@ -2793,9 +2777,7 @@ def found_issue_submit(ro_id: str, body: FoundIssueSubmitBody) -> dict[str, Any]
     """Promote draft found issues to pending so the advisor desk is notified."""
     from carro.core.found_issues import submit_found_issues
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     worker_id, worker_name = _bay_worker()
     try:
         promoted = submit_found_issues(order, body.ids or None)
@@ -2820,9 +2802,7 @@ def found_issue_approve(
     from carro.core.advisor_actions import append_advisor_action
     from carro.core.found_issues import approve_found_issue
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     advisor = _require_advisor_for_desk(
         as_role=as_role,
         x_carro_as_role=x_carro_as_role,
@@ -2890,9 +2870,7 @@ def found_issue_unapprove(
     from carro.core.advisor_actions import append_advisor_action
     from carro.core.found_issues import unapprove_found_issue
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     advisor = _require_advisor_for_desk(
         as_role=as_role,
         x_carro_as_role=x_carro_as_role,
@@ -2930,9 +2908,7 @@ def found_issue_decline(
     from carro.core.advisor_actions import append_advisor_action
     from carro.core.found_issues import decline_found_issue
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     advisor = _require_advisor_for_desk(
         as_role=as_role,
         x_carro_as_role=x_carro_as_role,
@@ -3112,9 +3088,7 @@ def idle_notifications(
 def add_part_route(ro_id: str, item_id: str, body: PartBody) -> dict[str, Any]:
     from carro.core.work_items import add_part
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     tech = techmod.current_technician()
     advisor = advmod.current_advisor()
     if not tech and not advisor:
@@ -3143,9 +3117,7 @@ def patch_part_route(
 ) -> dict[str, Any]:
     from carro.core.work_items import set_part_status, update_part
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     tech = techmod.current_technician()
     advisor = advmod.current_advisor()
     if not tech and not advisor:
@@ -3193,9 +3165,7 @@ def patch_part_route(
 def delete_part_route(ro_id: str, item_id: str, part_id: str) -> dict[str, Any]:
     from carro.core.work_items import remove_part
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     tech = techmod.current_technician()
     advisor = advmod.current_advisor()
     if not tech and not advisor:
@@ -3217,9 +3187,7 @@ def work_item_time_route(ro_id: str, item_id: str, body: WorkItemTimeBody) -> di
     )
     from carro.core.work_items import add_worked_minutes, checkpoint_work_timer, stop_work_timer
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     tech = techmod.current_technician()
     if not tech:
         raise HTTPException(401, "Log in as a technician to log time")
@@ -3288,9 +3256,7 @@ def merge_work_items_route(ro_id: str, body: WorkItemMergeBody) -> dict[str, Any
     from carro.core.advisor_actions import append_advisor_action
     from carro.core.work_items import merge_work_items
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     actor_id, actor_name = _merge_actor()
     try:
         target = merge_work_items(
@@ -3331,9 +3297,7 @@ def unmerge_work_items_route(ro_id: str, item_id: str) -> dict[str, Any]:
     from carro.core.advisor_actions import append_advisor_action
     from carro.core.work_items import unmerge_work_items
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     actor_id, actor_name = _merge_actor()
     try:
         restored = unmerge_work_items(order, item_id)
@@ -3359,9 +3323,7 @@ def unmerge_work_items_route(ro_id: str, item_id: str) -> dict[str, Any]:
 def delete_work_item_route(ro_id: str, item_id: str) -> dict[str, Any]:
     from carro.core.work_items import remove_work_item
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     if not remove_work_item(order, item_id):
         raise HTTPException(404, f"Work item not found: {item_id}")
     store.save(order)
@@ -3373,9 +3335,7 @@ def delete_work_item_route(ro_id: str, item_id: str) -> dict[str, Any]:
 def delete_ro(ro_id: str) -> dict[str, Any]:
     from carro.config import photos_dir
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     # Advisors may delete any RO. Techs may only discard a blank new RO
     # (no work items) so they don't wipe live jobs by accident.
     advisor = advmod.current_advisor()
@@ -3413,9 +3373,7 @@ def pdf_ro(
     """Customer PDF. Set include_photos=false for ink-saving / B&W (no job photos)."""
     from carro.core.pdf_open import open_pdf_viewer
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     path = export_pdf(order, include_photos=include_photos)
     viewer = open_pdf_viewer(path) if open_viewer else None
     return {
@@ -3433,9 +3391,7 @@ def pdf_open_ro(ro_id: str, include_photos: bool = True) -> dict[str, Any]:
     from carro.config import DATA_DIR
     from carro.core.pdf_open import open_pdf_viewer
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     suffix = "" if include_photos else "-lite"
     path = DATA_DIR / "pdf" / f"{ro_id}{suffix}.pdf"
     if not path.is_file():
@@ -3455,9 +3411,7 @@ def pdf_file_ro(ro_id: str, include_photos: bool = True) -> FileResponse:
     """Serve the PDF for in-browser / webview viewing."""
     from carro.config import DATA_DIR
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     suffix = "" if include_photos else "-lite"
     path = DATA_DIR / "pdf" / f"{ro_id}{suffix}.pdf"
     if not path.is_file():
@@ -3482,9 +3436,7 @@ def pull_obd_ro(ro_id: str, body: PullObdBody | None = None) -> dict[str, Any]:
     import re
 
     body = body or PullObdBody()
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     raw = pull_vehicle_fields(prefer_vin=order.vin or None)
     if not raw:
         raise HTTPException(404, "Nothing found from obdscan / Saved Codes")
@@ -3549,9 +3501,7 @@ def pull_obd_ro(ro_id: str, body: PullObdBody | None = None) -> dict[str, Any]:
 
 @app.get("/ros/{ro_id}/photos")
 def list_photos(ro_id: str) -> dict[str, Any]:
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     return {"photos": list(order.photos or [])}
 
 
@@ -3567,9 +3517,7 @@ async def upload_photos(
 
     Optional found_issue_id also links the photos onto that found-issue request.
     """
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     if not files:
         raise HTTPException(400, "No files uploaded")
     fi_id = (found_issue_id or "").strip()
@@ -3611,9 +3559,7 @@ async def upload_photos(
 @app.post("/ros/{ro_id}/photos/ingest")
 def ingest_inbox_photos(ro_id: str, body: IngestPhotosBody | None = None) -> dict[str, Any]:
     """Attach images from the configured inbox directory (CLI ``photo ingest``)."""
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     body = body or IngestPhotosBody()
     cfg = load_config()
     provider = LocalPhotoIngress(cfg)
@@ -3640,9 +3586,7 @@ def ingest_inbox_photos(ro_id: str, body: IngestPhotosBody | None = None) -> dic
 @app.post("/ros/{ro_id}/photos/phone")
 def start_phone_upload(ro_id: str, body: PhoneUploadBody | None = None) -> dict[str, Any]:
     """Create a Tailscale phone / Shortcut upload session (needs server_url)."""
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     body = body or PhoneUploadBody()
     remote = RemoteClient()
     if not remote.enabled:
@@ -3679,9 +3623,7 @@ def start_phone_upload(ro_id: str, body: PhoneUploadBody | None = None) -> dict[
 @app.post("/ros/{ro_id}/photos/refresh")
 def refresh_photos_from_server(ro_id: str) -> dict[str, Any]:
     """Pull photo metadata + files after a phone/Shortcut upload."""
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     remote = RemoteClient()
     if not remote.enabled:
         raise HTTPException(400, "No server_url configured")
@@ -3709,9 +3651,7 @@ def get_photo_file(ro_id: str, relpath: str) -> FileResponse:
     """Serve a local photo file for the GUI preview."""
     from carro.config import photos_dir
 
-    order = store.get(ro_id)
-    if not order:
-        raise HTTPException(404, "RO not found")
+    order = _require_order(ro_id)
     name = Path(relpath).name
     path = photos_dir() / ro_id / name
     if not path.is_file():

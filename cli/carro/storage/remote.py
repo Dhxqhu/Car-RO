@@ -72,6 +72,7 @@ class RemoteClient:
         *,
         actor: str | None = None,
         actor_id: str | None = None,
+        base_updated: str | None = None,
     ) -> dict[str, Any]:
         payload = order.to_dict()
         # Who made this change (for notifications — other clients exclude self).
@@ -82,6 +83,9 @@ class RemoteClient:
             payload["_actor"] = who
         if who_id:
             payload["_actor_id"] = who_id
+        base = (base_updated or "").strip()
+        if base:
+            payload["_base_updated"] = base
         with httpx.Client(timeout=30.0) as client:
             r = client.put(
                 f"{self.base}/ros/{order.id}",

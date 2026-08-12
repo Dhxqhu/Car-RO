@@ -278,3 +278,64 @@ def test_perform_sync_drains_shifts(store: LocalStore, monkeypatch: pytest.Monke
     result = perform_sync(store, pending_only=True, sync_roster=False, do_prune=False)
     assert result.get("shifts", {}).get("failed", 0) == 0
     assert store.pending_shift_ops_count() == 0
+
+
+def test_refresh_skips_dirty_local_so_offline_edits_stay(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    from carro.core.models import RepairOrder
+    from carro.core.sync_ops import refresh_ro_if_clean
+
+    order = RepairOrder(id="RO-20260811-009", year="2017", status="open")
+    store.save(order, mark_pending_sync=True)
+    assert store.needs_sync(order.id)
+
+    class Boom:
+        enabled = True
+
+        def get_ro(self, ro_id: str, *, timeout: float = 30.0):
+            raise AssertionError("must not fetch shop copy while local is dirty")
+
+    monkeypatch.setattr("carro.core.sync_ops.RemoteClient", Boom)
+    kept = refresh_ro_if_clean(store, order.id)
+    assert kept is not None
+    assert kept.year == "2017"
+    assert store.needs_sync(order.id)
+
+
+def test_push_adopts_merged_body_and_clears_queue(
+    store: LocalStore, monkeypatch: pytest.MonkeyPatch
+):
+    from carro.core.models import RepairOrder
+    from carro.core.sync_ops import try_push_ro
+
+    order = RepairOrder(
+        id="RO-20260811-010",
+        year="2017",
+        status="open",
+        work_items=[{"id": "WI-001", "concern": "Brakes", "notes": "local notes"}],
+    )
+    store.save(order, mark_pending_sync=True)
+    captured: dict[str, Any] = {}
+
+    class OkRemote:
+        enabled = True
+
+        def check_server_compat(self, *, force: bool = False):
+            return {"api_version": 1}
+
+        def upsert_ro(self, ro, **kwargs):
+            captured["base"] = kwargs.get("base_updated")
+            data = ro.to_dict()
+            data["work_items"][0]["notes"] = "local notes\n\n---\n[Sam] advisor line"
+            data["updated"] = "2026-08-11T14:00:00"
+            return data
+
+    monkeypatch.setattr("carro.core.sync_ops.RemoteClient", OkRemote)
+    result = try_push_ro(store, store.get(order.id))
+    assert result.get("ok") is True
+    assert store.needs_sync(order.id) is False
+    fresh = store.get(order.id)
+    assert fresh is not None
+    assert "advisor line" in (fresh.work_items[0].get("notes") or "")
+    assert store.last_synced_updated(order.id) == "2026-08-11T14:00:00"
