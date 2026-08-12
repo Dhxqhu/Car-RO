@@ -66,6 +66,10 @@ export function filterTechEvents(
       return Boolean(myId && toId && toId === myId);
     }
     if (e.type === "item_assigned" || e.type === "ro_assigned" || e.type === "item_due_eod") {
+      const quiet = String(e.payload?.quiet_tech || "")
+        .trim()
+        .toLowerCase();
+      if (quiet === "1" || quiet === "true" || quiet === "yes") return false;
       return assignmentTargetsSelf(e, self);
     }
     if (e.type === "next_day_approved" || e.type === "next_day_declined") {
@@ -140,6 +144,10 @@ export function eventLabel(type: string): string {
     case "item_assigned":
     case "ro_assigned":
       return "Assigned";
+    case "day_plan_sent":
+      return "Day plan";
+    case "day_plan_scheduled":
+      return "Day plan scheduled";
     case "item_due_eod":
       return "End of day";
     case "item_wait_cleared":

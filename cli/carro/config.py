@@ -38,6 +38,8 @@ DEFAULTS: dict = {
     "idle_nudge_hours": 24,
     # Background push to shop server while engine/CLI menu is open. 0 = off.
     "autosync_minutes": 15,
+    # PA safety inspection work-item types (SI/IM, SI only) in pickers. Default on.
+    "pa_inspection_types": True,
     # Textual TUI theme (search / history / RO forms). Ctrl+P changes persist here.
     "textual_theme": "ansi-dark",
     "photos": {
@@ -75,7 +77,30 @@ def load_config() -> dict:
         cfg["logo_path"] = str(Path(cfg["logo_path"]).expanduser())
     cfg["server_url"] = str(cfg.get("server_url") or "").rstrip("/")
     cfg["autosync_minutes"] = _parse_autosync_minutes(cfg.get("autosync_minutes", 0))
+    cfg["pa_inspection_types"] = resolve_pa_inspection_types(cfg)
     return cfg
+
+
+def _parse_bool(raw: object, *, default: bool = True) -> bool:
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    s = str(raw).strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("0", "false", "no", "off", ""):
+        return False
+    return default
+
+
+def resolve_pa_inspection_types(cfg: dict | None = None) -> bool:
+    """Whether SI/IM and SI only appear in type pickers (PA shops). Default on."""
+    if cfg is None:
+        cfg = load_config()
+    return _parse_bool(cfg.get("pa_inspection_types"), default=True)
 
 
 def _parse_autosync_minutes(raw: object) -> int:
@@ -282,6 +307,7 @@ def save_config(cfg: dict) -> Path:
         f"local_parts_received_keep_hours = {resolve_local_parts_received_keep_hours(cfg):g}",
         f"idle_nudge_hours = {resolve_idle_nudge_hours(cfg):g}",
         f"autosync_minutes = {_parse_autosync_minutes(cfg.get('autosync_minutes', 0))}",
+        f"pa_inspection_types = {'true' if resolve_pa_inspection_types(cfg) else 'false'}",
         f'textual_theme = {_toml_str(cfg.get("textual_theme", "ansi-dark"))}',
         "",
         "[photos]",

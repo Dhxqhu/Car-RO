@@ -17,11 +17,13 @@ WORK_ITEM_STATUSES = (
     "done",
     "declined",
 )
-WORK_ITEM_TYPES = ("diag", "service", "repair", "other")
+WORK_ITEM_TYPES = ("diag", "service", "repair", "si_im", "si_only", "other")
 WORK_ITEM_TYPE_LABELS = {
     "diag": "Diag",
     "service": "Service",
     "repair": "Repair",
+    "si_im": "SI/IM",
+    "si_only": "SI only",
     "other": "Other",
 }
 PART_STATUSES = ("new_request", "ordered", "received", "received_wrong")
@@ -193,7 +195,7 @@ class WorkItem:
     notes: str = ""
     # Shop-only notes — never on customer PDF / advisor customer view.
     private_notes: str = ""
-    # Required category for new items: diag | service | repair | other
+    # Required category: diag | service | repair | si_im | si_only | other
     item_type: str = "other"
     status: str = "open"
     priority: int = 0
@@ -221,6 +223,15 @@ class WorkItem:
     queue_day: str = ""
     # Advisor: must finish today (set on assign); clears when parked next_day/long_term.
     due_eod: bool = False
+    # Split-RO bay order (1..N). 0 = unset / not split. Distinct from display `priority`.
+    car_turn: int = 0
+    # Tech work-path: same number on every item this tech has on this RO in this lane.
+    queue_order: int = 0
+    # Grouped session: companion finished with another item's clocked time (still two billed jobs).
+    time_group_id: str = ""
+    completed_with_id: str = ""
+    # On the timed item: siblings completed in this session (0m, still billed separately).
+    covers_item_ids: list[str] = field(default_factory=list)
     # Tech request to push to next day (advisor approves; apply on clock-out if current).
     next_day_request: dict[str, Any] = field(default_factory=dict)
     # Shop-only efficiency: time actually spent (not billed hours). Never on customer PDF.
@@ -249,6 +260,10 @@ class WorkItem:
     linked_photo_ids: list[str] = field(default_factory=list)
     # Last merge undo payload (sources + target_before). Cleared on unmerge.
     merge_snapshot: dict[str, Any] = field(default_factory=dict)
+    # Booked from a service-plan due line (rolls next_due when this item is done).
+    service_plan_id: str = ""
+    service_plan_line_id: str = ""
+    service_plan_enroll: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -299,6 +314,20 @@ class WorkItem:
             clean["priority"] = int(clean.get("priority") or 0)
         except (TypeError, ValueError):
             clean["priority"] = 0
+        try:
+            clean["car_turn"] = max(0, int(clean.get("car_turn") or 0))
+        except (TypeError, ValueError):
+            clean["car_turn"] = 0
+        try:
+            clean["queue_order"] = max(0, int(clean.get("queue_order") or 0))
+        except (TypeError, ValueError):
+            clean["queue_order"] = 0
+        clean["time_group_id"] = str(clean.get("time_group_id") or "").strip()
+        clean["completed_with_id"] = str(clean.get("completed_with_id") or "").strip()
+        covers = clean.get("covers_item_ids") or []
+        if not isinstance(covers, list):
+            covers = []
+        clean["covers_item_ids"] = [str(x).strip() for x in covers if str(x).strip()]
         from carro.core.queue_lanes import (
             empty_next_day_request,
             normalize_next_day_request,
@@ -456,6 +485,9 @@ def upsert_work_item(
     assign_to_name: str | None = None,
     allow_manual_assign: bool = False,
     require_item_type: bool = False,
+    service_plan_id: str | None = None,
+    service_plan_line_id: str | None = None,
+    service_plan_enroll: str | None = None,
 ) -> WorkItem:
     """
     Create/update a work item.
@@ -475,7 +507,7 @@ def upsert_work_item(
                 break
     is_new = target is None
     if is_new and require_item_type and not (item_type or "").strip():
-        raise ValueError("Choose a work item type: diag, service, repair, or other")
+        raise ValueError("Choose a work item type: diag, service, repair, SI/IM, SI only, or other")
     if target is None:
         wid = item_id or new_work_item_id(items)
         target = WorkItem(
@@ -530,6 +562,13 @@ def upsert_work_item(
             target.status = st
     if priority is not None:
         target.priority = int(priority)
+
+    if service_plan_id is not None:
+        target.service_plan_id = str(service_plan_id).strip()
+    if service_plan_line_id is not None:
+        target.service_plan_line_id = str(service_plan_line_id).strip()
+    if service_plan_enroll is not None:
+        target.service_plan_enroll = str(service_plan_enroll).strip().lower()
 
     if allow_manual_assign and actor_role == "advisor":
         if assign_to_id is not None:
@@ -2026,6 +2065,12 @@ def _append_time_entry(
     if not (item.worked_first_at or "").strip():
         item.worked_first_at = ts
     item.worked_last_at = ts
+    covers = [
+        str(x).strip()
+        for x in (getattr(item, "covers_item_ids", None) or [])
+        if str(x).strip()
+    ]
+    gid = str(getattr(item, "time_group_id", "") or "").strip()
     entry = {
         "minutes": mins,
         "tech_id": (tech_id or "").strip(),
@@ -2034,6 +2079,10 @@ def _append_time_entry(
         "note": (note or "").strip(),
         "source": source,
     }
+    if covers:
+        entry["covers_item_ids"] = covers
+    if gid:
+        entry["time_group_id"] = gid
     log = list(item.time_log or [])
     log.append(entry)
     item.time_log = log
@@ -2074,21 +2123,36 @@ def start_work_timer(
     *,
     tech_id: str = "",
     tech_name: str = "",
+    stop_siblings: bool = True,
 ) -> WorkItem:
-    """Start a running timer on this item (stops other timers on the same RO first)."""
+    """Start a running timer on this item.
+
+    By default stops other timers on the same RO. ``stop_siblings=False`` leaves
+    other techs' timers running (split-RO override / simultaneous work). This
+    tech's other timers on the RO are always stopped (one live job per person).
+    """
+    from carro.core.assignment import matches_tech
+
     items = ensure_work_items_on_order(order)
     target = next((w for w in items if w.id == item_id), None)
     if not target:
         raise ValueError(f"Work item not found: {item_id}")
-    # Flush any other running timers on this RO
     for w in items:
-        if w.id != item_id and (w.timer_started_at or "").strip():
-            _stop_timer_on_item(w)
-            # Other item left mid-work → between-session downtime on that item
-            if not (w.downtime_started_at or "").strip():
-                st = (w.status or "").strip().lower()
-                if st not in ("waiting_parts", "waiting_customer", "done", "declined"):
-                    start_downtime(w, reason="between_sessions")
+        if w.id == item_id or not (w.timer_started_at or "").strip():
+            continue
+        mine = matches_tech(
+            w.timer_tech_id,
+            w.timer_tech_name,
+            me_id=tech_id,
+            me_name=tech_name,
+        )
+        if not stop_siblings and not mine:
+            continue
+        _stop_timer_on_item(w)
+        if not (w.downtime_started_at or "").strip():
+            st = (w.status or "").strip().lower()
+            if st not in ("waiting_parts", "waiting_customer", "done", "declined"):
+                start_downtime(w, reason="between_sessions")
     # Resume from downtime on this item
     stop_downtime(target)
     if (target.timer_started_at or "").strip():

@@ -15,6 +15,7 @@ TECH_PUSH_TYPES = frozenset(
         "next_day_approved",
         "next_day_declined",
         "shop_message",
+        "day_plan_sent",
     }
 )
 
@@ -29,6 +30,8 @@ ADVISOR_PUSH_TYPES = frozenset(
         "item_assigned",
         "ro_assigned",
         "item_due_eod",
+        "day_plan_scheduled",
+        "day_plan_sent",
     }
 )
 
@@ -45,6 +48,8 @@ EVENT_LABELS = {
     "found_issue_created": "Found issue reported",
     "ro_approval_requested": "Customer approval requested",
     "ro_ready_to_bill": "Ready to bill",
+    "day_plan_sent": "Day plan",
+    "day_plan_scheduled": "Day plan scheduled",
 }
 
 
@@ -143,8 +148,21 @@ def recipients_for_event(
             out.add(to_id)
         return sorted(out)
 
-    if etype in TECH_PUSH_TYPES:
-        out |= _ids_matching_assignee(payload, str(ev.get("summary") or ""), people)
+    if etype == "day_plan_sent":
+        to_id = str(
+            payload.get("to_id") or payload.get("assigned_to_id") or ""
+        ).strip()
+        if to_id and _norm(to_id) != actor_id_n:
+            out.add(to_id)
+        # Advisors also see sent plans via ADVISOR_PUSH below
+    else:
+        quiet_tech = str(payload.get("quiet_tech") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if etype in TECH_PUSH_TYPES and not quiet_tech:
+            out |= _ids_matching_assignee(payload, str(ev.get("summary") or ""), people)
 
     if etype in ADVISOR_PUSH_TYPES:
         for p in people:

@@ -30,6 +30,76 @@ def assign_ro(
         order.status = "assigned"
 
 
+def sync_ro_current_from_timers(order: RepairOrder) -> None:
+    """Point RO current_* at the latest live item timer (supports parallel techs)."""
+    from carro.core.work_items import ensure_work_items_on_order
+
+    items = ensure_work_items_on_order(order)
+    live = [w for w in items if (w.timer_started_at or "").strip()]
+    if not live:
+        order.current_tech_id = ""
+        order.current_tech_name = ""
+        order.current_since = ""
+        order.current_item_id = ""
+        return
+    live.sort(key=lambda w: str(w.timer_started_at or ""), reverse=True)
+    top = live[0]
+    order.current_tech_id = (top.timer_tech_id or "").strip()
+    order.current_tech_name = (top.timer_tech_name or "").strip()
+    order.current_since = (top.timer_started_at or "").strip()
+    order.current_item_id = top.id
+
+
+def release_tech_current(
+    order: RepairOrder,
+    *,
+    tech_id: str,
+    tech_name: str,
+    item_id: str = "",
+) -> bool:
+    """Stop this tech's live timer(s) on the RO without killing other techs' clocks."""
+    from carro.core.work_items import (
+        ensure_work_items_on_order,
+        stop_work_timer,
+    )
+
+    items = ensure_work_items_on_order(order)
+    wid = (item_id or "").strip()
+    stopped = False
+    for w in list(items):
+        if not (w.timer_started_at or "").strip():
+            continue
+        if wid and w.id != wid:
+            continue
+        if not matches_tech(
+            w.timer_tech_id, w.timer_tech_name, me_id=tech_id, me_name=tech_name
+        ):
+            continue
+        stop_work_timer(order, w.id, bank_between_sessions=True)
+        stopped = True
+    if not stopped and matches_tech(
+        order.current_tech_id,
+        order.current_tech_name,
+        me_id=tech_id,
+        me_name=tech_name,
+    ):
+        if not wid or (order.current_item_id or "") == wid:
+            from carro.core.work_items import stop_all_work_timers
+
+            # Legacy single-current RO with no item timer — clear the pointer only
+            # if nobody else is timing.
+            live = [
+                w
+                for w in ensure_work_items_on_order(order)
+                if (w.timer_started_at or "").strip()
+            ]
+            if not live:
+                clear_current_task(order)
+                return True
+    sync_ro_current_from_timers(order)
+    return stopped
+
+
 def clear_current_task(order: RepairOrder) -> None:
     from carro.core.queue_lanes import apply_pending_queue_lane, normalize_queue_lane
     from carro.core.work_items import (
@@ -72,6 +142,8 @@ def set_current_task(
     tech_name: str,
     item_id: str = "",
     also_assign: bool = True,
+    override: bool = False,
+    store: Any = None,
 ) -> None:
     """
     Current bay work is always a work item (itemized concern), never just the RO/car.
@@ -97,8 +169,21 @@ def set_current_task(
         )
 
     if also_assign:
-        assign_work_item(order, wid, tech_id=tid, tech_name=tname)
-    start_work_timer(order, wid, tech_id=tid, tech_name=tname)
+        assign_work_item(order, wid, tech_id=tid, tech_name=tname, store=store)
+    from carro.core.car_turn import CarTurnBlocked, car_hold_for_item
+
+    hold = car_hold_for_item(order, wid)
+    if hold.get("waiting_on_car") and not override:
+        who = hold.get("car_held_by_name") or "another tech"
+        held = hold.get("car_held_item_id") or "another item"
+        raise CarTurnBlocked(f"{who} has the car first on {held}")
+    start_work_timer(
+        order,
+        wid,
+        tech_id=tid,
+        tech_name=tname,
+        stop_siblings=not override,
+    )
     order.current_tech_id = tid
     order.current_tech_name = tname
     order.current_since = now_iso()
@@ -116,6 +201,7 @@ def add_to_my_queue(
     tech_id: str,
     tech_name: str,
     item_id: str = "",
+    store: Any = None,
 ) -> None:
     """Plan work: assign a work item to this tech (queue is per concern, not per car)."""
     from carro.core.models import CLOSED_STATUSES
@@ -137,7 +223,9 @@ def add_to_my_queue(
         raise ValueError(
             "This work item is assigned to another technician — ask an advisor to reassign"
         )
-    if not assign_work_item(order, wid, tech_id=tech_id, tech_name=tech_name):
+    if not assign_work_item(
+        order, wid, tech_id=tech_id, tech_name=tech_name, store=store
+    ):
         raise ValueError(f"Work item not found: {wid}")
     if order.status in ("", "open"):
         order.status = "assigned"
@@ -149,6 +237,7 @@ def remove_from_my_queue(
     tech_id: str,
     tech_name: str,
     item_id: str = "",
+    store: Any = None,
 ) -> bool:
     """
     Drop a work item from this tech's planned queue.
@@ -198,9 +287,9 @@ def remove_from_my_queue(
     if not mine and not is_current:
         return False
     if mine:
-        assign_work_item(order, wid, tech_id="", tech_name="")
-    if is_current:
-        clear_current_task(order)
+        assign_work_item(order, wid, tech_id="", tech_name="", store=store)
+    if is_current or (target.timer_started_at or "").strip():
+        release_tech_current(order, tech_id=tech_id, tech_name=tech_name, item_id=wid)
     return True
 
 
@@ -296,6 +385,7 @@ def complete_work_item(
     *,
     tech_id: str = "",
     tech_name: str = "",
+    store: Any = None,
 ) -> None:
     """Mark one work item done — banks timer; RO ready-to-bill when all items finished."""
     from carro.core.models import CLOSED_STATUSES
@@ -320,8 +410,7 @@ def complete_work_item(
         raise ValueError(f"Work item not found: {wid}")
     if (target.timer_started_at or "").strip():
         stop_work_timer(order, wid, bank_between_sessions=False)
-    if (order.current_item_id or "").strip() == wid:
-        clear_current_task(order)
+    sync_ro_current_from_timers(order)
     items = ensure_work_items_on_order(order)
     target = next((w for w in items if w.id == wid), None)
     if not target:
@@ -333,6 +422,9 @@ def complete_work_item(
     set_item_status(target, "done")
     target.updated = now_iso()
     order.work_items = work_items_to_dicts(items)
+    from carro.core.car_turn import rebalance_car_turns
+
+    rebalance_car_turns(order)
     rollup_ro_status_from_items(order)
 
     # Diag done → draft repair request (tech Send to advisor before desk ping).
@@ -360,6 +452,113 @@ def complete_work_item(
         )
         if completed_lane == "long_term" or sibling_long_term:
             repark_siblings_long_term(order, except_id=wid)
+
+    if store is not None and completed_lane in ("daily", "next_day"):
+        from carro.core.queue_lanes import rebalance_tech_lane
+
+        tid = (tech_id or "").strip() or (target.assigned_to_id or "").strip()
+        tname = (tech_name or "").strip() or (target.assigned_to_name or "").strip()
+        if tid or tname:
+            rebalance_tech_lane(
+                store,
+                tech_id=tid,
+                tech_name=tname,
+                lane=completed_lane,
+                extra=order,
+            )
+
+
+def complete_items_with(
+    order: RepairOrder,
+    *,
+    timed_id: str,
+    companion_ids: list[str],
+    also_complete_timed: bool = False,
+    tech_id: str = "",
+    tech_name: str = "",
+    store: Any = None,
+) -> None:
+    """Mark companions done at 0 minutes; tag the timed item's session as covering them."""
+    import uuid
+
+    from carro.core.work_items import (
+        ensure_work_items_on_order,
+        set_item_status,
+        stop_downtime,
+        stop_work_timer,
+        work_items_to_dicts,
+    )
+
+    timed_wid = (timed_id or "").strip()
+    comps = [str(x).strip() for x in (companion_ids or []) if str(x).strip() and str(x).strip() != timed_wid]
+    if not timed_wid:
+        raise ValueError("with_item_id required (the item that has the time)")
+    if not comps:
+        raise ValueError("item_id required (the item to complete with no extra time)")
+    items = ensure_work_items_on_order(order)
+    timed = next((w for w in items if w.id == timed_wid), None)
+    if not timed:
+        raise ValueError(f"Work item not found: {timed_wid}")
+    gid = (timed.time_group_id or "").strip() or f"tg-{uuid.uuid4().hex[:12]}"
+    timed.time_group_id = gid
+    covers = [str(x).strip() for x in (timed.covers_item_ids or []) if str(x).strip()]
+    ts = now_iso()
+    for cid in comps:
+        companion = next((w for w in items if w.id == cid), None)
+        if not companion:
+            raise ValueError(f"Work item not found: {cid}")
+        st = (companion.status or "").strip().lower()
+        if st in ("done", "declined"):
+            continue
+        if (companion.timer_started_at or "").strip():
+            stop_work_timer(order, cid, bank_between_sessions=False)
+        stop_downtime(companion)
+        set_item_status(companion, "done")
+        companion.completed_with_id = timed_wid
+        companion.time_group_id = gid
+        companion.updated = ts
+        if cid not in covers:
+            covers.append(cid)
+        log = list(companion.time_log or [])
+        log.append(
+            {
+                "minutes": 0,
+                "tech_id": (tech_id or "").strip(),
+                "tech_name": (tech_name or "").strip(),
+                "at": ts,
+                "note": f"completed with {timed_wid}",
+                "source": "complete_with",
+                "time_group_id": gid,
+                "completed_with_id": timed_wid,
+            }
+        )
+        companion.time_log = log
+    timed.covers_item_ids = covers
+    for entry in timed.time_log or []:
+        if not isinstance(entry, dict):
+            continue
+        existing = [
+            str(x).strip()
+            for x in (entry.get("covers_item_ids") or [])
+            if str(x).strip()
+        ]
+        for cid in covers:
+            if cid not in existing:
+                existing.append(cid)
+        entry["covers_item_ids"] = existing
+        entry["time_group_id"] = gid
+    timed.updated = ts
+    order.work_items = work_items_to_dicts(items)
+    sync_ro_current_from_timers(order)
+    from carro.core.car_turn import rebalance_car_turns
+
+    rebalance_car_turns(order)
+    if also_complete_timed:
+        complete_work_item(
+            order, timed_wid, tech_id=tech_id, tech_name=tech_name, store=store
+        )
+    else:
+        rollup_ro_status_from_items(order)
 
 
 def set_work_item_waiting(
@@ -390,8 +589,7 @@ def set_work_item_waiting(
         raise ValueError(f"Work item not found: {wid}")
     if (target.timer_started_at or "").strip():
         stop_work_timer(order, wid, bank_between_sessions=False)
-    if (order.current_item_id or "").strip() == wid:
-        clear_current_task(order)
+    sync_ro_current_from_timers(order)
     items = ensure_work_items_on_order(order)
     target = next((w for w in items if w.id == wid), None)
     if not target:
@@ -660,20 +858,39 @@ def clear_tech_current_elsewhere(
     tech_name: str,
     except_id: str = "",
 ) -> list[RepairOrder]:
-    """Clear current-task on other ROs for this tech. Returns mutated orders."""
+    """Clear this tech's live work on other ROs. Returns mutated orders."""
+    from carro.core.work_items import ensure_work_items_on_order
+
     cleared: list[RepairOrder] = []
     for order in orders:
         if except_id and order.id == except_id:
             continue
-        if not (order.current_tech_id or order.current_tech_name):
-            continue
-        if matches_tech(
+        has_timer = any(
+            (w.timer_started_at or "").strip()
+            and matches_tech(
+                w.timer_tech_id, w.timer_tech_name, me_id=tech_id, me_name=tech_name
+            )
+            for w in ensure_work_items_on_order(order)
+        )
+        is_pointer = matches_tech(
             order.current_tech_id,
             order.current_tech_name,
             me_id=tech_id,
             me_name=tech_name,
-        ):
-            clear_current_task(order)
+        )
+        if not has_timer and not is_pointer:
+            continue
+        if release_tech_current(order, tech_id=tech_id, tech_name=tech_name) or is_pointer:
+            if not has_timer and is_pointer:
+                live = [
+                    w
+                    for w in ensure_work_items_on_order(order)
+                    if (w.timer_started_at or "").strip()
+                ]
+                if live:
+                    sync_ro_current_from_timers(order)
+                else:
+                    clear_current_task(order)
             cleared.append(order)
     return cleared
 
@@ -685,14 +902,18 @@ def assign_work_item(
     tech_id: str = "",
     tech_name: str = "",
     due_eod: bool | None = None,
+    store: Any = None,
 ) -> bool:
     """Assign (or clear) a single work item — the unit of planned / billed work."""
-    from carro.core.queue_lanes import ensure_daily_on_assign
+    from carro.core.queue_lanes import ensure_daily_on_assign, normalize_queue_lane
 
     items = ensure_work_items_on_order(order)
     target = next((w for w in items if w.id == item_id), None)
     if not target:
         return False
+    prev_tech_id = (target.assigned_to_id or "").strip()
+    prev_tech_name = (target.assigned_to_name or "").strip()
+    prev_lane = normalize_queue_lane(target.queue_lane, default="daily")
     tid = (tech_id or "").strip()
     tname = (tech_name or "").strip()
     if not tid and not tname:
@@ -700,15 +921,29 @@ def assign_work_item(
         target.assigned_to_name = ""
         target.assigned_at = ""
         target.due_eod = False
+        target.queue_order = 0
     else:
         target.assigned_to_id = tid
         target.assigned_to_name = tname
         target.assigned_at = now_iso()
-        ensure_daily_on_assign(target)
         if due_eod is not None:
             target.due_eod = bool(due_eod)
     target.updated = now_iso()
     order.work_items = work_items_to_dicts(items)
+    from carro.core.car_turn import ensure_car_turns_on_assign
+
+    ensure_car_turns_on_assign(order, item_id)
+    if store is not None:
+        from carro.core.queue_lanes import sync_queue_after_assign
+
+        sync_queue_after_assign(
+            store,
+            order,
+            item_id,
+            prev_tech_id=prev_tech_id,
+            prev_tech_name=prev_tech_name,
+            prev_lane=prev_lane,
+        )
     return True
 
 
@@ -876,6 +1111,10 @@ def summarize_item_job(
     istatus = str(item.get("status") or "open")
     totals = normalize_stage_totals(item.get("stage_totals"))
     req = normalize_next_day_request(item.get("next_day_request"))
+    live_timer = bool(str(item.get("timer_started_at") or "").strip())
+    from carro.core.car_turn import car_hold_for_item
+
+    hold = car_hold_for_item(d, wid)
     return {
         "id": f"{d.get('id') or ''}:{wid}",  # unique key for lists
         "ro_id": d.get("id") or "",
@@ -917,12 +1156,32 @@ def summarize_item_job(
         ),
         "stage_live_minutes": live_stage_minutes(item),
         "downtime_minutes": total_downtime_minutes(item),
-        "is_current": bool(cur_item and cur_item == wid),
+        "is_current": bool(live_timer or (cur_item and cur_item == wid)),
         "current_tech_id": d.get("current_tech_id") or "",
         "current_tech_name": d.get("current_tech_name") or "",
         "current_since": d.get("current_since") or "",
         "updated": item.get("updated") or d.get("updated") or d.get("created") or "",
         "from_found_issue_id": "",
+        "car_turn": int(hold.get("car_turn") or 0),
+        "car_turn_count": int(hold.get("car_turn_count") or 0),
+        "split_ro": bool(hold.get("split_ro")),
+        "waiting_on_car": bool(hold.get("waiting_on_car")),
+        "car_held_by_name": hold.get("car_held_by_name") or "",
+        "car_held_item_id": hold.get("car_held_item_id") or "",
+        "car_held_concern": hold.get("car_held_concern") or "",
+        "time_group_id": str(item.get("time_group_id") or ""),
+        "completed_with_id": str(item.get("completed_with_id") or ""),
+        "covers_item_ids": [
+            str(x).strip()
+            for x in (item.get("covers_item_ids") or [])
+            if str(x).strip()
+        ],
+        "queue_order": max(
+            0,
+            int(item.get("queue_order") or 0)
+            if str(item.get("queue_order") or "0").strip().lstrip("-").isdigit()
+            else 0,
+        ),
     }
 
 
@@ -950,6 +1209,7 @@ def build_assigned_board(
     mine_next_day: list[dict[str, Any]] = []
     mine_long_term: list[dict[str, Any]] = []
     next_day: list[dict[str, Any]] = []
+    next_day_unassigned: list[dict[str, Any]] = []
     long_term: list[dict[str, Any]] = []
     long_term_unassigned: list[dict[str, Any]] = []
     long_term_by_tech: dict[str, dict[str, Any]] = {}
@@ -963,7 +1223,9 @@ def build_assigned_board(
     no_call_no_show: list[dict[str, Any]] = []
     by_tech: dict[str, dict[str, Any]] = {}
     daily_by_tech: dict[str, dict[str, Any]] = {}
+    next_day_by_tech: dict[str, dict[str, Any]] = {}
     unassigned: list[dict[str, Any]] = []
+    needs_work_item: list[dict[str, Any]] = []
     now_working: list[dict[str, Any]] = []
     my_current: dict[str, Any] | None = None
     defer_requests: list[dict[str, Any]] = []
@@ -974,6 +1236,22 @@ def build_assigned_board(
         lane = normalize_queue_lane(job.get("queue_lane"), default="daily")
         if lane == "next_day":
             next_day.append(job)
+            aid = str(job.get("assigned_to_id") or "")
+            aname = str(job.get("assigned_to_name") or "")
+            key = _tech_key(aid, aname)
+            if not key:
+                next_day_unassigned.append(job)
+            else:
+                bucket = next_day_by_tech.setdefault(
+                    key,
+                    {
+                        "id": aid,
+                        "name": aname or aid or "Unknown",
+                        "jobs": [],
+                    },
+                )
+                if not any(j.get("id") == job["id"] for j in bucket["jobs"]):
+                    bucket["jobs"].append(job)
         elif lane == "long_term":
             long_term.append(job)
             aid = str(job.get("assigned_to_id") or "")
@@ -1060,8 +1338,29 @@ def build_assigned_board(
                 job["from_found_issue_id"] = linked_fi
             return job
 
-        # Working now = tech + specific work item
-        if cur_id or cur_name:
+        # Working now = every live item timer (parallel techs on one RO), plus RO pointer.
+        seen_working: set[str] = set()
+        for it in raw_items:
+            if not str(it.get("timer_started_at") or "").strip():
+                continue
+            job = _stamp_fi(summarize_item_job(d, it))
+            job["is_current"] = True
+            tid = str(it.get("timer_tech_id") or "")
+            tname = str(it.get("timer_tech_name") or "")
+            entry = {
+                "tech_id": tid,
+                "tech_name": tname,
+                "since": str(it.get("timer_started_at") or ""),
+                "item_id": str(it.get("id") or ""),
+                "order": summary,
+                "job": job,
+                "is_me": matches_tech(tid, tname, me_id=tech_id, me_name=tech_name),
+            }
+            now_working.append(entry)
+            seen_working.add(str(it.get("id") or ""))
+            if entry["is_me"] and my_current is None:
+                my_current = job
+        if (cur_id or cur_name) and cur_item not in seen_working:
             current_item = next((it for it in raw_items if it.get("id") == cur_item), None)
             job = (
                 _stamp_fi(summarize_item_job(d, current_item))
@@ -1086,6 +1385,7 @@ def build_assigned_board(
                     "from_found_issue_id": fi_by_work_item.get(str(cur_item or ""), ""),
                 }
             )
+            job["is_current"] = True
             entry = {
                 "tech_id": cur_id,
                 "tech_name": cur_name,
@@ -1096,10 +1396,20 @@ def build_assigned_board(
                 "is_me": matches_tech(cur_id, cur_name, me_id=tech_id, me_name=tech_name),
             }
             now_working.append(entry)
-            if entry["is_me"]:
+            if entry["is_me"] and my_current is None:
                 my_current = job
 
         if status in CLOSED_STATUSES:
+            continue
+
+        open_items = [
+            it
+            for it in raw_items
+            if str(it.get("status") or "open").strip().lower() not in ("done", "declined")
+        ]
+        if not open_items:
+            # RO saved without a work item (e.g. SI/IM enroll not chosen yet) — still needs desk attention.
+            needs_work_item.append(summary)
             continue
 
         for it in raw_items:
@@ -1143,8 +1453,8 @@ def build_assigned_board(
                 _lane_bucket(job)
                 continue
             if not aid and not aname:
-                # Long-term parks only under Queues → Unassigned long-term.
-                if lane != "long_term":
+                # Parked lanes have their own Queues sections — not Desk unassigned.
+                if lane not in ("long_term", "next_day"):
                     unassigned.append(job)
                 _lane_bucket(job)
                 continue
@@ -1193,23 +1503,38 @@ def build_assigned_board(
     daily_by_tech_list = sorted(
         daily_by_tech.values(), key=lambda b: (b.get("name") or "").lower()
     )
+    next_day_by_tech_list = sorted(
+        next_day_by_tech.values(), key=lambda b: (b.get("name") or "").lower()
+    )
     long_term_by_tech_list = sorted(
         long_term_by_tech.values(), key=lambda b: (b.get("name") or "").lower()
     )
+
+    def sort_queue_path(lst: list[dict[str, Any]]) -> None:
+        lst.sort(
+            key=lambda j: (
+                int(j.get("queue_order") or 0) or 9999,
+                str(j.get("assigned_at") or ""),
+                str(j.get("ro_id") or ""),
+                str(j.get("item_id") or ""),
+            )
+        )
+
     for lst in (
         mine,
-        mine_daily,
-        mine_next_day,
         mine_long_term,
-        next_day,
         long_term,
         long_term_unassigned,
+        next_day_unassigned,
         unassigned,
+        needs_work_item,
         waiting_parts,
         waiting_customer,
         defer_requests,
     ):
         sort_floor(lst)
+    for lst in (mine_daily, mine_next_day, next_day):
+        sort_queue_path(lst)
     found_issues_pending.sort(key=lambda o: o.get("found_at") or "", reverse=True)
     for lst in (ready_to_bill, waiting_other_items, billed_out, canceled, no_call_no_show):
         lst.sort(key=lambda o: o.get("updated") or "", reverse=True)
@@ -1227,12 +1552,15 @@ def build_assigned_board(
     )
     now_working.sort(key=lambda e: (e.get("tech_name") or "").lower())
     for b in by_tech_list:
-        sort_floor(b["jobs"])
+        sort_queue_path(b["jobs"])
         b["orders"].sort(key=lambda o: o.get("updated") or "", reverse=True)
     for b in daily_by_tech_list:
-        sort_floor(b["jobs"])
+        sort_queue_path(b["jobs"])
+    for b in next_day_by_tech_list:
+        sort_queue_path(b["jobs"])
     for b in long_term_by_tech_list:
         sort_floor(b["jobs"])
+
 
     return {
         "mine": mine,
@@ -1240,10 +1568,12 @@ def build_assigned_board(
         "mine_next_day": mine_next_day,
         "mine_long_term": mine_long_term,
         "next_day": next_day,
+        "next_day_unassigned": next_day_unassigned,
         "long_term": long_term,
         "long_term_unassigned": long_term_unassigned,
         "long_term_by_tech": long_term_by_tech_list,
         "daily_by_tech": daily_by_tech_list,
+        "next_day_by_tech": next_day_by_tech_list,
         "defer_requests": defer_requests,
         "waiting_parts": waiting_parts,
         "waiting_customer": waiting_customer,
@@ -1255,6 +1585,7 @@ def build_assigned_board(
         "no_call_no_show": no_call_no_show,
         "by_tech": by_tech_list,
         "unassigned": unassigned,
+        "needs_work_item": needs_work_item,
         "now_working": now_working,
         "my_current": my_current,
         "tech_id": tech_id,

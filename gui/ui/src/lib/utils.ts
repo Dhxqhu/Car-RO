@@ -192,3 +192,20 @@ export function formatEmbeddedLabels(text: string | undefined | null): string {
   out = out.replace(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/gi, (tok) => formatLabel(tok));
   return out;
 }
+
+export function turnOrdinal(n: number): string {
+  const v = Math.abs(Math.trunc(n));
+  const rem100 = v % 100;
+  const rem10 = v % 10;
+  const suf =
+    rem100 >= 11 && rem100 <= 13
+      ? "th"
+      : rem10 === 1
+        ? "st"
+        : rem10 === 2
+          ? "nd"
+          : rem10 === 3
+            ? "rd"
+            : "th";
+  return `${v}${suf}`;
+}

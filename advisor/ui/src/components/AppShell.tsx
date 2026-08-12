@@ -14,6 +14,8 @@ import carroWordmarkOnDark from "@/assets/carro-wordmark-on-dark.png";
 
 const links = [
   { to: "/", label: "Desk pool", end: true },
+  { to: "/calendar", label: "Calendar" },
+  { to: "/plans", label: "Plans" },
   { to: "/orders", label: "Orders" },
   { to: "/parts", label: "Parts" },
   { to: "/messages", label: "Messages" },

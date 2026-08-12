@@ -30,7 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { MessageComposeDialog } from "@/components/MessageComposeDialog";
-import { formatDurationMinutes, formatPhotoTag, formatShopTime, formatStatus, formatUploadMode, formatWorkedHours, formatWorkedMinutes } from "@/lib/utils";
+import { formatDurationMinutes, formatPhotoTag, formatShopTime, formatStatus, formatUploadMode, formatWorkedHours, formatWorkedMinutes, turnOrdinal } from "@/lib/utils";
 
 const empty: RepairOrder = {
   id: "",
@@ -78,8 +78,15 @@ const ITEM_TYPES = [
   { value: "diag", label: "Diag" },
   { value: "service", label: "Service" },
   { value: "repair", label: "Repair" },
+  { value: "si_im", label: "SI/IM" },
+  { value: "si_only", label: "SI only" },
   { value: "other", label: "Other" },
 ] as const;
+const PA_ITEM_TYPE_VALUES = new Set(["si_im", "si_only"]);
+
+function visibleItemTypes(paEnabled: boolean) {
+  return ITEM_TYPES.filter((t) => paEnabled || !PA_ITEM_TYPE_VALUES.has(t.value));
+}
 const ITEM_STATUSES = [
   "open",
   "in_progress",
@@ -140,6 +147,35 @@ function itemTypeLabel(t?: string): string {
 function partStatusLabel(s?: string): string {
   const hit = PART_STATUSES.find((x) => x.value === s);
   return hit?.label || formatStatus(s);
+}
+
+function itemIsOpen(item: WorkItem): boolean {
+  const s = (item.status || "").toLowerCase();
+  return s !== "done" && s !== "declined";
+}
+
+function itemOccupiesBay(item: WorkItem): boolean {
+  const s = (item.status || "").toLowerCase();
+  return s === "open" || s === "in_progress";
+}
+
+function assigneeKey(item: WorkItem): string {
+  return (item.assigned_to_id || item.assigned_to_name || "").trim().toLowerCase();
+}
+
+function roIsSplit(items: WorkItem[]): boolean {
+  const keys = new Set(items.filter(itemIsOpen).map(assigneeKey).filter(Boolean));
+  return keys.size >= 2;
+}
+
+function carHoldForItem(items: WorkItem[], item: WorkItem): WorkItem | null {
+  if (!roIsSplit(items) || !itemOccupiesBay(item)) return null;
+  const occ = items.filter((w) => itemIsOpen(w) && itemOccupiesBay(w));
+  const turns = occ.map((w) => Number(w.car_turn) || 0).filter((n) => n > 0);
+  const active = turns.length ? Math.min(...turns) : 0;
+  const mine = Number(item.car_turn) || 0;
+  if (!(mine > 0 && active > 0 && mine > active)) return null;
+  return occ.find((w) => (Number(w.car_turn) || 0) === active) || null;
 }
 
 /** True when Unmerge can restore absorbed items (snapshot or legacy merge note). */
@@ -311,6 +347,7 @@ export function RoEditorPage() {
   const [workingPrivilege, setWorkingPrivilege] = useState(false);
   /** New work-item assignee: "" = Unassigned (explicit). */
   const [draftAssignId, setDraftAssignId] = useState("");
+  const [paInspectionTypes, setPaInspectionTypes] = useState(true);
   /** Per found-issue tech pick for Approve → Assign */
   const [fiApprovePick, setFiApprovePick] = useState<Record<string, string>>({});
   const [suppliers, setSuppliers] = useState<Array<{ id: string; name: string }>>([]);
@@ -340,6 +377,10 @@ export function RoEditorPage() {
     void api
       .listSuppliers()
       .then((r) => setSuppliers(r.suppliers || []))
+      .catch(() => undefined);
+    void api
+      .getConfig()
+      .then((c) => setPaInspectionTypes(c.pa_inspection_types !== false))
       .catch(() => undefined);
   }, []);
 
@@ -405,12 +446,17 @@ export function RoEditorPage() {
     setBayPart(emptyPartDraft(order.make));
   }
 
-  async function setItemCurrent(itemId: string, active: boolean) {
+  async function setItemCurrent(itemId: string, active: boolean, override = false) {
     if (!order.id || (!me && !workingPrivilege)) return;
     setCurrentBusy(true);
     setErr("");
     try {
-      const next = await api.setCurrentTask(order.id, active, active ? itemId : undefined);
+      const next = await api.setCurrentTask(
+        order.id,
+        active,
+        active ? itemId : undefined,
+        override,
+      );
       setOrder(next);
       if (active) {
         const item = (next.work_items || []).find((w) => w.id === itemId);
@@ -472,8 +518,14 @@ export function RoEditorPage() {
       | "request_approval"
       | "item_waiting_customer"
       | "item_release_wait"
-      | "item_return_to_requester",
+      | "item_return_to_requester"
+      | "complete_with",
     itemId?: string,
+    extra?: {
+      with_item_id?: string;
+      also_item_ids?: string[];
+      also_complete_timed?: boolean;
+    },
   ) {
     if (!order.id) return;
     const archiveLike =
@@ -491,13 +543,14 @@ export function RoEditorPage() {
     setCurrentBusy(true);
     setErr("");
     try {
-      const next = await api.queueAction(order.id, action, itemId);
+      const next = await api.queueAction(order.id, action, itemId, extra);
       setOrder(next);
       const labels: Record<string, string> = {
         add: itemId ? `Queued ${itemId}` : "Added to your planned queue",
         remove: itemId ? `Removed ${itemId} from queue` : "Removed from your queue",
         complete: "Marked done — in advisor ready-to-bill queue",
         complete_item: itemId ? `Completed ${itemId}` : "Item completed",
+        complete_with: itemId ? `Completed ${itemId} with grouped time` : "Completed with grouped time",
         billed_out: "Marked billed out (closed)",
         canceled: "Marked canceled (archived)",
         no_call_no_show: "Marked no call / no show (archived)",
@@ -687,10 +740,9 @@ export function RoEditorPage() {
     setErr("");
     setMsg("");
     try {
-      const saved = await api.saveRo(order);
+      await api.saveRo(order);
       dirtyRef.current = false;
-      setOrder(saved);
-      setMsg("Saved");
+      nav("/");
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Save failed");
     } finally {
@@ -1472,6 +1524,22 @@ export function RoEditorPage() {
               const breakdown = itemTechBreakdown(item);
               const canSelect = (item.status || "").toLowerCase() !== "declined";
               const selected = mergeSelected.includes(item.id);
+              const allItems = order.work_items || [];
+              const split = roIsSplit(allItems);
+              const hold = carHoldForItem(allItems, item);
+              const openSiblings = allItems.filter(
+                (w) => w.id !== item.id && itemIsOpen(w),
+              );
+              const timedSiblings = allItems.filter(
+                (w) =>
+                  w.id !== item.id &&
+                  (w.timer_started_at ||
+                    (Number(w.worked_minutes) || 0) > 0 ||
+                    currentItemId === w.id),
+              );
+              const completeWithChoices =
+                timedSiblings.length > 0 ? timedSiblings : openSiblings;
+              const turnCount = allItems.filter(itemIsOpen).length;
               return (
                 <li
                   key={item.id}
@@ -1503,6 +1571,12 @@ export function RoEditorPage() {
                       {item.id} · {itemTypeLabel(item.item_type)} · {formatStatus(item.status)}
                       {item.assigned_to_name ? ` · queue ${item.assigned_to_name}` : ""}
                       {isCurrent ? " · your current work" : ""}
+                      {item.completed_with_id
+                        ? ` · done with ${item.completed_with_id} (grouped time)`
+                        : ""}
+                      {(item.covers_item_ids || []).length
+                        ? ` · covers ${(item.covers_item_ids || []).join(", ")}`
+                        : ""}
                       {(item.parts || []).length
                         ? ` · ${(item.parts || []).length} part(s)`
                         : ""}
@@ -1510,8 +1584,52 @@ export function RoEditorPage() {
                         ? " · private notes"
                         : ""}
                     </div>
+                    {hold ? (
+                      <div className="mt-1 text-xs text-danger">
+                        Wait — {hold.assigned_to_name || hold.assigned_to_id || "another tech"} has
+                        the car first ({hold.id}
+                        {hold.concern ? ` · ${hold.concern}` : ""})
+                      </div>
+                    ) : null}
                     </div>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {deskAdvisor && split && itemIsOpen(item) && turnCount > 1 ? (
+                        <label className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted">
+                          Car turn
+                          <select
+                            className="h-8 rounded-lg border border-border bg-surface px-2 text-xs text-fg"
+                            value={item.car_turn || 1}
+                            disabled={itemBusy || currentBusy}
+                            onChange={(e) =>
+                              void (async () => {
+                                if (!order.id) return;
+                                setItemBusy(true);
+                                setErr("");
+                                try {
+                                  const next = await api.setWorkItemCarTurn(
+                                    order.id,
+                                    item.id,
+                                    Number(e.target.value),
+                                  );
+                                  setOrder(next);
+                                } catch (err) {
+                                  setErr(
+                                    err instanceof Error ? err.message : "Could not set car turn",
+                                  );
+                                } finally {
+                                  setItemBusy(false);
+                                }
+                              })()
+                            }
+                          >
+                            {Array.from({ length: turnCount }, (_, i) => i + 1).map((n) => (
+                              <option key={n} value={n}>
+                                {turnOrdinal(n)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
                       { (me || workingPrivilege) && !CLOSED_RO.has(order.status) && order.status !== "done" ? (
                         <>
                           {!onQueue ? (
@@ -1630,6 +1748,25 @@ export function RoEditorPage() {
                                 Start work
                               </Button>
                             </>
+                          ) : hold ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              disabled={currentBusy || itemBusy}
+                              onClick={() => {
+                                if (
+                                  !window.confirm(
+                                    "Work this item while another tech has the car? Both timers will run.",
+                                  )
+                                ) {
+                                  return;
+                                }
+                                void setItemCurrent(item.id, true, true);
+                              }}
+                            >
+                              Override — work now
+                            </Button>
                           ) : (
                             <Button
                               type="button"
@@ -1641,6 +1778,30 @@ export function RoEditorPage() {
                               Start work
                             </Button>
                           )}
+                          {!isCurrent && itemIsOpen(item) && completeWithChoices.length ? (
+                            <select
+                              className="h-8 rounded-lg border border-border bg-surface px-2 text-xs text-fg"
+                              defaultValue=""
+                              disabled={currentBusy || itemBusy}
+                              aria-label="Complete with"
+                              onChange={(e) => {
+                                const withId = e.target.value;
+                                e.currentTarget.value = "";
+                                if (!withId) return;
+                                void queueAction("complete_with", item.id, {
+                                  with_item_id: withId,
+                                });
+                              }}
+                            >
+                              <option value="">Complete with…</option>
+                              {completeWithChoices.map((w) => (
+                                <option key={w.id} value={w.id}>
+                                  {w.id}
+                                  {w.assigned_to_name ? ` · ${w.assigned_to_name}` : ""}
+                                </option>
+                              ))}
+                            </select>
+                          ) : null}
                           <Button
                             type="button"
                             size="sm"
@@ -2271,16 +2432,53 @@ export function RoEditorPage() {
             <select
               className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
               value={draftItem.item_type || ""}
-              onChange={(e) => setDraftItem((d) => ({ ...d, item_type: e.target.value }))}
+              onChange={(e) =>
+                setDraftItem((d) => ({
+                  ...d,
+                  item_type: e.target.value,
+                  service_plan_enroll:
+                    e.target.value === "si_im" || e.target.value === "si_only"
+                      ? d.service_plan_enroll || ""
+                      : "",
+                }))
+              }
             >
               <option value="">Choose type…</option>
-              {ITEM_TYPES.map((t) => (
+              {visibleItemTypes(paInspectionTypes).map((t) => (
                 <option key={t.value} value={t.value}>
                   {t.label}
                 </option>
               ))}
             </select>
           </Field>
+          {!draftItem.id &&
+          (draftItem.item_type === "si_im" || draftItem.item_type === "si_only") ? (
+            <div className="rounded-lg border border-border p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted">Service plan</p>
+              <p className="mt-1 text-sm">
+                Enroll this customer in a yearly{" "}
+                {draftItem.item_type === "si_only" ? "SI only" : "SI/IM"} plan? We will call when it is due.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={draftItem.service_plan_enroll === "yes" ? "default" : "secondary"}
+                  onClick={() => setDraftItem((d) => ({ ...d, service_plan_enroll: "yes" }))}
+                >
+                  Enroll
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={draftItem.service_plan_enroll === "no" ? "default" : "secondary"}
+                  onClick={() => setDraftItem((d) => ({ ...d, service_plan_enroll: "no" }))}
+                >
+                  Not now
+                </Button>
+              </div>
+            </div>
+          ) : null}
           {!draftItem.id && deskAdvisor ? (
             <Field label="Assign to (required)">
               <select
@@ -2858,6 +3056,18 @@ export function RoEditorPage() {
                 setItemBusy(true);
                 setErr("");
                 try {
+                  if (
+                    !draftItem.id &&
+                    (draftItem.item_type === "si_im" || draftItem.item_type === "si_only") &&
+                    draftItem.service_plan_enroll !== "yes" &&
+                    draftItem.service_plan_enroll !== "no"
+                  ) {
+                    setErr(
+                      "SI/IM: choose Enroll or Not now for the yearly service plan before adding this item — otherwise the RO stays empty and will not show in Unassigned.",
+                    );
+                    setItemBusy(false);
+                    return;
+                  }
                   // Persist customer/vehicle edits before work-item write (store loads from disk).
                   await api.saveRo(order);
                   const assignTech = draftAssignId
@@ -2870,6 +3080,11 @@ export function RoEditorPage() {
                     private_notes: draftItem.private_notes || "",
                     item_type: draftItem.item_type || undefined,
                     status: draftItem.status,
+                    ...(!draftItem.id
+                      ? {
+                          service_plan_enroll: draftItem.service_plan_enroll || "",
+                        }
+                      : {}),
                     ...(!draftItem.id && deskAdvisor
                       ? {
                           assign_to_id: draftAssignId || "",

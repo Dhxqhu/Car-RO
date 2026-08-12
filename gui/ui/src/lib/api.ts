@@ -26,6 +26,9 @@ export type WorkItemTimeEntry = {
   at?: string;
   note?: string;
   source?: string;
+  covers_item_ids?: string[];
+  time_group_id?: string;
+  completed_with_id?: string;
 };
 
 export type WorkItemPart = {
@@ -53,6 +56,10 @@ export type WorkItem = {
   item_type?: string;
   status: string;
   priority?: number;
+  car_turn?: number;
+  time_group_id?: string;
+  completed_with_id?: string;
+  covers_item_ids?: string[];
   assigned_to_id?: string;
   assigned_to_name?: string;
   assigned_at?: string;
@@ -105,6 +112,8 @@ export type WorkItem = {
     target_before?: { concern?: string; notes?: string; private_notes?: string };
     sources?: WorkItem[];
   };
+  service_plan_id?: string;
+  service_plan_line_id?: string;
 };
 
 export type PartsSheetRow = {
@@ -306,6 +315,17 @@ export type AssignedJobSummary = {
   current_tech_name?: string;
   current_since?: string;
   updated?: string;
+  car_turn?: number;
+  car_turn_count?: number;
+  split_ro?: boolean;
+  waiting_on_car?: boolean;
+  car_held_by_name?: string;
+  car_held_item_id?: string;
+  car_held_concern?: string;
+  time_group_id?: string;
+  completed_with_id?: string;
+  covers_item_ids?: string[];
+  queue_order?: number;
 };
 
 export type AssignedOrderSummary = {
@@ -374,8 +394,14 @@ export type AssignedBoard = {
   mine_next_day?: AssignedJobSummary[];
   mine_long_term?: AssignedJobSummary[];
   next_day?: AssignedJobSummary[];
+  next_day_unassigned?: AssignedJobSummary[];
   long_term?: AssignedJobSummary[];
   daily_by_tech?: Array<{
+    id: string;
+    name: string;
+    jobs: AssignedJobSummary[];
+  }>;
+  next_day_by_tech?: Array<{
     id: string;
     name: string;
     jobs: AssignedJobSummary[];
@@ -581,6 +607,8 @@ export type ConfigSnapshot = {
   photos_inbox_dir: string;
   photos_provider: string;
   autosync_minutes: number;
+  /** PA SI/IM + SI only in type pickers (default true). */
+  pa_inspection_types?: boolean;
   autosync?: {
     enabled: boolean;
     interval_minutes: number;
@@ -1066,11 +1094,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  setCurrentTask: (roId: string, active = true, itemId?: string) =>
+  setCurrentTask: (roId: string, active = true, itemId?: string, override = false) =>
     req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/current`, {
       method: "POST",
-      body: JSON.stringify({ active, item_id: itemId || null }),
+      body: JSON.stringify({
+        active,
+        item_id: itemId || null,
+        override: active ? override : false,
+      }),
     }),
+  setWorkItemCarTurn: (roId: string, itemId: string, turn: number) =>
+    req<RepairOrder>(
+      `/ros/${encodeURIComponent(roId)}/work-items/${encodeURIComponent(itemId)}/car-turn`,
+      { method: "POST", body: JSON.stringify({ turn }) },
+    ),
   queueAction: (
     roId: string,
     action:
@@ -1078,6 +1115,7 @@ export const api = {
       | "remove"
       | "complete"
       | "complete_item"
+      | "complete_with"
       | "billed_out"
       | "canceled"
       | "no_call_no_show"
@@ -1091,10 +1129,21 @@ export const api = {
       | "item_release_wait"
       | "item_return_to_requester",
     itemId?: string,
+    extra?: {
+      with_item_id?: string;
+      also_item_ids?: string[];
+      also_complete_timed?: boolean;
+    },
   ) =>
     msgReq<RepairOrder>(`/ros/${encodeURIComponent(roId)}/queue`, {
       method: "POST",
-      body: JSON.stringify({ action, item_id: itemId || null }),
+      body: JSON.stringify({
+        action,
+        item_id: itemId || null,
+        with_item_id: extra?.with_item_id || null,
+        also_item_ids: extra?.also_item_ids || null,
+        also_complete_timed: extra?.also_complete_timed || false,
+      }),
     }),
   setRoFlags: (roId: string, flags: { waiter?: boolean; urgent?: boolean }) =>
     req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/flags`, {

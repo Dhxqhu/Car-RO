@@ -301,6 +301,7 @@ def diff_ro_events(
                         "payload": {
                             "assigned_to_id": aid,
                             "assigned_to_name": aname,
+                            "quiet_tech": "true",
                         },
                     }
                 )
@@ -387,6 +388,8 @@ def diff_ro_events(
                     "payload": {
                         "assigned_to_id": str(w.get("assigned_to_id") or ""),
                         "assigned_to_name": str(w.get("assigned_to_name") or ""),
+                        # Desk assigns are batched via Day plan — don't push each item to techs.
+                        "quiet_tech": "true",
                     },
                 }
             )

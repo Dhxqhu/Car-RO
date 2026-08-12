@@ -34,6 +34,7 @@ const emptyCfg = (): ConfigSnapshot => ({
   photos_inbox_dir: "",
   photos_provider: "local",
   autosync_minutes: 15,
+  pa_inspection_types: true,
   disk: { path: "", free_gb: 0, total_gb: 0 },
   recommend: { local_keep: 0, local_photo_keep: 0 },
   keep_presets: [],
@@ -60,6 +61,7 @@ export function SettingsPage() {
   const [photosDir, setPhotosDir] = useState("");
   const [inboxDir, setInboxDir] = useState("");
   const [autosyncMinutes, setAutosyncMinutes] = useState("15");
+  const [paInspectionTypes, setPaInspectionTypes] = useState(true);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [generatedToken, setGeneratedToken] = useState("");
@@ -96,6 +98,7 @@ export function SettingsPage() {
     setPhotosDir(c.photos_dir);
     setInboxDir(c.photos_inbox_dir);
     setAutosyncMinutes(String(c.autosync_minutes ?? 0));
+    setPaInspectionTypes(c.pa_inspection_types !== false);
     setBilledKeep(String(c.local_billed_keep ?? 20));
     setPartsKeepHours(String(c.local_parts_received_keep_hours ?? 24));
     setIdleNudgeHours(String(c.idle_nudge_hours ?? 24));
@@ -246,6 +249,7 @@ export function SettingsPage() {
         local_parts_received_keep_hours: partsHours,
         idle_nudge_hours: idleHours,
         autosync_minutes: mins,
+        pa_inspection_types: paInspectionTypes,
         photos_dir: photosDir,
         photos_inbox_dir: inboxDir,
       };
@@ -446,6 +450,21 @@ export function SettingsPage() {
               {cfg.autosync.last_error ? ` · ${cfg.autosync.last_error}` : ""}
             </p>
           ) : null}
+        </Field>
+        <Field label="PA inspection types (SI/IM, SI only)">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="size-4 accent-[var(--accent)]"
+              checked={paInspectionTypes}
+              onChange={(e) => setPaInspectionTypes(e.target.checked)}
+            />
+            Show SI/IM and SI only in work-item and calendar pickers
+          </label>
+          <p className="mt-1 text-xs text-muted">
+            Pennsylvania safety / emissions inspection names. Leave on for PA shops; turn
+            off elsewhere. Existing SI/IM jobs still display normally.
+          </p>
         </Field>
       </section>
 

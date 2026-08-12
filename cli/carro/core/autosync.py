@@ -48,6 +48,7 @@ _status: dict[str, Any] = {
     "last_error": None,
     "next_due_at": None,
     "pending_retry": False,
+    "last_weekly_archive": None,
 }
 
 
@@ -131,6 +132,13 @@ def _worker() -> None:
                 _status["pending_retry"] = bool(remote_on and pending_n > 0)
 
             now = time.time()
+
+            try:
+                from carro.core.day_plans import flush_registered_next_day_sends
+
+                flush_registered_next_day_sends()
+            except Exception as exc:  # noqa: BLE001
+                log.debug("day plan flush tick: %s", exc)
 
             if not remote_on:
                 with _lock:
@@ -233,6 +241,41 @@ def _run_once(*, maintenance: bool) -> bool:
                     )
             except Exception as exc:  # noqa: BLE001
                 log.warning("queue rollover: %s", exc)
+            try:
+                from carro.core.day_plans import flush_registered_next_day_sends
+
+                flush_registered_next_day_sends()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("day plan flush: %s", exc)
+            try:
+                from carro.core.weekly_reports import archive_closed_week_if_needed
+
+                archive_result = archive_closed_week_if_needed(store)
+                with _lock:
+                    _status["last_weekly_archive"] = archive_result
+                if archive_result.get("archived"):
+                    log.info(
+                        "weekly archive: saved %s",
+                        archive_result.get("week_start"),
+                    )
+                elif archive_result.get("skipped"):
+                    log.debug(
+                        "weekly archive skipped: %s (%s)",
+                        archive_result.get("skipped"),
+                        archive_result.get("week_start") or "",
+                    )
+                elif not archive_result.get("ok"):
+                    log.warning(
+                        "weekly archive: %s",
+                        archive_result.get("error") or archive_result,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("weekly archive: %s", exc)
+                with _lock:
+                    _status["last_weekly_archive"] = {
+                        "ok": False,
+                        "error": str(exc),
+                    }
 
         # Always pending-only pushes; maintenance also syncs roster + prune.
         result = perform_sync(

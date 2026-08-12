@@ -38,6 +38,7 @@ from carro.config import (  # noqa: E402
     resolve_local_parts_received_keep_hours,
     resolve_idle_nudge_hours,
     resolve_local_photo_keep,
+    resolve_pa_inspection_types,
     save_config,
 )
 from carro.core import technicians as techmod  # noqa: E402
@@ -73,8 +74,20 @@ async def _lifespan(_app: FastAPI):
         logging.getLogger("carro.engine").warning("Shop server compat check: %s", exc)
     start_autosync(store)
     try:
+        from carro.core.day_plans import set_day_plan_notify
+
+        set_day_plan_notify(_notify_tech_message)
+    except Exception:
+        pass
+    try:
         yield
     finally:
+        try:
+            from carro.core.day_plans import set_day_plan_notify
+
+            set_day_plan_notify(None)
+        except Exception:
+            pass
         stop_autosync()
 
 
@@ -141,6 +154,7 @@ class ConfigBody(BaseModel):
     local_parts_received_keep_hours: float | None = None
     idle_nudge_hours: float | None = None
     autosync_minutes: int | None = None
+    pa_inspection_types: bool | None = None
     photos_dir: str | None = None
     photos_inbox_dir: str | None = None
     photos_provider: str | None = None
@@ -161,6 +175,63 @@ class HistoryNewFromBody(BaseModel):
 
 class CreateRoBody(BaseModel):
     prefer_actor: Literal["advisor", "tech"] = "advisor"
+
+
+class AppointmentBody(BaseModel):
+    id: str | None = None
+    scheduled_at: str = ""
+    all_day: bool = False
+    first_name: str = ""
+    last_name: str = ""
+    phone: str = ""
+    year: str = ""
+    make: str = ""
+    model: str = ""
+    vin: str = ""
+    notes: str = ""
+    tag: str = "other"
+    requested_tech_id: str = ""
+    requested_tech_name: str = ""
+    prior_ro_id: str = ""
+    service_plan_id: str = ""
+    service_plan_line_id: str = ""
+    service_plan_enroll: str = ""
+
+
+class AppointmentArchiveBody(BaseModel):
+    status: Literal["canceled", "no_show"]
+
+
+class AppointmentConfirmBody(BaseModel):
+    outcome: Literal["confirmed", "canceled", "no_answer", "veto_next", "veto"]
+
+
+class ServicePlanBody(BaseModel):
+    id: str | None = None
+    first_name: str = ""
+    last_name: str = ""
+    phone: str = ""
+    year: str = ""
+    make: str = ""
+    model: str = ""
+    vin: str = ""
+    notes: str = ""
+    lines: list[dict[str, Any]] | None = None
+
+
+class ServicePlanLineBody(BaseModel):
+    id: str | None = None
+    label: str = ""
+    interval_months: int = 12
+    tag: str = "service"
+    last_done_at: str = ""
+    next_due: str = ""
+    notes: str = ""
+    delete: bool = False
+
+
+class ServicePlanCallBody(BaseModel):
+    outcome: Literal["confirmed", "no_answer", "skip", "canceled", "veto_next", "veto"]
 
 
 class PhoneUploadBody(BaseModel):
@@ -979,18 +1050,71 @@ def engine_save_weekly_report(week_start: str) -> dict[str, Any]:
     remote = RemoteClient()
     if not remote.enabled:
         raise HTTPException(503, "Shop server_url required to archive weekly reports")
-    data = engine_weekly_report(week_start)
-    live = data["live"]
+    from carro.core.weekly_reports import (
+        build_weekly_efficiency_report,
+        build_weekly_tech_report,
+        parse_week_start,
+    )
+
+    orders, shifts, _start_s = _orders_and_shifts_for_week(week_start)
+    start = parse_week_start(week_start or None)
+    live = build_weekly_tech_report(
+        orders, shifts, week_start=start, include_live=False
+    )
+    efficiency = build_weekly_efficiency_report(
+        orders, shifts, week_start=start, include_live=False
+    )
+    payload = dict(live)
+    payload["efficiency"] = efficiency
     try:
         return remote.save_weekly_report(
             live["week_start"],
             week_end=live["week_end"],
-            payload=live,
+            payload=payload,
             created_by=advisor.name,
             created_by_id=advisor.id,
         )
     except Exception as exc:
         raise HTTPException(502, f"Could not save report: {exc}") from exc
+
+
+@app.post("/technicians/{tech_id}/queue")
+def set_technician_queue_route(tech_id: str, body: TechQueueBody) -> dict[str, Any]:
+    """Advisor numbers a tech's today or next-day path by RO (car) order."""
+    from carro.core.queue_lanes import set_tech_queue
+
+    advisor = advmod.current_advisor()
+    if not advisor:
+        raise HTTPException(401, "Only an advisor can reorder technician queues")
+    tid = (tech_id or "").strip()
+    tname = (body.tech_name or "").strip()
+    if not tid and not tname:
+        raise HTTPException(400, "tech_id required")
+    if tid:
+        match = next((t for t in techmod.list_technicians() if t.id == tid), None)
+        if match:
+            tname = tname or match.name
+    try:
+        touched = set_tech_queue(
+            store,
+            tech_id=tid,
+            tech_name=tname,
+            lane=body.lane,
+            ro_ids=list(body.ro_ids or []),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    for o in touched:
+        store.save(o)
+        _push_ro(o, actor=advisor.name, actor_id=advisor.id)
+    return {
+        "ok": True,
+        "tech_id": tid,
+        "tech_name": tname,
+        "lane": body.lane,
+        "ro_ids": [r for r in (body.ro_ids or []) if str(r).strip()],
+        "updated": [o.id for o in touched],
+    }
 
 
 @app.get("/technicians")
@@ -1771,6 +1895,177 @@ def extended_search(
     }
 
 
+@app.get("/calendar")
+def calendar_range(start: str = "", end: str = "") -> dict[str, Any]:
+    """Week/month appointments + parts ordered/received overlay. Advisor desk."""
+    from carro.core.appointments import calendar_payload
+
+    _require_advisor_for_desk(detail="Log in as an advisor to open the calendar")
+    return calendar_payload(store, start=start, end=end)
+
+
+@app.post("/appointments")
+def upsert_appointment_route(body: AppointmentBody) -> dict[str, Any]:
+    from carro.core.appointments import upsert_appointment
+
+    advisor = _require_advisor_for_desk(detail="Log in as an advisor to book appointments")
+    try:
+        appt = upsert_appointment(
+            store,
+            body.model_dump(),
+            actor=advisor.name,
+            actor_id=advisor.id,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return appt
+
+
+@app.post("/appointments/{appt_id}/archive")
+def archive_appointment_route(appt_id: str, body: AppointmentArchiveBody) -> dict[str, Any]:
+    from carro.core.appointments import archive_appointment
+
+    _require_advisor_for_desk(detail="Log in as an advisor to archive appointments")
+    try:
+        return archive_appointment(store, appt_id, status=body.status)
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "not found" in msg.lower() else 400
+        raise HTTPException(code, msg) from e
+
+
+@app.post("/appointments/{appt_id}/confirm")
+def confirm_appointment_route(appt_id: str, body: AppointmentConfirmBody) -> dict[str, Any]:
+    from carro.core.appointments import set_confirm_call
+
+    advisor = _require_advisor_for_desk(detail="Log in as an advisor to confirm appointments")
+    try:
+        return set_confirm_call(
+            store,
+            appt_id,
+            body.outcome,
+            actor=advisor.name,
+            actor_id=advisor.id,
+        )
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "not found" in msg.lower() else 400
+        raise HTTPException(code, msg) from e
+
+
+@app.post("/appointments/{appt_id}/restore")
+def restore_appointment_route(appt_id: str) -> dict[str, Any]:
+    from carro.core.appointments import restore_appointment
+
+    _require_advisor_for_desk(detail="Log in as an advisor to restore appointments")
+    try:
+        return restore_appointment(store, appt_id)
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "not found" in msg.lower() else 400
+        raise HTTPException(code, msg) from e
+
+
+@app.post("/appointments/{appt_id}/convert")
+def convert_appointment_route(appt_id: str) -> dict[str, Any]:
+    from carro.core.appointments import convert_appointment_to_ro
+
+    advisor = _require_advisor_for_desk(detail="Log in as an advisor to make a work order")
+    try:
+        appt, order = convert_appointment_to_ro(
+            store,
+            appt_id,
+            actor=advisor.name,
+            actor_id=advisor.id,
+        )
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "not found" in msg.lower() else 400
+        raise HTTPException(code, msg) from e
+    _push_ro(order, actor=advisor.name, actor_id=advisor.id)
+    return {"appointment": appt, "order": order.to_dict()}
+
+
+@app.get("/service-plans/due")
+def service_plans_due() -> dict[str, Any]:
+    from carro.core.service_plans import due_call_list
+
+    _require_advisor_for_desk(detail="Log in as an advisor to view service dues")
+    return {"due_calls": due_call_list(store)}
+
+
+@app.get("/service-plans")
+def list_service_plans_route() -> dict[str, Any]:
+    _require_advisor_for_desk(detail="Log in as an advisor to open service plans")
+    return {"plans": store.list_service_plans()}
+
+
+@app.post("/service-plans")
+def upsert_service_plan_route(body: ServicePlanBody) -> dict[str, Any]:
+    from carro.core.service_plans import upsert_plan
+
+    advisor = _require_advisor_for_desk(detail="Log in as an advisor to edit service plans")
+    payload = body.model_dump()
+    if payload.get("lines") is None:
+        payload.pop("lines", None)
+    try:
+        return upsert_plan(store, payload, actor=advisor.name, actor_id=advisor.id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.get("/service-plans/{plan_id}")
+def get_service_plan_route(plan_id: str) -> dict[str, Any]:
+    _require_advisor_for_desk(detail="Log in as an advisor to open service plans")
+    plan = store.get_service_plan(plan_id)
+    if not plan:
+        raise HTTPException(404, f"Service plan not found: {plan_id}")
+    return plan
+
+
+@app.delete("/service-plans/{plan_id}")
+def delete_service_plan_route(plan_id: str) -> dict[str, Any]:
+    _require_advisor_for_desk(detail="Log in as an advisor to edit service plans")
+    if not store.delete_service_plan(plan_id):
+        raise HTTPException(404, f"Service plan not found: {plan_id}")
+    return {"ok": True, "id": plan_id}
+
+
+@app.post("/service-plans/{plan_id}/lines")
+def upsert_service_plan_line_route(plan_id: str, body: ServicePlanLineBody) -> dict[str, Any]:
+    from carro.core.service_plans import upsert_line
+
+    _require_advisor_for_desk(detail="Log in as an advisor to edit service plans")
+    try:
+        return upsert_line(store, plan_id, body.model_dump(), delete=body.delete)
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "not found" in msg.lower() else 400
+        raise HTTPException(code, msg) from e
+
+
+@app.post("/service-plans/{plan_id}/lines/{line_id}/call")
+def service_plan_line_call_route(
+    plan_id: str, line_id: str, body: ServicePlanCallBody
+) -> dict[str, Any]:
+    from carro.core.service_plans import set_line_call
+
+    advisor = _require_advisor_for_desk(detail="Log in as an advisor to log service-plan calls")
+    try:
+        return set_line_call(
+            store,
+            plan_id,
+            line_id,
+            body.outcome,
+            actor=advisor.name,
+            actor_id=advisor.id,
+        )
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "not found" in msg.lower() else 400
+        raise HTTPException(code, msg) from e
+
+
 @app.post("/ros")
 def create_ro(body: CreateRoBody | None = None) -> dict[str, Any]:
     order = store.create()
@@ -1832,6 +2127,9 @@ class WorkItemBody(BaseModel):
     # Advisor desk: assign on create (empty string = unassigned)
     assign_to_id: str | None = None
     assign_to_name: str | None = None
+    service_plan_enroll: str | None = None
+    service_plan_id: str | None = None
+    service_plan_line_id: str | None = None
 
 
 class WorkItemMergeBody(BaseModel):
@@ -1917,6 +2215,7 @@ class CurrentTaskBody(BaseModel):
 
     active: bool = True
     item_id: str | None = None
+    override: bool = False
 
 
 class QueueActionBody(BaseModel):
@@ -1939,8 +2238,12 @@ class QueueActionBody(BaseModel):
         "item_waiting_customer",
         "item_release_wait",
         "item_return_to_requester",
+        "complete_with",
     ]
     item_id: str | None = None
+    with_item_id: str | None = None
+    also_item_ids: list[str] | None = None
+    also_complete_timed: bool = False
 
 
 class RoFlagsBody(BaseModel):
@@ -1955,12 +2258,24 @@ class WorkItemQueueBody(BaseModel):
     approve_request: bool = False
 
 
+class WorkItemCarTurnBody(BaseModel):
+    turn: int
+
+
 class NextDayRequestBody(BaseModel):
     note: str = ""
 
 
 class NextDayRequestDecisionBody(BaseModel):
     approve: bool = True
+
+
+class TechQueueBody(BaseModel):
+    """Advisor restacks a tech's today or next-day cars (RO groups)."""
+
+    lane: Literal["daily", "next_day"] = "daily"
+    ro_ids: list[str] = []
+    tech_name: str = ""
 
 
 @app.get("/assigned")
@@ -1991,6 +2306,13 @@ def assigned_board() -> dict[str, Any]:
     changed = rollover_all_orders(
         [o for o in by_id.values() if o.id in local_ids]
     )
+    if changed:
+        from carro.core.queue_lanes import rebalance_after_rollover
+
+        rolled = {o.id: o for o in changed}
+        for order in rebalance_after_rollover(store, changed):
+            rolled[order.id] = order
+        changed = list(rolled.values())
     for order in changed:
         store.save(order)
         _push_ro(order)
@@ -2010,7 +2332,144 @@ def assigned_board() -> dict[str, Any]:
         )
         board["worker_role"] = "advisor"
     board["source"] = source
+    # Deliver any next-day plans that became due at 8:00 local.
+    try:
+        _flush_day_plan_next_day()
+    except Exception:
+        pass
     return board
+
+
+class DayPlanSendBody(BaseModel):
+    """Empty tech_ids = send to all techs with a dirty day/next-day path."""
+
+    tech_ids: list[str] = []
+
+
+class DayPlanStageBody(BaseModel):
+    ro_id: str
+    item_id: str
+    tech_id: str
+    tech_name: str = ""
+    lane: str = "daily"
+    concern: str = ""
+    vehicle: str = ""
+    customer: str = ""
+
+
+class DayPlanUnstageBody(BaseModel):
+    ro_id: str
+    item_id: str
+
+
+def _board_orders_for_day_plan() -> list[RepairOrder]:
+    by_id: dict[str, RepairOrder] = {o.id: o for o in store.list_orders()}
+    remote = RemoteClient()
+    if remote.enabled:
+        try:
+            for raw in remote.list_ros():
+                try:
+                    order = RepairOrder.from_dict(raw)
+                except Exception:
+                    continue
+                local = by_id.get(order.id)
+                if local is None or (order.updated or "") >= (local.updated or ""):
+                    by_id[order.id] = order
+        except Exception:
+            pass
+    return list(by_id.values())
+
+
+def _flush_day_plan_next_day() -> list[dict[str, Any]]:
+    from carro.core.day_plans import flush_due_next_day_sends
+
+    return flush_due_next_day_sends(notify=_notify_tech_message)
+
+
+@app.get("/day-plan")
+def get_day_plan() -> dict[str, Any]:
+    """Advisor day plan: dirty tech paths + pending next-day sends (8am)."""
+    from carro.core.assignment import build_assigned_board
+    from carro.core.day_plans import build_day_plan_view
+
+    advisor = advmod.current_advisor()
+    if not advisor:
+        raise HTTPException(401, "Log in as an advisor to view the day plan")
+    try:
+        _flush_day_plan_next_day()
+    except Exception:
+        pass
+    board = build_assigned_board(_board_orders_for_day_plan())
+    return build_day_plan_view(board)
+
+
+@app.post("/day-plan/stage")
+def stage_day_plan_route(body: DayPlanStageBody) -> dict[str, Any]:
+    """Queue intent for a tech Today/Next day without assigning yet."""
+    from carro.core.assignment import build_assigned_board
+    from carro.core.day_plans import build_day_plan_view, stage_item
+
+    advisor = advmod.current_advisor()
+    if not advisor:
+        raise HTTPException(401, "Log in as an advisor to stage the day plan")
+    try:
+        entry = stage_item(
+            ro_id=body.ro_id,
+            item_id=body.item_id,
+            tech_id=body.tech_id,
+            tech_name=body.tech_name,
+            lane=body.lane,
+            concern=body.concern,
+            vehicle=body.vehicle,
+            customer=body.customer,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    board = build_assigned_board(_board_orders_for_day_plan())
+    return {"ok": True, "staged": entry, "view": build_day_plan_view(board)}
+
+
+@app.post("/day-plan/unstage")
+def unstage_day_plan_route(body: DayPlanUnstageBody) -> dict[str, Any]:
+    """Clear staging for one work item."""
+    from carro.core.assignment import build_assigned_board
+    from carro.core.day_plans import build_day_plan_view, unstage_item
+
+    advisor = advmod.current_advisor()
+    if not advisor:
+        raise HTTPException(401, "Log in as an advisor to unstage the day plan")
+    try:
+        removed = unstage_item(ro_id=body.ro_id, item_id=body.item_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    board = build_assigned_board(_board_orders_for_day_plan())
+    return {"ok": True, "removed": removed, "view": build_day_plan_view(board)}
+
+
+@app.post("/day-plan/send")
+def send_day_plan_route(body: DayPlanSendBody) -> dict[str, Any]:
+    """Apply staged plans, then send Today's now / queue Next-day until 08:00 local."""
+    from carro.core.assignment import build_assigned_board
+    from carro.core.day_plans import send_day_plans
+
+    advisor = advmod.current_advisor()
+    if not advisor:
+        raise HTTPException(401, "Log in as an advisor to send the day plan")
+
+    def _board() -> dict[str, Any]:
+        return build_assigned_board(_board_orders_for_day_plan())
+
+    board = _board()
+    result = send_day_plans(
+        board,
+        tech_ids=list(body.tech_ids or []),
+        notify=_notify_tech_message,
+        advisor_id=advisor.id,
+        advisor_name=advisor.name,
+        store=store,
+        board_builder=_board,
+    )
+    return {"ok": True, **result}
 
 
 @app.post("/ros/{ro_id}/assign")
@@ -2033,6 +2492,7 @@ def assign_ro_route(ro_id: str, body: AssignRoBody) -> dict[str, Any]:
             tech_id=body.assigned_to_id,
             tech_name=body.assigned_to_name,
             due_eod=body.due_eod,
+            store=store,
         ):
             raise HTTPException(404, "Work item not found")
         detail = f"{body.assigned_to_name or ''} ({body.assigned_to_id or ''})".strip()
@@ -2107,23 +2567,7 @@ def assign_ro_route(ro_id: str, body: AssignRoBody) -> dict[str, Any]:
     who = advisor.name if advisor else ""
     who_id = advisor.id if advisor else ""
     _push_ro(order, actor=who, actor_id=who_id)
-    # Ping the tech when work lands on their queue (events alone miss some older servers).
-    assign_id = (body.assigned_to_id or "").strip()
-    assign_name = (body.assigned_to_name or "").strip()
-    if assign_id and advisor:
-        label = item_id or order.id
-        _notify_tech_message(
-            to_id=assign_id,
-            to_name=assign_name,
-            body=f"Work added to your queue · {order.id}"
-            + (f" / {item_id}" if item_id else "")
-            + (f" · due end of day" if body.due_eod else ""),
-            from_id=advisor.id,
-            from_name=advisor.name,
-            from_role="advisor",
-            ro_id=order.id,
-            work_item_id=item_id,
-        )
+    # Tech notify for desk assigns is batched via Day plan (POST /day-plan/send).
     return order.to_dict()
 
 
@@ -2168,8 +2612,14 @@ def set_current_task_route(ro_id: str, body: CurrentTaskBody) -> dict[str, Any]:
                 tech_name=worker_name,
                 item_id=(body.item_id or "").strip(),
                 also_assign=True,
+                override=bool(body.override),
+                store=store,
             )
         except ValueError as e:
+            from carro.core.car_turn import CarTurnBlocked
+
+            if isinstance(e, CarTurnBlocked) or "has the car first" in str(e):
+                raise HTTPException(403, str(e)) from e
             raise HTTPException(400, str(e)) from e
         if advisor and not tech:
             from carro.core.advisor_actions import append_advisor_action
@@ -2182,14 +2632,19 @@ def set_current_task_route(ro_id: str, body: CurrentTaskBody) -> dict[str, Any]:
                 work_item_id=(body.item_id or "").strip(),
             )
     else:
-        if matches_tech(
+        from carro.core.assignment import release_tech_current
+
+        if not release_tech_current(
+            order,
+            tech_id=worker_id,
+            tech_name=worker_name,
+            item_id=(body.item_id or "").strip(),
+        ) and not matches_tech(
             order.current_tech_id,
             order.current_tech_name,
             me_id=worker_id,
             me_name=worker_name,
         ):
-            clear_current_task(order)
-        else:
             raise HTTPException(403, "This is not your current work")
     store.save(order)
     _push_ro(order)
@@ -2238,7 +2693,7 @@ def queue_action_route(
     elif body.action in ("item_release_wait", "item_return_to_requester"):
         if not advisor and not tech:
             raise HTTPException(401, "Login required to release waiting work")
-    elif body.action in ("add", "remove", "complete_item", "complete"):
+    elif body.action in ("add", "remove", "complete_item", "complete", "complete_with"):
         if tech:
             pass
         elif advisor and advmod.has_working_privilege(advisor):
@@ -2263,6 +2718,7 @@ def queue_action_route(
                 tech_id=actor_id,
                 tech_name=actor_name,
                 item_id=item_id,
+                store=store,
             )
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
@@ -2272,15 +2728,53 @@ def queue_action_route(
             tech_id=actor_id,
             tech_name=actor_name,
             item_id=item_id,
+            store=store,
         ):
             raise HTTPException(403, "This work item is not on your queue")
     elif body.action == "complete_item":
+        extras = [str(x).strip() for x in (body.also_item_ids or []) if str(x).strip()]
+        timed = item_id or (order.current_item_id or "")
         try:
-            complete_work_item(
+            if extras:
+                from carro.core.assignment import complete_items_with
+
+                complete_items_with(
+                    order,
+                    timed_id=timed,
+                    companion_ids=extras,
+                    also_complete_timed=True,
+                    tech_id=actor_id,
+                    tech_name=actor_name,
+                    store=store,
+                )
+            else:
+                complete_work_item(
+                    order,
+                    timed,
+                    tech_id=actor_id,
+                    tech_name=actor_name,
+                    store=store,
+                )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+    elif body.action == "complete_with":
+        from carro.core.assignment import complete_items_with
+
+        timed = (body.with_item_id or "").strip()
+        comps = [item_id] if item_id else []
+        extra = [str(x).strip() for x in (body.also_item_ids or []) if str(x).strip()]
+        for cid in extra:
+            if cid not in comps:
+                comps.append(cid)
+        try:
+            complete_items_with(
                 order,
-                item_id or (order.current_item_id or ""),
+                timed_id=timed,
+                companion_ids=comps,
+                also_complete_timed=bool(body.also_complete_timed),
                 tech_id=actor_id,
                 tech_name=actor_name,
+                store=store,
             )
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
@@ -2290,7 +2784,11 @@ def queue_action_route(
         if wid:
             try:
                 complete_work_item(
-                    order, wid, tech_id=actor_id, tech_name=actor_name
+                    order,
+                    wid,
+                    tech_id=actor_id,
+                    tech_name=actor_name,
+                    store=store,
                 )
             except ValueError as e:
                 raise HTTPException(400, str(e)) from e
@@ -2449,13 +2947,42 @@ def ro_flags_route(ro_id: str, body: RoFlagsBody) -> dict[str, Any]:
     return order.to_dict()
 
 
+@app.post("/ros/{ro_id}/work-items/{item_id}/car-turn")
+def work_item_car_turn_route(
+    ro_id: str, item_id: str, body: WorkItemCarTurnBody
+) -> dict[str, Any]:
+    """Advisor sets 1st / 2nd / Nth car turn on a split RO."""
+    from carro.core.advisor_actions import append_advisor_action
+    from carro.core.car_turn import set_car_turn
+
+    advisor = advmod.current_advisor()
+    if not advisor:
+        raise HTTPException(401, "Only an advisor can set car turn")
+    order = _require_order(ro_id)
+    try:
+        set_car_turn(order, item_id, body.turn)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    append_advisor_action(
+        order,
+        action="car_turn",
+        advisor_id=advisor.id,
+        advisor_name=advisor.name,
+        work_item_id=item_id,
+        detail=f"turn {body.turn}",
+    )
+    store.save(order)
+    _push_ro(order, actor=advisor.name, actor_id=advisor.id)
+    return order.to_dict()
+
+
 @app.post("/ros/{ro_id}/work-items/{item_id}/queue")
 def work_item_queue_lane_route(
     ro_id: str, item_id: str, body: WorkItemQueueBody
 ) -> dict[str, Any]:
     """Advisor moves a work item between daily / next_day / long_term."""
     from carro.core.advisor_actions import append_advisor_action
-    from carro.core.queue_lanes import advisor_set_queue_lane
+    from carro.core.queue_lanes import move_ro_group_lane
 
     advisor = advmod.current_advisor()
     if not advisor:
@@ -2480,7 +3007,8 @@ def work_item_queue_lane_route(
                     req_by_name = req_by_name or (w.assigned_to_name or "").strip()
             break
     try:
-        advisor_set_queue_lane(
+        touched = move_ro_group_lane(
+            store,
             order,
             item_id,
             body.lane,
@@ -2496,8 +3024,9 @@ def work_item_queue_lane_route(
         work_item_id=item_id,
         detail=body.lane,
     )
-    store.save(order)
-    _push_ro(order, actor=advisor.name, actor_id=advisor.id)
+    for o in touched:
+        store.save(o)
+        _push_ro(o, actor=advisor.name, actor_id=advisor.id)
     if was_pending_next_day and body.lane == "next_day" and req_by_id:
         _notify_tech_message(
             to_id=req_by_id,
@@ -2545,7 +3074,7 @@ def work_item_next_day_decision_route(
 ) -> dict[str, Any]:
     """Advisor approves (arms next_day) or declines a tech next-day request."""
     from carro.core.advisor_actions import append_advisor_action
-    from carro.core.queue_lanes import advisor_set_queue_lane, decline_next_day_request
+    from carro.core.queue_lanes import decline_next_day_request, move_ro_group_lane
     from carro.core.work_items import ensure_work_items_on_order
 
     advisor = advmod.current_advisor()
@@ -2565,11 +3094,12 @@ def work_item_next_day_decision_route(
             break
     try:
         if body.approve:
-            advisor_set_queue_lane(
-                order, item_id, "next_day", approve_request=True
+            touched = move_ro_group_lane(
+                store, order, item_id, "next_day", approve_request=True
             )
         else:
             decline_next_day_request(order, item_id)
+            touched = [order]
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     append_advisor_action(
@@ -2580,8 +3110,9 @@ def work_item_next_day_decision_route(
         work_item_id=item_id,
         detail="due EOD" if not body.approve else "next_day",
     )
-    store.save(order)
-    _push_ro(order, actor=advisor.name, actor_id=advisor.id)
+    for o in touched:
+        store.save(o)
+        _push_ro(o, actor=advisor.name, actor_id=advisor.id)
     if req_by_id:
         if body.approve:
             _notify_tech_message(
@@ -2665,7 +3196,34 @@ def upsert_work_item_route(ro_id: str, body: WorkItemBody) -> dict[str, Any]:
             assign_to_name=body.assign_to_name,
             allow_manual_assign=allow_manual,
             require_item_type=creating,
+            service_plan_enroll=body.service_plan_enroll,
+            service_plan_id=body.service_plan_id,
+            service_plan_line_id=body.service_plan_line_id,
         )
+        enroll_flag = str(body.service_plan_enroll or getattr(item, "service_plan_enroll", "") or "").strip().lower()
+        if enroll_flag in ("yes", "true", "1") and not (item.service_plan_id or "").strip():
+            from carro.core.service_plans import enroll_inspection_plan
+            from carro.core.work_items import ensure_work_items_on_order, work_items_to_dicts
+
+            enrolled = enroll_inspection_plan(
+                store,
+                order,
+                item.item_type,
+                enroll=True,
+                actor=actor,
+                actor_id=actor_id,
+            )
+            if enrolled:
+                item.service_plan_id = enrolled["plan"]["id"]
+                item.service_plan_line_id = enrolled["line"]["id"]
+                item.service_plan_enroll = "yes"
+                items = ensure_work_items_on_order(order)
+                for w in items:
+                    if w.id == item.id:
+                        w.service_plan_id = item.service_plan_id
+                        w.service_plan_line_id = item.service_plan_line_id
+                        w.service_plan_enroll = "yes"
+                order.work_items = work_items_to_dicts(items)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     if advisor and (was_done or creating):
@@ -3219,18 +3777,19 @@ def work_item_time_route(ro_id: str, item_id: str, body: WorkItemTimeBody) -> di
                 tech_name=tech.name,
                 item_id=item_id,
                 also_assign=True,
+                override=bool(getattr(body, "override", False)),
+                store=store,
             )
         elif body.action == "stop":
-            if (order.current_item_id or "") == item_id and matches_tech(
-                order.current_tech_id,
-                order.current_tech_name,
-                me_id=tech.id,
-                me_name=tech.name,
+            from carro.core.assignment import release_tech_current
+
+            if not release_tech_current(
+                order, tech_id=tech.id, tech_name=tech.name, item_id=item_id
             ):
-                # Apply pending next_day/long_term and stop downtime when parked.
-                clear_current_task(order)
-            else:
                 stop_work_timer(order, item_id)
+                from carro.core.assignment import sync_ro_current_from_timers
+
+                sync_ro_current_from_timers(order)
         elif body.action == "checkpoint":
             checkpoint_work_timer(
                 order,
@@ -3867,6 +4426,7 @@ def _config_public(cfg: dict | None = None) -> dict[str, Any]:
         "photos_inbox_dir": str(photos.get("inbox_dir") or ""),
         "photos_provider": str(photos.get("provider") or "local"),
         "autosync_minutes": int(cfg.get("autosync_minutes") or 0),
+        "pa_inspection_types": resolve_pa_inspection_types(cfg),
         "autosync": autosync_status(),
         "sync_pending": store.sync_status(),
         "disk": {
@@ -3935,6 +4495,8 @@ def put_config(body: ConfigBody) -> dict[str, Any]:
         if body.autosync_minutes < 0:
             raise HTTPException(400, "autosync_minutes must be >= 0 (0 = off)")
         cfg["autosync_minutes"] = int(body.autosync_minutes)
+    if body.pa_inspection_types is not None:
+        cfg["pa_inspection_types"] = bool(body.pa_inspection_types)
     photos = cfg.setdefault("photos", {})
     if body.photos_dir is not None:
         photos["dir"] = str(Path(body.photos_dir).expanduser()) if body.photos_dir else ""

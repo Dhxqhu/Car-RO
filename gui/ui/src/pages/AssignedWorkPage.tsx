@@ -17,7 +17,50 @@ import {
   formatWorkedHours,
   formatWorkedMinutes,
   cn,
+  turnOrdinal,
 } from "@/lib/utils";
+
+type QueueCarGroup = {
+  ro_id: string;
+  queue_order: number;
+  vehicle: string;
+  customer: string;
+  waiter?: boolean;
+  urgent?: boolean;
+  jobs: AssignedJobSummary[];
+};
+
+function groupJobsByCar(jobs: AssignedJobSummary[] | undefined): QueueCarGroup[] {
+  const map = new Map<string, QueueCarGroup>();
+  for (const j of jobs || []) {
+    const existing = map.get(j.ro_id);
+    const qo = Number(j.queue_order) || 0;
+    if (!existing) {
+      map.set(j.ro_id, {
+        ro_id: j.ro_id,
+        queue_order: qo,
+        vehicle: j.vehicle,
+        customer: j.customer,
+        waiter: j.waiter,
+        urgent: j.urgent,
+        jobs: [j],
+      });
+      continue;
+    }
+    existing.jobs.push(j);
+    if (qo && (!existing.queue_order || qo < existing.queue_order)) {
+      existing.queue_order = qo;
+    }
+    if (j.waiter) existing.waiter = true;
+    if (j.urgent) existing.urgent = true;
+  }
+  return [...map.values()].sort((a, b) => {
+    const ao = a.queue_order || 9999;
+    const bo = b.queue_order || 9999;
+    if (ao !== bo) return ao - bo;
+    return a.ro_id.localeCompare(b.ro_id);
+  });
+}
 
 type QueueAct =
   | "add"
@@ -181,6 +224,16 @@ function JobCard({
                 Next-day requested{req.read_at ? "" : " · unread"}
               </span>
             ) : null}
+            {j.waiting_on_car ? (
+              <span className="rounded bg-danger/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-danger">
+                Wait — {j.car_held_by_name || "another tech"} has the car first
+              </span>
+            ) : null}
+            {j.split_ro && j.car_turn ? (
+              <span className="rounded bg-border/80 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+                Car {turnOrdinal(j.car_turn)}
+              </span>
+            ) : null}
           </div>
           <Link
             to={`/ro/${j.ro_id}`}
@@ -302,11 +355,16 @@ export function AssignedWorkPage() {
     }
   }
 
-  async function runCurrent(roId: string, itemId: string, active: boolean) {
+  async function runCurrent(
+    roId: string,
+    itemId: string,
+    active: boolean,
+    override = false,
+  ) {
     setActingId(itemId);
     setErr("");
     try {
-      await api.setCurrentTask(roId, active, active ? itemId : undefined);
+      await api.setCurrentTask(roId, active, active ? itemId : undefined, override);
       if (active && itemId) {
         nav(`/ro/${encodeURIComponent(roId)}?bay=${encodeURIComponent(itemId)}`);
         return;
@@ -359,7 +417,23 @@ export function AssignedWorkPage() {
     return (
       <>
         {!isCurrent
-          ? btn(j.item_id, "Start work", () => void runCurrent(j.ro_id, j.item_id, true))
+          ? j.waiting_on_car
+            ? btn(
+                `${j.item_id}-ov`,
+                "Override — work now",
+                () => {
+                  if (
+                    !window.confirm(
+                      "Work this item while another tech has the car? Both timers will run.",
+                    )
+                  ) {
+                    return;
+                  }
+                  void runCurrent(j.ro_id, j.item_id, true, true);
+                },
+                "ghost",
+              )
+            : btn(j.item_id, "Start work", () => void runCurrent(j.ro_id, j.item_id, true))
           : currentItemActions(j.ro_id, j.item_id)}
         {!isCurrent && !reqPending && j.queue_lane !== "next_day"
           ? btn(j.item_id, "Request next day", () =>
@@ -454,6 +528,88 @@ export function AssignedWorkPage() {
               <JobCard key={j.id} j={j} actions={actionFor?.(j)} />
             ))}
           </ul>
+        )}
+      </section>
+    );
+  }
+
+  function queuePathSection(
+    title: string,
+    items: AssignedJobSummary[] | undefined,
+    empty: string,
+    actionFor?: (j: AssignedJobSummary) => ReactNode,
+  ) {
+    const groups = groupJobsByCar(items);
+    return (
+      <section className="space-y-3">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
+          {title}
+          {groups.length ? ` · ${groups.length}` : ""}
+        </h2>
+        {groups.length === 0 ? (
+          <p className="text-sm text-muted">{empty}</p>
+        ) : (
+          <ol className="space-y-3">
+            {groups.map((g, idx) => {
+              const n = g.queue_order || idx + 1;
+              return (
+                <li
+                  key={g.ro_id}
+                  className="rounded-xl border border-border bg-surface px-4 py-3"
+                >
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                    <span className="font-semibold tabular-nums text-accent">#{n}</span>
+                    <Link
+                      to={`/ro/${g.ro_id}`}
+                      className="font-medium text-accent hover:underline"
+                    >
+                      {g.ro_id}
+                    </Link>
+                    <span className="text-sm">
+                      {g.vehicle}
+                      {g.customer ? ` · ${g.customer}` : ""}
+                    </span>
+                    {g.waiter ? (
+                      <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
+                        Waiter
+                      </span>
+                    ) : null}
+                    {g.urgent ? (
+                      <span className="rounded bg-danger/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-danger">
+                        Urgent
+                      </span>
+                    ) : null}
+                  </div>
+                  <ul className="mt-2 space-y-2">
+                    {g.jobs.map((j) => (
+                      <li key={j.id} className="border-t border-border/60 pt-2">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium">
+                              {j.item_id}
+                              <span className="font-normal text-muted">
+                                {" "}
+                                · {j.concern || "(no concern)"}
+                              </span>
+                            </div>
+                            <div className="text-xs text-muted">
+                              {[j.item_type, formatStatus(j.item_status)]
+                                .filter(Boolean)
+                                .join(" · ")}
+                              {j.waiting_on_car
+                                ? ` · wait — ${j.car_held_by_name || "other tech"} has the car`
+                                : ""}
+                            </div>
+                          </div>
+                          {actionFor?.(j)}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              );
+            })}
+          </ol>
         )}
       </section>
     );
@@ -567,14 +723,14 @@ export function AssignedWorkPage() {
         )}
       </section>
 
-      {jobSection(
+      {queuePathSection(
         "Today (my daily queue)",
         board?.mine_daily ?? board?.mine,
         "Nothing in today's queue. Add from Unassigned or ask an advisor to assign.",
         loggedIn ? mineActions : undefined,
       )}
 
-      {jobSection(
+      {queuePathSection(
         "Next day (mine)",
         board?.mine_next_day,
         "No jobs parked for tomorrow.",

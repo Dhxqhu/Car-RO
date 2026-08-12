@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from carro.config import DATA_DIR, load_config, photos_dir
 from carro.core.models import RepairOrder, new_ro_id, now_iso
@@ -124,6 +125,40 @@ class LocalStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS appointments (
+                    id TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    scheduled_at TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'scheduled',
+                    updated TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_appt_sched ON appointments(scheduled_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_appt_status ON appointments(status)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS service_plans (
+                    id TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    match_key TEXT NOT NULL DEFAULT '',
+                    vin TEXT NOT NULL DEFAULT '',
+                    updated TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sp_match ON service_plans(match_key)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sp_vin ON service_plans(vin)"
+            )
 
     def list_ids(self) -> list[str]:
         with self._connect() as conn:
@@ -195,6 +230,10 @@ class LocalStore:
                     """,
                     (order.updated, order.id),
                 )
+        if mark_pending_sync:
+            from carro.core.service_plans import apply_service_plan_progress
+
+            apply_service_plan_progress(self, order)
         return order
 
     def last_synced_updated(self, ro_id: str) -> str:
@@ -503,3 +542,157 @@ class LocalStore:
             for meta in order.photos:
                 meta["local_cleared"] = True
             self.save(order, mark_pending_sync=False)
+
+    def list_appointment_ids(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT id FROM appointments").fetchall()
+        return [r["id"] for r in rows]
+
+    def get_appointment(self, appt_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT data FROM appointments WHERE id = ?",
+                (appt_id,),
+            ).fetchone()
+        if not row:
+            return None
+        data = json.loads(row["data"])
+        return data if isinstance(data, dict) else None
+
+    def save_appointment(self, appt: dict[str, Any]) -> dict[str, Any]:
+        from carro.core.appointments import normalize_appointment
+
+        clean = normalize_appointment(appt)
+        if not (clean.get("updated") or "").strip():
+            clean["updated"] = now_iso()
+        if not (clean.get("created") or "").strip():
+            clean["created"] = clean["updated"]
+        payload = json.dumps(clean)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO appointments (id, data, scheduled_at, status, updated)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    data = excluded.data,
+                    scheduled_at = excluded.scheduled_at,
+                    status = excluded.status,
+                    updated = excluded.updated
+                """,
+                (
+                    clean["id"],
+                    payload,
+                    str(clean.get("scheduled_at") or ""),
+                    str(clean.get("status") or "scheduled"),
+                    str(clean.get("updated") or ""),
+                ),
+            )
+        return clean
+
+    def list_appointments(
+        self,
+        *,
+        statuses: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT data FROM appointments"
+        args: list[Any] = []
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            sql += f" WHERE status IN ({placeholders})"
+            args.extend(statuses)
+        sql += " ORDER BY scheduled_at, id"
+        with self._connect() as conn:
+            rows = conn.execute(sql, args).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            data = json.loads(r["data"])
+            if isinstance(data, dict):
+                out.append(data)
+        return out
+
+    def list_appointments_in_range(
+        self,
+        start: str,
+        end: str,
+        *,
+        statuses: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        start_s = (start or "").strip()[:10]
+        end_s = (end or "").strip()[:10]
+        rows = self.list_appointments(statuses=statuses)
+        if not start_s and not end_s:
+            return rows
+        out: list[dict[str, Any]] = []
+        for appt in rows:
+            day = str(appt.get("scheduled_at") or "")[:10]
+            if start_s and day < start_s:
+                continue
+            if end_s and day > end_s:
+                continue
+            out.append(appt)
+        return out
+
+    def list_service_plan_ids(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT id FROM service_plans").fetchall()
+        return [r["id"] for r in rows]
+
+    def get_service_plan(self, plan_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT data FROM service_plans WHERE id = ?",
+                (plan_id,),
+            ).fetchone()
+        if not row:
+            return None
+        data = json.loads(row["data"])
+        return data if isinstance(data, dict) else None
+
+    def save_service_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
+        from carro.core.service_plans import normalize_plan
+
+        clean = normalize_plan(plan)
+        if not (clean.get("updated") or "").strip():
+            clean["updated"] = now_iso()
+        if not (clean.get("created") or "").strip():
+            clean["created"] = clean["updated"]
+        payload = json.dumps(clean)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO service_plans (id, data, match_key, vin, updated)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    data = excluded.data,
+                    match_key = excluded.match_key,
+                    vin = excluded.vin,
+                    updated = excluded.updated
+                """,
+                (
+                    clean["id"],
+                    payload,
+                    str(clean.get("match_key") or ""),
+                    str(clean.get("vin") or ""),
+                    str(clean.get("updated") or ""),
+                ),
+            )
+        return clean
+
+    def list_service_plans(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT data FROM service_plans ORDER BY updated DESC"
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            data = json.loads(r["data"])
+            if isinstance(data, dict):
+                out.append(data)
+        return out
+
+    def delete_service_plan(self, plan_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM service_plans WHERE id = ?", (plan_id,)
+            )
+            return cur.rowcount > 0

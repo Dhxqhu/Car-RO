@@ -119,6 +119,8 @@ def build_weekly_tech_report(
                     mins = 0
                 if mins <= 0:
                     continue
+                if str(it.get("completed_with_id") or "").strip():
+                    continue
                 day = _local_date_from_iso(str(entry.get("at") or ""))
                 if day is None or day < start or day > end:
                     continue
@@ -128,16 +130,27 @@ def build_weekly_tech_report(
                 idx = str(_sun_index(day))
                 b["days"][idx]["job_minutes"] += mins
                 b["job_minutes"] += mins
+                covers = [
+                    str(x).strip()
+                    for x in (entry.get("covers_item_ids") or it.get("covers_item_ids") or [])
+                    if str(x).strip()
+                ]
                 jk = f"{ro_id}:{wid}"
+                if covers:
+                    jk = f"{ro_id}:{wid}+" + "+".join(covers)
+                extra = ""
+                if covers:
+                    extra = " + " + ", ".join(covers)
                 job = b["jobs"].setdefault(
                     jk,
                     {
                         "ro_id": ro_id,
                         "item_id": wid,
-                        "concern": concern,
+                        "concern": (concern + extra)[:160],
                         "minutes": 0,
                         "vehicle": vehicle,
                         "customer": customer,
+                        "grouped_item_ids": [wid, *covers],
                     },
                 )
                 job["minutes"] += mins
@@ -636,4 +649,116 @@ def build_weekly_efficiency_report(
             ),
             "downtime_by_reason": shop_reasons_out,
         },
+    }
+
+
+def previous_closed_week_start(today: date | None = None) -> date:
+    """Sunday of the week before the current Sun–Sat week (always closed relative to today)."""
+    today = today or date.today()
+    return sunday_on_or_before(today) - timedelta(days=7)
+
+
+def _orders_and_shifts_for_week(
+    store: Any,
+    week_start: date,
+    *,
+    remote: Any | None = None,
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    """Merge local + remote ROs and fetch shifts for the week (best-effort)."""
+    from carro.core.models import RepairOrder
+    from carro.storage.remote import RemoteClient
+
+    start_s = week_start.isoformat()
+    end_s = week_end_saturday(week_start).isoformat()
+    by_id: dict[str, RepairOrder] = {}
+    for order in store.list_orders():
+        by_id[order.id] = order
+    client = remote if remote is not None else RemoteClient()
+    shifts: list[dict[str, Any]] = []
+    if getattr(client, "enabled", False):
+        try:
+            for raw in client.list_ros():
+                try:
+                    order = RepairOrder.from_dict(raw)
+                except Exception:
+                    continue
+                local = by_id.get(order.id)
+                if local is None or (order.updated or "") >= (local.updated or ""):
+                    by_id[order.id] = order
+        except Exception:
+            pass
+        try:
+            shifts = list(
+                client.list_shifts(day_from=start_s, day_to=end_s, limit=2000).get(
+                    "shifts"
+                )
+                or []
+            )
+        except Exception:
+            shifts = []
+    return list(by_id.values()), shifts
+
+
+def archive_closed_week_if_needed(
+    store: Any,
+    *,
+    remote: Any | None = None,
+    today: date | None = None,
+) -> dict[str, Any]:
+    """
+    Insert-if-absent archive of the previous closed Sun–Sat week.
+
+    Payload is the tech report (include_live=False) plus nested efficiency.
+    Does not overwrite an existing shop snapshot (manual Save may upsert).
+    """
+    from carro.storage.remote import RemoteClient
+
+    client = remote if remote is not None else RemoteClient()
+    if not getattr(client, "enabled", False):
+        return {"ok": False, "skipped": "no_server"}
+
+    today = today or date.today()
+    week_start = previous_closed_week_start(today)
+    week_end = week_end_saturday(week_start)
+    if today <= week_end:
+        return {
+            "ok": True,
+            "skipped": "not_closed",
+            "week_start": week_start.isoformat(),
+        }
+
+    start_s = week_start.isoformat()
+    end_s = week_end.isoformat()
+    try:
+        existing = client.get_weekly_report_snapshot(start_s).get("snapshot")
+    except Exception as exc:
+        return {"ok": False, "error": f"snapshot check failed: {exc}", "week_start": start_s}
+    if existing:
+        return {"ok": True, "skipped": "exists", "week_start": start_s}
+
+    orders, shifts = _orders_and_shifts_for_week(store, week_start, remote=client)
+    tech = build_weekly_tech_report(
+        orders, shifts, week_start=week_start, include_live=False
+    )
+    efficiency = build_weekly_efficiency_report(
+        orders, shifts, week_start=week_start, include_live=False
+    )
+    payload = dict(tech)
+    payload["efficiency"] = efficiency
+    try:
+        snap = client.save_weekly_report(
+            start_s,
+            week_end=end_s,
+            payload=payload,
+            created_by="autosync",
+            created_by_id="system",
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "week_start": start_s}
+    return {
+        "ok": True,
+        "archived": True,
+        "week_start": start_s,
+        "week_end": end_s,
+        "snapshot": snap.get("snapshot") if isinstance(snap, dict) else snap,
     }

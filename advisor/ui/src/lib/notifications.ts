@@ -120,6 +120,10 @@ export function filterTechRelevantEvents(
       return Boolean(toId && toId === myId);
     }
     if (e.type === "item_assigned" || e.type === "ro_assigned" || e.type === "item_due_eod") {
+      const quiet = String(e.payload?.quiet_tech || "")
+        .trim()
+        .toLowerCase();
+      if (quiet === "1" || quiet === "true" || quiet === "yes") return false;
       return assignmentTargetsSelf(e, self);
     }
     if (e.type === "next_day_approved" || e.type === "next_day_declined") {
@@ -148,6 +152,8 @@ export function filterTechRelevantEvents(
 export const ADVISOR_DESK_EVENT_TYPES = new Set([
   "item_added",
   "item_assigned",
+  "day_plan_sent",
+  "day_plan_scheduled",
   "ro_assigned",
   "item_queue_lane",
   "ro_waiting_parts",
@@ -214,6 +220,10 @@ export function eventLabel(type: string): string {
       return "RO assigned";
     case "item_assigned":
       return "Item assigned";
+    case "day_plan_sent":
+      return "Day plan";
+    case "day_plan_scheduled":
+      return "Day plan scheduled";
     case "item_wait_cleared":
     case "item_ready_for_work":
       return "Ready for work";

@@ -389,6 +389,12 @@ def _merge_work_item(
         out["priority"] = ip if ip else sp
     except (TypeError, ValueError):
         out["priority"] = server.get("priority") or incoming.get("priority") or 0
+    try:
+        st = int(server.get("car_turn") or 0)
+        it = int(incoming.get("car_turn") or 0)
+        out["car_turn"] = it if it else st
+    except (TypeError, ValueError):
+        out["car_turn"] = server.get("car_turn") or incoming.get("car_turn") or 0
     for key in (
         "created_by",
         "created_by_id",
@@ -417,6 +423,8 @@ def _merge_work_item(
         "updated_by_role",
         "created",
         "updated",
+        "time_group_id",
+        "completed_with_id",
     ):
         out[key] = _keep_nonempty(server.get(key), incoming.get(key))
     # Prefer an open timer if either side has one.
@@ -454,6 +462,18 @@ def _merge_work_item(
             seen.add(pid)
             linked.append(pid)
     out["linked_photo_ids"] = linked
+    covers: list[str] = []
+    cseen: set[str] = set()
+    for src in (server.get("covers_item_ids"), incoming.get("covers_item_ids")):
+        if not isinstance(src, list):
+            continue
+        for cid in src:
+            s = str(cid).strip()
+            if s and s not in cseen:
+                cseen.add(s)
+                covers.append(s)
+    if covers:
+        out["covers_item_ids"] = covers
     snap_s = server.get("merge_snapshot") if isinstance(server.get("merge_snapshot"), dict) else {}
     snap_i = incoming.get("merge_snapshot") if isinstance(incoming.get("merge_snapshot"), dict) else {}
     out["merge_snapshot"] = snap_i or snap_s

@@ -653,7 +653,9 @@ def _desk_assign(store, advisor, assign_work_item, append_advisor_action) -> Non
     order = store.get(ro_id)
     if not order:
         raise ValueError("RO not found")
-    if not assign_work_item(order, item_id, tech_id=tech.id, tech_name=tech.name):
+    if not assign_work_item(
+        order, item_id, tech_id=tech.id, tech_name=tech.name, store=store
+    ):
         raise ValueError("Work item not found")
     append_advisor_action(
         order,

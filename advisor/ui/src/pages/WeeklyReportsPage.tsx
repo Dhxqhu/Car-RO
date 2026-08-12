@@ -159,7 +159,8 @@ export function WeeklyReportsPage() {
           </h1>
           <p className="mt-1 max-w-xl text-sm text-muted">
             Sunday–Saturday job hours (timers) and presence (day start → day end). Save a week to the
-            shop server for later reference.
+            shop server for later reference. Closed weeks are also archived automatically when the shop
+            engine is online.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -223,7 +224,8 @@ export function WeeklyReportsPage() {
         </Button>
         {closed && !snapshot ? (
           <span className="self-center text-xs text-muted">
-            This week is closed and not archived yet — save to keep a fixed copy.
+            This week is closed and not archived yet — save now, or wait for automatic archive when the
+            engine is online.
           </span>
         ) : null}
       </div>

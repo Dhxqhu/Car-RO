@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import {
@@ -21,12 +21,29 @@ import {
   formatWorkedHours,
   formatWorkedMinutes,
   cn,
+  turnOrdinal,
 } from "@/lib/utils";
 
 const DESK_TAB_KEY = "carro-advisor-desk-tab";
 const DESK_DENSITY_KEY = "carro-advisor-desk-density";
 type DeskTab = "floor" | "queues" | "assign" | "punches";
 type DeskDensity = "comfortable" | "compact";
+
+type PlanDragPayload =
+  | { type: "job"; ro_id: string; item_id: string }
+  | {
+      type: "car";
+      tech_id: string;
+      tech_name: string;
+      lane: "daily" | "next_day";
+      ro_id: string;
+      index: number;
+    };
+
+type PlanDropTarget =
+  | { kind: "pool" }
+  | { kind: "parking"; lane: "next_day" | "long_term" }
+  | { kind: "tech"; techId: string; lane: "daily" | "next_day" };
 
 function loadDeskTab(): DeskTab {
   try {
@@ -46,6 +63,48 @@ function loadDeskDensity(): DeskDensity {
     /* ignore */
   }
   return "comfortable";
+}
+
+type QueueCarGroup = {
+  ro_id: string;
+  queue_order: number;
+  vehicle: string;
+  customer: string;
+  waiter?: boolean;
+  urgent?: boolean;
+  jobs: AssignedJobSummary[];
+};
+
+function groupJobsByCar(jobs: AssignedJobSummary[] | undefined): QueueCarGroup[] {
+  const map = new Map<string, QueueCarGroup>();
+  for (const j of jobs || []) {
+    const existing = map.get(j.ro_id);
+    const qo = Number(j.queue_order) || 0;
+    if (!existing) {
+      map.set(j.ro_id, {
+        ro_id: j.ro_id,
+        queue_order: qo,
+        vehicle: j.vehicle,
+        customer: j.customer,
+        waiter: j.waiter,
+        urgent: j.urgent,
+        jobs: [j],
+      });
+      continue;
+    }
+    existing.jobs.push(j);
+    if (qo && (!existing.queue_order || qo < existing.queue_order)) {
+      existing.queue_order = qo;
+    }
+    if (j.waiter) existing.waiter = true;
+    if (j.urgent) existing.urgent = true;
+  }
+  return [...map.values()].sort((a, b) => {
+    const ao = a.queue_order || 9999;
+    const bo = b.queue_order || 9999;
+    if (ao !== bo) return ao - bo;
+    return a.ro_id.localeCompare(b.ro_id);
+  });
 }
 
 function floorSortJobs(a: AssignedJobSummary, b: AssignedJobSummary): number {
@@ -213,10 +272,12 @@ function JobCard({
   j,
   actions,
   density = "comfortable",
+  onCarTurn,
 }: {
   j: AssignedJobSummary;
   actions?: ReactNode;
   density?: DeskDensity;
+  onCarTurn?: (turn: number) => void;
 }) {
   const compact = density === "compact";
   const timing = jobTiming(j);
@@ -227,74 +288,86 @@ function JobCard({
   const showPendingLane = !compact && !!j.pending_queue_lane;
   const showNextDayReq = req?.status === "pending";
 
+  const chip = (label: string, kind: "accent" | "danger" | "muted" = "muted") => (
+    <span
+      className={cn(
+        "rounded font-semibold uppercase tracking-wide",
+        compact ? "px-1 py-px text-[9px]" : "px-1.5 py-0.5 text-[10px]",
+        kind === "accent" && "bg-accent/15 text-accent",
+        kind === "danger" && "bg-danger/15 text-danger",
+        kind === "muted" && "bg-border/80 font-medium text-muted",
+      )}
+    >
+      {label}
+    </span>
+  );
+
   return (
     <li
       className={cn(
-        "rounded-xl border border-border bg-surface",
-        compact ? "px-3 py-2" : "px-4 py-3",
+        "border border-border bg-surface",
+        compact ? "rounded-md px-2 py-1" : "rounded-xl px-4 py-3",
       )}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          {(j.waiter || j.urgent || j.due_eod || showLaneChip || showPendingLane || showNextDayReq) ? (
-            <div className={cn("flex flex-wrap gap-1.5", compact ? "mb-0.5" : "mb-1")}>
-              {j.waiter ? (
-                <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
-                  Waiter
-                </span>
-              ) : null}
-              {j.urgent ? (
-                <span className="rounded bg-danger/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-danger">
-                  Urgent
-                </span>
-              ) : null}
-              {j.due_eod ? (
-                <span className="rounded bg-danger/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-danger">
-                  EOD
-                </span>
-              ) : null}
-              {showLaneChip ? (
-                <span className="rounded bg-border/80 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
-                  {j.queue_lane === "next_day" ? "Next day" : "Long-term"}
-                </span>
-              ) : null}
-              {showPendingLane ? (
-                <span className="rounded bg-border/80 px-1.5 py-0.5 text-[10px] font-medium text-muted">
-                  Push {j.pending_queue_lane === "next_day" ? "next day" : j.pending_queue_lane} on
-                  clock-out
-                </span>
-              ) : null}
-              {showNextDayReq ? (
-                <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
-                  Next-day requested{req?.read_at ? "" : " · unread"}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
           {compact ? (
-            <>
-              <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                <Link
-                  to={`/ro/${j.ro_id}`}
-                  className="font-medium text-accent hover:underline"
-                >
-                  {j.item_id}
-                  <span className="font-normal text-muted"> · {j.ro_id}</span>
-                </Link>
-                <span className="truncate text-sm text-fg/90">
-                  {j.concern || "(no concern)"}
-                </span>
-              </div>
-              <div className="mt-0.5 truncate text-xs text-muted">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs leading-snug">
+              {j.waiter ? chip("Waiter", "accent") : null}
+              {j.urgent ? chip("Urgent", "danger") : null}
+              {j.due_eod ? chip("EOD", "danger") : null}
+              {j.waiting_on_car
+                ? chip(
+                    `Wait · ${j.car_held_by_name || "other tech"} first`,
+                    "danger",
+                  )
+                : null}
+              {j.split_ro && j.car_turn
+                ? chip(turnOrdinal(j.car_turn), "muted")
+                : null}
+              {showNextDayReq ? chip(req?.read_at ? "Next-day" : "Next-day · unread", "accent") : null}
+              <Link to={`/ro/${j.ro_id}`} className="font-medium text-accent hover:underline">
+                {j.item_id}
+                <span className="font-normal text-muted"> · {j.ro_id}</span>
+              </Link>
+              <span className="min-w-0 truncate text-fg/90">{j.concern || "(no concern)"}</span>
+              <span className="min-w-0 truncate text-muted">
                 {[j.vehicle, j.customer].filter(Boolean).join(" · ")}
                 {j.assigned_to_name ? ` · ${j.assigned_to_name}` : ""}
                 {` · ${formatStatus(j.item_status)}`}
                 {` · ${formatWorkedMinutes(worked)}`}
                 {j.is_current && j.current_tech_name ? ` · Now ${j.current_tech_name}` : ""}
-              </div>
-            </>
+              </span>
+            </div>
           ) : (
             <>
+              {(j.waiter || j.urgent || j.due_eod || showLaneChip || showPendingLane || showNextDayReq) ? (
+                <div className="mb-1 flex flex-wrap gap-1.5">
+                  {j.waiter ? chip("Waiter", "accent") : null}
+                  {j.urgent ? chip("Urgent", "danger") : null}
+                  {j.due_eod ? chip("EOD", "danger") : null}
+                  {j.waiting_on_car
+                    ? chip(
+                        `Wait — ${j.car_held_by_name || "another tech"} has the car first`,
+                        "danger",
+                      )
+                    : null}
+                  {j.split_ro && j.car_turn
+                    ? chip(`Car ${turnOrdinal(j.car_turn)}`, "muted")
+                    : null}
+                  {showLaneChip
+                    ? chip(j.queue_lane === "next_day" ? "Next day" : "Long-term")
+                    : null}
+                  {showPendingLane
+                    ? chip(
+                        `Push ${j.pending_queue_lane === "next_day" ? "next day" : j.pending_queue_lane} on clock-out`,
+                      )
+                    : null}
+                  {showNextDayReq
+                    ? chip(`Next-day requested${req?.read_at ? "" : " · unread"}`, "accent")
+                    : null}
+                </div>
+              ) : null}
               <Link
                 to={`/ro/${j.ro_id}`}
                 className="font-medium text-accent hover:underline"
@@ -331,8 +404,37 @@ function JobCard({
           </div>
         ) : null}
       </div>
-      {actions ? (
-        <div className={cn("flex flex-wrap gap-2", compact ? "mt-2" : "mt-3")}>{actions}</div>
+      {onCarTurn || actions ? (
+        <div className={cn("flex flex-wrap items-center", compact ? "mt-1 gap-1" : "mt-3 gap-2")}>
+          {onCarTurn && (j.car_turn_count || 0) > 1 ? (
+            <label
+              className={cn(
+                "flex items-center gap-1 text-muted",
+                compact ? "text-[11px]" : "text-xs",
+              )}
+            >
+              Car turn
+              <select
+                className={cn(
+                  "rounded-md border border-border bg-surface text-fg",
+                  compact ? "h-6 px-1.5 text-[11px]" : "h-8 px-2 text-xs",
+                )}
+                value={j.car_turn || 1}
+                onChange={(e) => onCarTurn(Number(e.target.value))}
+                aria-label="Car turn"
+              >
+                {Array.from({ length: Math.max(1, j.car_turn_count || 1) }, (_, i) => i + 1).map(
+                  (n) => (
+                    <option key={n} value={n}>
+                      {turnOrdinal(n)}
+                    </option>
+                  ),
+                )}
+              </select>
+            </label>
+          ) : null}
+          {actions}
+        </div>
       ) : null}
     </li>
   );
@@ -363,26 +465,24 @@ function OrderCard({
   return (
     <li
       className={cn(
-        "rounded-xl border border-border bg-surface",
-        compact ? "px-3 py-2" : "px-4 py-3",
+        "border border-border bg-surface",
+        compact ? "rounded-md px-2 py-1" : "rounded-xl px-4 py-3",
       )}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           {compact ? (
-            <>
-              <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                <Link to={`/ro/${o.id}`} className="font-medium text-accent hover:underline">
-                  {o.id}
-                </Link>
-                <span className="truncate text-sm">{o.customer}</span>
-              </div>
-              <div className="mt-0.5 truncate text-xs text-muted">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs leading-snug">
+              <Link to={`/ro/${o.id}`} className="font-medium text-accent hover:underline">
+                {o.id}
+              </Link>
+              <span className="truncate">{o.customer}</span>
+              <span className="truncate text-muted">
                 {[o.vehicle, formatStatus(o.status)].filter(Boolean).join(" · ")}
                 {total > 0 ? ` · ${done}/${total} done` : ""}
                 {openN > 0 ? ` · ${openN} open` : ""}
-              </div>
-            </>
+              </span>
+            </div>
           ) : (
             <>
               <Link to={`/ro/${o.id}`} className="font-medium text-accent hover:underline">
@@ -404,7 +504,7 @@ function OrderCard({
               {timing ? <div className="mt-1 text-xs text-muted">{timing}</div> : null}
             </>
           )}
-          <OrderWorkedBreakdown o={o} emphasize={emphasizeWorked && !compact} />
+          {!compact ? <OrderWorkedBreakdown o={o} emphasize={emphasizeWorked} /> : null}
         </div>
         {!compact ? (
           <div className="text-right text-xs text-muted">
@@ -424,7 +524,9 @@ function OrderCard({
         </ul>
       ) : null}
       {actions ? (
-        <div className={cn("flex flex-wrap gap-2", compact ? "mt-2" : "mt-3")}>{actions}</div>
+        <div className={cn("flex flex-wrap", compact ? "mt-1 gap-1" : "mt-3 gap-2")}>
+          {actions}
+        </div>
       ) : null}
     </li>
   );
@@ -457,6 +559,10 @@ export function AssignedWorkPage() {
   /** Per found-issue tech id for Approve → Assign */
   const [fiApprovePick, setFiApprovePick] = useState<Record<string, string>>({});
   const [openParts, setOpenParts] = useState<PartsSheetRow[]>([]);
+  const [dayPlan, setDayPlan] = useState<Awaited<ReturnType<typeof api.dayPlan>> | null>(null);
+  const [sendingPlan, setSendingPlan] = useState(false);
+  const [planDrag, setPlanDrag] = useState<PlanDragPayload | null>(null);
+  const [planDropTarget, setPlanDropTarget] = useState<string | null>(null);
 
   const setTab = useCallback((t: DeskTab) => {
     setDeskTab(t);
@@ -481,7 +587,7 @@ export function AssignedWorkPage() {
     setErr("");
     const day = todayLocalIso();
     try {
-      const [b, who, shifts, dayShifts, roster, parts] = await Promise.all([
+      const [b, who, shifts, dayShifts, roster, parts, plan] = await Promise.all([
         api.assignedBoard(),
         api.advisorWhoami().catch(() => ({ advisor: null })),
         api.shiftsActive().catch(() => ({ shifts: [] as TechShift[] })),
@@ -491,8 +597,10 @@ export function AssignedWorkPage() {
         api
           .listParts({ include_received: false, source: "auto" })
           .catch(() => ({ parts: [] as PartsSheetRow[] })),
+        api.dayPlan().catch(() => null),
       ]);
       setBoard(b);
+      setDayPlan(plan);
       setAdvisorOn(!!who.advisor);
       const priv =
         !!(who as { working_privilege?: boolean }).working_privilege ||
@@ -529,6 +637,20 @@ export function AssignedWorkPage() {
     const on = new Set(activeShifts.map((s) => s.tech_id));
     return techs.filter((t) => t.id && !on.has(t.id));
   }, [techs, activeShifts]);
+
+  async function sendDayPlan(techIds?: string[]) {
+    setSendingPlan(true);
+    setErr("");
+    try {
+      const res = await api.sendDayPlan(techIds);
+      setDayPlan(res.view as Awaited<ReturnType<typeof api.dayPlan>>);
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not send day plan");
+    } finally {
+      setSendingPlan(false);
+    }
+  }
 
   async function clockInTech() {
     if (!clockInTechId) return;
@@ -693,7 +815,7 @@ export function AssignedWorkPage() {
     return (
       <Button
         type="button"
-        size="sm"
+        size={density === "compact" ? "xs" : "sm"}
         variant={variant}
         disabled={actingId === id || busy}
         onClick={action}
@@ -770,20 +892,7 @@ export function AssignedWorkPage() {
             "ghost")
           : null}
         {j.queue_lane !== "next_day"
-          ? btn(j.item_id, "Push next day", () =>
-              void (async () => {
-                setActingId(j.item_id);
-                setErr("");
-                try {
-                  await api.setWorkItemQueueLane(j.ro_id, j.item_id, "next_day", true);
-                  await refresh();
-                } catch (e) {
-                  setErr(e instanceof Error ? e.message : "Push failed");
-                } finally {
-                  setActingId(null);
-                }
-              })(),
-            )
+          ? btn(j.item_id, "Push next day", () => void pushJobNextDay(j))
           : null}
         {j.queue_lane !== "long_term"
           ? btn(j.item_id, "Back to long-term", () =>
@@ -872,6 +981,36 @@ export function AssignedWorkPage() {
     );
   }
 
+  async function pushJobNextDay(j: AssignedJobSummary) {
+    if (!j.item_id) return;
+    setActingId(j.item_id);
+    setErr("");
+    const pickId = assignPick[j.item_id] || "";
+    const pickTech = techs.find((t) => t.id === pickId);
+    const unassigned = !(j.assigned_to_id || j.assigned_to_name);
+    const willAssignBeforePush = Boolean(pickId && unassigned);
+    try {
+      if (willAssignBeforePush) {
+        await api.assignRo(j.ro_id, {
+          assigned_to_id: pickId,
+          assigned_to_name: pickTech?.name || "",
+          item_id: j.item_id,
+        });
+      }
+      await api.setWorkItemQueueLane(j.ro_id, j.item_id, "next_day", true);
+      setAssignPick((prev) => {
+        const next = { ...prev };
+        delete next[j.item_id];
+        return next;
+      });
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Push failed");
+    } finally {
+      setActingId(null);
+    }
+  }
+
   async function assignItemToSelf(j: AssignedJobSummary) {
     if (!advisorId || !j.item_id) return;
     setActingId(`assign-me:${j.item_id}`);
@@ -954,14 +1093,20 @@ export function AssignedWorkPage() {
       !!advisorId &&
       (j.assigned_to_id === advisorId ||
         (j.assigned_to_name || "").toLowerCase() === (advisorName || "").toLowerCase());
+    const compactActs = density === "compact";
     return (
-      <div className="flex w-full flex-wrap items-end gap-2">
+      <div
+        className={cn(
+          "flex flex-wrap",
+          compactActs ? "items-center gap-1" : "w-full items-end gap-2",
+        )}
+      >
         {workingPrivilege ? (
           <>
             {!assignedToMe ? (
               <Button
                 type="button"
-                size="sm"
+                size={compactActs ? "xs" : "sm"}
                 variant="secondary"
                 disabled={actingId === `assign-me:${j.item_id}`}
                 onClick={() => void assignItemToSelf(j)}
@@ -980,37 +1125,63 @@ export function AssignedWorkPage() {
                 )}
           </>
         ) : null}
-        <label className="min-w-[10rem] flex-1 text-xs text-muted">
-          {assigned ? "Reassign to" : "Assign to"}
+        {compactActs ? (
           <select
-            className="mt-1 flex h-9 w-full rounded-lg border border-border bg-surface px-2 text-sm text-fg"
+            className="h-6 min-w-[7.5rem] rounded-md border border-border bg-surface px-1.5 text-[11px] text-fg"
             value={pick}
             onChange={(e) =>
               setAssignPick((prev) => ({ ...prev, [j.item_id]: e.target.value }))
             }
+            aria-label={assigned ? "Reassign to" : "Assign to"}
           >
-            <option value="">Select tech…</option>
+            <option value="">{assigned ? "Reassign…" : "Assign…"}</option>
             {techs.map((t) => (
               <option key={t.id} value={t.id}>
                 {t.name || t.id}
               </option>
             ))}
           </select>
-        </label>
-        <label className="flex cursor-pointer items-center gap-1.5 pb-2 text-xs text-muted">
+        ) : (
+          <label className="min-w-[10rem] flex-1 text-xs text-muted">
+            {assigned ? "Reassign to" : "Assign to"}
+            <select
+              className="mt-1 flex h-9 w-full rounded-lg border border-border bg-surface px-2 text-sm text-fg"
+              value={pick}
+              onChange={(e) =>
+                setAssignPick((prev) => ({ ...prev, [j.item_id]: e.target.value }))
+              }
+            >
+              <option value="">Select tech…</option>
+              {techs.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name || t.id}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label
+          className={cn(
+            "flex cursor-pointer items-center gap-1.5 text-muted",
+            compactActs ? "text-[11px]" : "pb-2 text-xs",
+          )}
+        >
           <input
             type="checkbox"
-            className="h-4 w-4 accent-[var(--accent)]"
+            className={cn(
+              "accent-[var(--accent)]",
+              compactActs ? "h-3.5 w-3.5" : "h-4 w-4",
+            )}
             checked={dueEod}
             onChange={(e) =>
               setDueEodPick((prev) => ({ ...prev, [j.item_id]: e.target.checked }))
             }
           />
-          Done by EOD
+          {compactActs ? "EOD" : "Done by EOD"}
         </label>
         <Button
           type="button"
-          size="sm"
+          size={compactActs ? "xs" : "sm"}
           disabled={!pick || actingId === `assign:${j.item_id}`}
           onClick={() => void assignItemToTech(j, pick)}
         >
@@ -1019,7 +1190,7 @@ export function AssignedWorkPage() {
         {assigned ? (
           <Button
             type="button"
-            size="sm"
+            size={compactActs ? "xs" : "sm"}
             variant="ghost"
             disabled={actingId === `unassign:${j.item_id}`}
             onClick={() => void unassignItem(j)}
@@ -1071,28 +1242,52 @@ export function AssignedWorkPage() {
   function foundIssueApproveActions(fi: FoundIssueSummary) {
     const pick = fiApprovePick[fi.id] || "";
     const tech = techs.find((t) => t.id === pick);
+    const compactActs = density === "compact";
     return (
-      <div className="flex w-full flex-wrap items-end gap-2">
-        <label className="min-w-[10rem] flex-1 text-xs text-muted">
-          Assign to (optional)
+      <div
+        className={cn(
+          "flex flex-wrap",
+          compactActs ? "items-center gap-1" : "w-full items-end gap-2",
+        )}
+      >
+        {compactActs ? (
           <select
-            className="mt-1 flex h-9 w-full rounded-lg border border-border bg-surface px-2 text-sm text-fg"
+            className="h-6 min-w-[7.5rem] rounded-md border border-border bg-surface px-1.5 text-[11px] text-fg"
             value={pick}
             onChange={(e) =>
               setFiApprovePick((prev) => ({ ...prev, [fi.id]: e.target.value }))
             }
+            aria-label="Assign to (optional)"
           >
-            <option value="">Select tech…</option>
+            <option value="">Tech…</option>
             {techs.map((t) => (
               <option key={t.id} value={t.id}>
                 {t.name || t.id}
               </option>
             ))}
           </select>
-        </label>
+        ) : (
+          <label className="min-w-[10rem] flex-1 text-xs text-muted">
+            Assign to (optional)
+            <select
+              className="mt-1 flex h-9 w-full rounded-lg border border-border bg-surface px-2 text-sm text-fg"
+              value={pick}
+              onChange={(e) =>
+                setFiApprovePick((prev) => ({ ...prev, [fi.id]: e.target.value }))
+              }
+            >
+              <option value="">Select tech…</option>
+              {techs.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name || t.id}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         {btn(
           `fi-unass:${fi.id}`,
-          "Approve → Unassigned",
+          compactActs ? "→ Unassigned" : "Approve → Unassigned",
           () =>
             void (async () => {
               setActingId(`fi-unass:${fi.id}`);
@@ -1115,7 +1310,7 @@ export function AssignedWorkPage() {
         )}
         <Button
           type="button"
-          size="sm"
+          size={compactActs ? "xs" : "sm"}
           variant="secondary"
           disabled={!pick || actingId === `fi-ass:${fi.id}` || busy}
           onClick={() =>
@@ -1142,7 +1337,7 @@ export function AssignedWorkPage() {
             })()
           }
         >
-          Approve → Assign
+          {compactActs ? "→ Assign" : "Approve → Assign"}
         </Button>
         {btn(fi.id, "Decline", () =>
           void (async () => {
@@ -1172,7 +1367,12 @@ export function AssignedWorkPage() {
     const readyLabel =
       st === "waiting_customer" ? "Approved → Unassigned" : "Ready → Unassigned";
     return (
-      <div className="flex w-full flex-wrap items-end gap-2">
+      <div
+        className={cn(
+          "flex flex-wrap",
+          density === "compact" ? "items-center gap-1" : "w-full items-end gap-2",
+        )}
+      >
         {btn(
           `release:${j.item_id}`,
           readyLabel,
@@ -1382,6 +1582,7 @@ export function AssignedWorkPage() {
         attentionWaitingParts.length +
         attentionWaitingCustomer.length +
         attentionUnassigned.length +
+        (board?.needs_work_item || []).length +
         attentionNextDayRequests.length +
         neededParts.total,
     };
@@ -1397,16 +1598,606 @@ export function AssignedWorkPage() {
     neededParts.total,
   ]);
 
+  const planPoolJobs = useMemo(
+    () =>
+      (board?.unassigned || []).filter((j) => {
+        const lane = (j.queue_lane || "daily").toLowerCase();
+        return lane !== "long_term" && lane !== "next_day";
+      }),
+    [board?.unassigned],
+  );
+
+  const planTechBuckets = useMemo(() => {
+    const map = new Map<
+      string,
+      { id: string; name: string; daily: AssignedJobSummary[]; next: AssignedJobSummary[] }
+    >();
+    for (const t of techs) {
+      if (!t.id) continue;
+      map.set(t.id, { id: t.id, name: t.name, daily: [], next: [] });
+    }
+    for (const b of board?.daily_by_tech || []) {
+      const key = b.id || b.name;
+      const existing = map.get(key);
+      if (existing) existing.daily = b.jobs || [];
+      else {
+        map.set(key, {
+          id: b.id,
+          name: b.name,
+          daily: b.jobs || [],
+          next: [],
+        });
+      }
+    }
+    for (const b of board?.next_day_by_tech || []) {
+      const key = b.id || b.name;
+      const existing = map.get(key);
+      if (existing) existing.next = b.jobs || [];
+      else {
+        map.set(key, {
+          id: b.id,
+          name: b.name,
+          daily: [],
+          next: b.jobs || [],
+        });
+      }
+    }
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [techs, board?.daily_by_tech, board?.next_day_by_tech]);
+
+  const stagedByItem = useMemo(() => {
+    const map = new Map<
+      string,
+      NonNullable<Awaited<ReturnType<typeof api.dayPlan>>["staged"]>[number]
+    >();
+    for (const row of dayPlan?.staged || []) {
+      map.set(`${row.ro_id}:${row.item_id}`, row);
+    }
+    return map;
+  }, [dayPlan?.staged]);
+
+  const stagedCount = dayPlan?.staged_count ?? (dayPlan?.staged || []).length;
+
+
+  async function runCarTurn(j: AssignedJobSummary, turn: number) {
+    setActingId(`turn:${j.item_id}`);
+    setErr("");
+    try {
+      await api.setWorkItemCarTurn(j.ro_id, j.item_id, turn);
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not set car turn");
+    } finally {
+      setActingId(null);
+    }
+  }
+
+  async function restackTechQueue(
+    techId: string,
+    techName: string,
+    lane: "daily" | "next_day",
+    groups: QueueCarGroup[],
+    fromIdx: number,
+    toIdx: number,
+  ) {
+    if (toIdx < 0 || toIdx >= groups.length || fromIdx === toIdx) return;
+    const next = [...groups];
+    const [moved] = next.splice(fromIdx, 1);
+    next.splice(toIdx, 0, moved);
+    setActingId(`q:${techId}:${lane}`);
+    setErr("");
+    try {
+      await api.setTechQueue(
+        techId || techName,
+        lane,
+        next.map((g) => g.ro_id),
+        techName,
+      );
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not reorder queue");
+    } finally {
+      setActingId(null);
+    }
+  }
+
+  async function jumpTechQueue(
+    techId: string,
+    techName: string,
+    lane: "daily" | "next_day",
+    groups: QueueCarGroup[],
+    fromIdx: number,
+    dest: number,
+  ) {
+    const toIdx = Math.max(0, Math.min(groups.length - 1, dest - 1));
+    await restackTechQueue(techId, techName, lane, groups, fromIdx, toIdx);
+  }
+
+  async function moveCarLane(j: AssignedJobSummary, lane: "daily" | "next_day" | "long_term") {
+    setActingId(`lane:${j.ro_id}`);
+    setErr("");
+    try {
+      await api.setWorkItemQueueLane(j.ro_id, j.item_id, lane, lane === "next_day");
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not move car");
+    } finally {
+      setActingId(null);
+    }
+  }
+
+  async function planStageLane(
+    j: AssignedJobSummary,
+    lane: "daily" | "next_day",
+    techId?: string,
+  ) {
+    const pickId = techId || assignPick[j.item_id] || "";
+    if (!j.item_id || !pickId) return;
+    const tech = techs.find((t) => t.id === pickId);
+    const acting = lane === "daily" ? `plan-today:${j.item_id}` : `plan-nd:${j.item_id}`;
+    setActingId(acting);
+    setErr("");
+    try {
+      const res = await api.stageDayPlan({
+        ro_id: j.ro_id,
+        item_id: j.item_id,
+        tech_id: pickId,
+        tech_name: tech?.name || "",
+        lane,
+        concern: j.concern || "",
+        vehicle: j.vehicle || "",
+        customer: j.customer || "",
+      });
+      setDayPlan(res.view as Awaited<ReturnType<typeof api.dayPlan>>);
+      // Keep tech selected so Plan today/tomorrow stay usable and show choice.
+      setAssignPick((prev) => ({ ...prev, [j.item_id]: pickId }));
+      const plan = await api.dayPlan().catch(() => null);
+      if (plan) setDayPlan(plan);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not stage day plan");
+    } finally {
+      setActingId(null);
+    }
+  }
+
+  async function planAssignToday(j: AssignedJobSummary, techId?: string) {
+    await planStageLane(j, "daily", techId);
+  }
+
+  async function planAssignNextDay(j: AssignedJobSummary, techId?: string) {
+    await planStageLane(j, "next_day", techId);
+  }
+
+  async function planUnstage(j: { ro_id: string; item_id: string }) {
+    if (!j.item_id) return;
+    setActingId(`unstage:${j.item_id}`);
+    setErr("");
+    try {
+      const res = await api.unstageDayPlan({ ro_id: j.ro_id, item_id: j.item_id });
+      setDayPlan(res.view as Awaited<ReturnType<typeof api.dayPlan>>);
+      const plan = await api.dayPlan().catch(() => null);
+      if (plan) setDayPlan(plan);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not unstage");
+    } finally {
+      setActingId(null);
+    }
+  }
+
+  async function planParkUnassignedNextDay(j: AssignedJobSummary) {
+    if (!j.item_id) return;
+    setActingId(`plan-park-nd:${j.item_id}`);
+    setErr("");
+    try {
+      if (j.assigned_to_id || j.assigned_to_name) {
+        await api.assignRo(j.ro_id, {
+          assigned_to_id: "",
+          assigned_to_name: "",
+          item_id: j.item_id,
+        });
+      }
+      await api.setWorkItemQueueLane(j.ro_id, j.item_id, "next_day", true);
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Park next day failed");
+    } finally {
+      setActingId(null);
+    }
+  }
+
+  async function planParkLongTerm(j: AssignedJobSummary) {
+    if (!j.item_id) return;
+    setActingId(`plan-lt:${j.item_id}`);
+    setErr("");
+    try {
+      await api.setWorkItemQueueLane(j.ro_id, j.item_id, "long_term");
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Park long-term failed");
+    } finally {
+      setActingId(null);
+    }
+  }
+
+  async function planReturnToPool(j: AssignedJobSummary) {
+    if (!j.item_id) return;
+    setActingId(`plan-pool:${j.item_id}`);
+    setErr("");
+    try {
+      if (j.assigned_to_id || j.assigned_to_name) {
+        await api.assignRo(j.ro_id, {
+          assigned_to_id: "",
+          assigned_to_name: "",
+          item_id: j.item_id,
+        });
+      }
+      await api.setWorkItemQueueLane(j.ro_id, j.item_id, "daily");
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Return to pool failed");
+    } finally {
+      setActingId(null);
+    }
+  }
+
+  function onPlanDragStart(e: DragEvent, payload: PlanDragPayload) {
+    e.dataTransfer.setData("application/x-carro-plan", JSON.stringify(payload));
+    e.dataTransfer.effectAllowed = "move";
+    setPlanDrag(payload);
+  }
+
+  function onPlanDragEnd() {
+    setPlanDrag(null);
+    setPlanDropTarget(null);
+  }
+
+  function readPlanDrag(e: DragEvent): PlanDragPayload | null {
+    try {
+      const raw = e.dataTransfer.getData("application/x-carro-plan");
+      if (!raw) return planDrag;
+      return JSON.parse(raw) as PlanDragPayload;
+    } catch {
+      return planDrag;
+    }
+  }
+
+  async function handlePlanDrop(target: PlanDropTarget, e: DragEvent) {
+    e.preventDefault();
+    const payload = readPlanDrag(e);
+    setPlanDropTarget(null);
+    setPlanDrag(null);
+    if (!payload) return;
+
+    if (payload.type === "car") {
+      if (target.kind !== "tech" || target.lane !== payload.lane || target.techId !== payload.tech_id) {
+        return;
+      }
+      return;
+    }
+
+    const job =
+      (board?.unassigned || []).find((j) => j.item_id === payload.item_id) ||
+      (board?.next_day_unassigned || []).find((j) => j.item_id === payload.item_id) ||
+      (board?.long_term_unassigned || []).find((j) => j.item_id === payload.item_id) ||
+      (board?.long_term || []).find((j) => j.item_id === payload.item_id) ||
+      [...(board?.daily_by_tech || []), ...(board?.next_day_by_tech || [])]
+        .flatMap((b) => b.jobs || [])
+        .find((j) => j.item_id === payload.item_id);
+    if (!job) return;
+
+    if (target.kind === "pool") {
+      await planReturnToPool(job);
+      return;
+    }
+    if (target.kind === "parking") {
+      if (target.lane === "next_day") await planParkUnassignedNextDay(job);
+      else await planParkLongTerm(job);
+      return;
+    }
+    if (target.kind === "tech") {
+      if (target.lane === "daily") await planAssignToday(job, target.techId);
+      else await planAssignNextDay(job, target.techId);
+    }
+  }
+
+  function planDropProps(target: PlanDropTarget) {
+    const key =
+      target.kind === "tech"
+        ? `tech:${target.techId}:${target.lane}`
+        : target.kind === "parking"
+          ? `parking:${target.lane}`
+          : "pool";
+    const active = planDropTarget === key;
+    return {
+      onDragOver: (e: DragEvent) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        setPlanDropTarget(key);
+      },
+      onDragLeave: () => {
+        setPlanDropTarget((cur) => (cur === key ? null : cur));
+      },
+      onDrop: (e: DragEvent) => void handlePlanDrop(target, e),
+      className: cn(
+        "rounded-lg border border-dashed transition-colors",
+        active ? "border-accent bg-accent/10" : "border-transparent",
+      ),
+    };
+  }
+
+  function planJobControls(j: AssignedJobSummary, opts?: { fromParking?: boolean }) {
+    const staged = stagedByItem.get(`${j.ro_id}:${j.item_id}`);
+    const pick = assignPick[j.item_id] || staged?.tech_id || "";
+    const compact = density === "compact";
+    const stagedToday = staged?.lane === "daily";
+    const stagedTomorrow = staged?.lane === "next_day";
+    return (
+      <div className={cn("flex flex-wrap items-center", compact ? "gap-1" : "gap-2")}>
+        <select
+          className={cn(
+            "rounded-md border border-border bg-surface text-fg",
+            compact ? "h-7 max-w-[9rem] px-1 text-[11px]" : "h-8 max-w-[12rem] px-2 text-xs",
+          )}
+          value={pick}
+          onChange={(e) =>
+            setAssignPick((prev) => ({ ...prev, [j.item_id]: e.target.value }))
+          }
+          aria-label={`Tech for ${j.item_id}`}
+        >
+          <option value="">Select tech…</option>
+          {techs.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
+            </option>
+          ))}
+        </select>
+        <Button
+          type="button"
+          size={compact ? "xs" : "sm"}
+          variant={stagedTomorrow ? "secondary" : "default"}
+          disabled={!pick || actingId === `plan-today:${j.item_id}`}
+          onClick={() => void planAssignToday(j)}
+          aria-pressed={stagedToday}
+        >
+          {stagedToday ? (compact ? "Today ✓" : "Planned today") : compact ? "Plan today" : "Plan today"}
+        </Button>
+        <Button
+          type="button"
+          size={compact ? "xs" : "sm"}
+          variant={stagedTomorrow ? "default" : "secondary"}
+          disabled={!pick || actingId === `plan-nd:${j.item_id}`}
+          onClick={() => void planAssignNextDay(j)}
+          aria-pressed={stagedTomorrow}
+        >
+          {stagedTomorrow
+            ? compact
+              ? "Tomorrow ✓"
+              : "Planned tomorrow"
+            : compact
+              ? "Plan tomorrow"
+              : "Plan tomorrow"}
+        </Button>
+        {staged ? (
+          <span className="inline-flex items-center gap-1 rounded border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[11px] text-accent">
+            Planned · {staged.tech_name || "tech"} ·{" "}
+            {staged.lane === "next_day" ? "Tomorrow" : "Today"}
+            <button
+              type="button"
+              className="underline disabled:opacity-50"
+              disabled={actingId === `unstage:${j.item_id}`}
+              onClick={() => void planUnstage(j)}
+            >
+              Unstage
+            </button>
+          </span>
+        ) : null}
+        {!opts?.fromParking ? (
+          <>
+            <Button
+              type="button"
+              size={compact ? "xs" : "sm"}
+              variant="ghost"
+              disabled={actingId === `plan-park-nd:${j.item_id}`}
+              onClick={() => void planParkUnassignedNextDay(j)}
+            >
+              {compact ? "Park ND" : "→ Unassigned ND"}
+            </Button>
+            <Button
+              type="button"
+              size={compact ? "xs" : "sm"}
+              variant="ghost"
+              disabled={actingId === `plan-lt:${j.item_id}`}
+              onClick={() => void planParkLongTerm(j)}
+            >
+              {compact ? "LT" : "Long-term"}
+            </Button>
+          </>
+        ) : (
+          <Button
+            type="button"
+            size={compact ? "xs" : "sm"}
+            variant="ghost"
+            disabled={actingId === `plan-pool:${j.item_id}`}
+            onClick={() => void planReturnToPool(j)}
+          >
+            {compact ? "Pool" : "Back to pool"}
+          </Button>
+        )}
+      </div>
+    );
+  }
+
+  function queuePathList(
+    title: string,
+    jobs: AssignedJobSummary[] | undefined,
+    empty: string,
+    techId: string,
+    techName: string,
+    lane: "daily" | "next_day",
+    actionFor?: (j: AssignedJobSummary) => ReactNode,
+  ) {
+    const groups = groupJobsByCar(jobs);
+    const compact = density === "compact";
+    return (
+      <div className={compact ? "space-y-1" : "space-y-2"}>
+        <h4 className="text-[11px] font-semibold uppercase tracking-wide text-muted">
+          {title}
+          {groups.length ? ` · ${groups.length}` : ""}
+        </h4>
+        {groups.length === 0 ? (
+          <p className="text-sm text-muted">{empty}</p>
+        ) : (
+          <ol className={compact ? "space-y-1" : "space-y-2"}>
+            {groups.map((g, idx) => {
+              const n = g.queue_order || idx + 1;
+              const first = g.jobs[0];
+              return (
+                <li
+                  key={`${lane}-${g.ro_id}`}
+                  className={cn(
+                    "border border-border bg-surface",
+                    compact ? "rounded-md px-2 py-1.5" : "rounded-xl px-3 py-2.5",
+                  )}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <span className="font-semibold tabular-nums text-accent">#{n}</span>
+                        <Link
+                          to={`/ro/${g.ro_id}`}
+                          className="font-medium text-accent hover:underline"
+                        >
+                          {g.ro_id}
+                        </Link>
+                        <span className="text-sm text-fg/90">
+                          {g.vehicle}
+                          {g.customer ? ` · ${g.customer}` : ""}
+                        </span>
+                        {g.waiter ? (
+                          <span className="rounded bg-accent/15 px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-accent">
+                            Waiter
+                          </span>
+                        ) : null}
+                        {g.urgent ? (
+                          <span className="rounded bg-danger/15 px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-danger">
+                            Urgent
+                          </span>
+                        ) : null}
+                      </div>
+                      <ul className={cn("mt-1 text-sm", compact ? "space-y-0.5" : "space-y-1")}>
+                        {g.jobs.map((j) => (
+                          <li key={j.id} className="flex flex-wrap items-baseline gap-x-2">
+                            <span className="font-medium">{j.item_id}</span>
+                            <span className="text-fg/90">{j.concern || "(no concern)"}</span>
+                            <span className="text-xs text-muted">
+                              {[j.item_type, formatStatus(j.item_status)]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    {advisorOn ? (
+                      <div className="flex flex-wrap items-center gap-1">
+                        {btn(
+                          `up:${g.ro_id}`,
+                          "Up",
+                          () =>
+                            void restackTechQueue(
+                              techId,
+                              techName,
+                              lane,
+                              groups,
+                              idx,
+                              idx - 1,
+                            ),
+                          "ghost",
+                        )}
+                        {btn(
+                          `down:${g.ro_id}`,
+                          "Down",
+                          () =>
+                            void restackTechQueue(
+                              techId,
+                              techName,
+                              lane,
+                              groups,
+                              idx,
+                              idx + 1,
+                            ),
+                          "ghost",
+                        )}
+                        <label className="flex items-center gap-1 text-[11px] text-muted">
+                          #
+                          <Input
+                            className="h-7 w-12 px-1.5 text-xs"
+                            defaultValue={String(n)}
+                            inputMode="numeric"
+                            onBlur={(e) => {
+                              const dest = Number(e.target.value);
+                              if (!dest || dest === n) return;
+                              void jumpTechQueue(
+                                techId,
+                                techName,
+                                lane,
+                                groups,
+                                idx,
+                                dest,
+                              );
+                            }}
+                            aria-label={`Queue number for ${g.ro_id}`}
+                          />
+                        </label>
+                        {lane === "daily"
+                          ? btn(
+                              `nd:${g.ro_id}`,
+                              "To next day",
+                              () => void moveCarLane(first, "next_day"),
+                            )
+                          : btn(
+                              `td:${g.ro_id}`,
+                              "To today",
+                              () => void moveCarLane(first, "daily"),
+                            )}
+                      </div>
+                    ) : null}
+                  </div>
+                  {actionFor
+                    ? g.jobs.map((j) => (
+                        <div
+                          key={`act-${j.id}`}
+                          className={cn(
+                            "flex flex-wrap items-center border-t border-border/60",
+                            compact ? "mt-1 gap-1 pt-1" : "mt-2 gap-2 pt-2",
+                          )}
+                        >
+                          <span className="text-[11px] text-muted">{j.item_id}</span>
+                          {actionFor(j)}
+                        </div>
+                      ))
+                    : null}
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </div>
+    );
+  }
+
   function jobSection(
     title: string,
     items: AssignedJobSummary[] | undefined,
     empty: string,
     actionFor?: (j: AssignedJobSummary) => ReactNode,
     accent = true,
+    hideWhenEmpty = false,
   ) {
     const list = items || [];
+    if (hideWhenEmpty && list.length === 0) return null;
     return (
-      <section className="space-y-3">
+      <section className={density === "compact" ? "space-y-1.5" : "space-y-3"}>
         <h2
           className={`text-xs font-semibold uppercase tracking-wide ${
             accent ? "text-accent" : "text-muted"
@@ -1418,9 +2209,19 @@ export function AssignedWorkPage() {
         {list.length === 0 ? (
           <p className="text-sm text-muted">{empty}</p>
         ) : (
-          <ul className={cn("space-y-3", density === "compact" && "space-y-2")}>
+          <ul className={density === "compact" ? "space-y-1" : "space-y-3"}>
             {list.map((j) => (
-              <JobCard key={j.id} j={j} density={density} actions={actionFor?.(j)} />
+              <JobCard
+                key={j.id}
+                j={j}
+                density={density}
+                actions={actionFor?.(j)}
+                onCarTurn={
+                  advisorOn && j.split_ro
+                    ? (turn) => void runCarTurn(j, turn)
+                    : undefined
+                }
+              />
             ))}
           </ul>
         )}
@@ -1435,10 +2236,12 @@ export function AssignedWorkPage() {
     actionFor?: (o: AssignedOrderSummary) => ReactNode,
     accent = true,
     emphasizeWorked = false,
+    hideWhenEmpty = false,
   ) {
     const list = items || [];
+    if (hideWhenEmpty && list.length === 0) return null;
     return (
-      <section className="space-y-3">
+      <section className={density === "compact" ? "space-y-1.5" : "space-y-3"}>
         <h2
           className={`text-xs font-semibold uppercase tracking-wide ${
             accent ? "text-accent" : "text-muted"
@@ -1450,7 +2253,7 @@ export function AssignedWorkPage() {
         {list.length === 0 ? (
           <p className="text-sm text-muted">{empty}</p>
         ) : (
-          <ul className={cn("space-y-3", density === "compact" && "space-y-2")}>
+          <ul className={density === "compact" ? "space-y-1" : "space-y-3"}>
             {list.map((o) => (
               <OrderCard
                 key={o.id}
@@ -1468,7 +2271,7 @@ export function AssignedWorkPage() {
 
 
   return (
-    <div className="space-y-8">
+    <div className={density === "compact" ? "space-y-4" : "space-y-8"}>
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
@@ -1528,7 +2331,12 @@ export function AssignedWorkPage() {
       ) : null}
 
       {/* —— Needs attention (always first) —— */}
-      <div className="space-y-6 rounded-2xl border border-accent/30 bg-accent/5 p-4 sm:p-5">
+      <div
+        className={cn(
+          "rounded-2xl border border-accent/30 bg-accent/5",
+          density === "compact" ? "space-y-3 p-3" : "space-y-6 p-4 sm:p-5",
+        )}
+      >
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold tracking-tight">
             Needs attention
@@ -1538,86 +2346,120 @@ export function AssignedWorkPage() {
           </h2>
         </div>
 
-        <section className="space-y-3">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-danger">
-            Waiters &amp; urgent
-            {waiterUrgentJobs.length ? ` · ${waiterUrgentJobs.length}` : ""}
-          </h3>
-          {waiterUrgentJobs.length === 0 ? (
-            <p className="text-sm text-muted">No waiters or urgent ROs.</p>
-          ) : (
-            <ul className={cn("space-y-3", density === "compact" && "space-y-2")}>
+        {tabCounts.attention === 0 ? (
+          <p className="text-sm text-muted">All caught up — nothing waiting on the desk.</p>
+        ) : null}
+
+        {waiterUrgentJobs.length ? (
+          <section className={density === "compact" ? "space-y-1.5" : "space-y-3"}>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-danger">
+              Waiters &amp; urgent · {waiterUrgentJobs.length}
+            </h3>
+            <ul className={density === "compact" ? "space-y-1" : "space-y-3"}>
               {waiterUrgentJobs.map((j) => (
                 <JobCard
                   key={`att-${j.item_id || j.id}`}
                   j={j}
                   density={density}
                   actions={advisorOn ? deskJobActions(j) : undefined}
+                  onCarTurn={
+                    advisorOn && j.split_ro
+                      ? (turn) => void runCarTurn(j, turn)
+                      : undefined
+                  }
                 />
               ))}
             </ul>
-          )}
-        </section>
+          </section>
+        ) : null}
 
         {jobSection(
           "Next-day requests",
           attentionNextDayRequests,
           "No pending next-day requests — Approve to park next day, or Decline → due EOD.",
           advisorOn ? deskJobActions : undefined,
+          true,
+          true,
         )}
 
-<section className="space-y-3">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
-          Found issues & repair requests
-          {(board?.found_issues_pending || []).length
-            ? ` · ${(board?.found_issues_pending || []).length}`
-            : ""}
-        </h2>
-        {(board?.found_issues_pending || []).length === 0 ? (
-          <p className="text-sm text-muted">No pending found-issue or diag repair requests.</p>
-        ) : (
-          <ul className="space-y-3">
-            {(board?.found_issues_pending || []).map((fi: FoundIssueSummary) => (
-              <li
-                key={`${fi.ro_id}-${fi.id}`}
-                className="rounded-xl border border-border bg-surface px-4 py-3"
-              >
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <Link
-                      to={`/ro/${fi.ro_id}`}
-                      className="font-medium text-accent hover:underline"
-                    >
-                      {fi.id}
-                      <span className="font-normal text-muted"> · {fi.ro_id}</span>
-                    </Link>
-                    <div className="mt-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
-                      {fi.kind === "diag_complete"
-                        ? "Repair request (diag)"
-                        : "Found issue"}
+        {(board?.found_issues_pending || []).length ? (
+          <section className={density === "compact" ? "space-y-1.5" : "space-y-3"}>
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
+              Found issues & repair requests · {(board?.found_issues_pending || []).length}
+            </h2>
+            <ul className={density === "compact" ? "space-y-1" : "space-y-3"}>
+              {(board?.found_issues_pending || []).map((fi: FoundIssueSummary) => (
+                <li
+                  key={`${fi.ro_id}-${fi.id}`}
+                  className={cn(
+                    "border border-border bg-surface",
+                    density === "compact" ? "rounded-md px-2 py-1" : "rounded-xl px-4 py-3",
+                  )}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      {density === "compact" ? (
+                        <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs leading-snug">
+                          <span className="text-[9px] font-semibold uppercase tracking-wide text-muted">
+                            {fi.kind === "diag_complete" ? "Repair" : "Found"}
+                          </span>
+                          <Link
+                            to={`/ro/${fi.ro_id}`}
+                            className="font-medium text-accent hover:underline"
+                          >
+                            {fi.id}
+                            <span className="font-normal text-muted"> · {fi.ro_id}</span>
+                          </Link>
+                          <span className="truncate">{fi.description || "(no description)"}</span>
+                          <span className="truncate text-muted">
+                            {[fi.vehicle, fi.customer].filter(Boolean).join(" · ")}
+                            {fi.found_by ? ` · ${fi.found_by}` : ""}
+                            {(fi.photo_count || 0) > 0
+                              ? ` · ${fi.photo_count} photo${fi.photo_count === 1 ? "" : "s"}`
+                              : ""}
+                          </span>
+                        </div>
+                      ) : (
+                        <>
+                          <Link
+                            to={`/ro/${fi.ro_id}`}
+                            className="font-medium text-accent hover:underline"
+                          >
+                            {fi.id}
+                            <span className="font-normal text-muted"> · {fi.ro_id}</span>
+                          </Link>
+                          <div className="mt-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
+                            {fi.kind === "diag_complete"
+                              ? "Repair request (diag)"
+                              : "Found issue"}
+                          </div>
+                          <div className="mt-0.5 text-sm">{fi.description || "(no description)"}</div>
+                          <div className="text-sm text-muted">
+                            {fi.vehicle} · {fi.customer}
+                            {fi.found_by ? ` · found by ${fi.found_by}` : ""}
+                            {(fi.photo_count || 0) > 0
+                              ? ` · ${fi.photo_count} photo${fi.photo_count === 1 ? "" : "s"}`
+                              : ""}
+                          </div>
+                        </>
+                      )}
                     </div>
-                    <div className="mt-0.5 text-sm">{fi.description || "(no description)"}</div>
-                    <div className="text-sm text-muted">
-                      {fi.vehicle} · {fi.customer}
-                      {fi.found_by ? ` · found by ${fi.found_by}` : ""}
-                      {(fi.photo_count || 0) > 0
-                        ? ` · ${fi.photo_count} photo${fi.photo_count === 1 ? "" : "s"}`
-                        : ""}
-                    </div>
+                    {advisorOn ? foundIssueApproveActions(fi) : null}
                   </div>
-                  {advisorOn ? foundIssueApproveActions(fi) : null}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         {roSection(
           "Waiting on other items",
           board?.waiting_other_items,
           "No cars with a mix of finished and still-open work.",
           advisorOn ? waitingOtherActions : undefined,
+          true,
+          false,
+          true,
         )}
 
         {roSection(
@@ -1627,22 +2469,20 @@ export function AssignedWorkPage() {
           advisorOn ? readyActions : loggedIn ? readyReopenActions : undefined,
           true,
           true,
+          true,
         )}
 
-        <section className="space-y-3">
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-accent">
-              Needed parts
-              {neededParts.total ? ` · ${neededParts.total}` : ""}
-            </h3>
-            <Link to="/parts" className="text-xs text-accent hover:underline">
-              Open parts board
-            </Link>
-          </div>
-          {neededParts.total === 0 ? (
-            <p className="text-sm text-muted">No parts waiting to order or receive.</p>
-          ) : (
-            <div className="space-y-4">
+        {neededParts.total ? (
+          <section className={density === "compact" ? "space-y-1.5" : "space-y-3"}>
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-accent">
+                Needed parts · {neededParts.total}
+              </h3>
+              <Link to="/parts" className="text-xs text-accent hover:underline">
+                Open parts board
+              </Link>
+            </div>
+            <div className={density === "compact" ? "space-y-2" : "space-y-4"}>
               {(
                 [
                   ["To order", neededParts.toOrder],
@@ -1650,11 +2490,11 @@ export function AssignedWorkPage() {
                 ] as const
               ).map(([label, list]) =>
                 list.length ? (
-                  <div key={label} className="space-y-2">
+                  <div key={label} className={density === "compact" ? "space-y-1" : "space-y-2"}>
                     <h4 className="text-[11px] font-medium uppercase tracking-wide text-muted">
                       {label} · {list.length}
                     </h4>
-                    <ul className="space-y-2">
+                    <ul className={density === "compact" ? "space-y-1" : "space-y-2"}>
                       {list.map((row) => {
                         const key = `${row.ro_id}:${row.part_id}`;
                         const wrongN = Number(row.wrong_count) || 0;
@@ -1662,43 +2502,80 @@ export function AssignedWorkPage() {
                         return (
                           <li
                             key={key}
-                            className="rounded-xl border border-border bg-surface px-4 py-3"
+                            className={cn(
+                              "border border-border bg-surface",
+                              density === "compact"
+                                ? "rounded-md px-2 py-1"
+                                : "rounded-xl px-4 py-3",
+                            )}
                           >
                             <div className="flex flex-wrap items-start justify-between gap-2">
                               <div className="min-w-0">
-                                <div className="font-medium">
-                                  {row.description || row.part_number || row.part_id}
-                                  {wrongN > 0 ? (
-                                    <span className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-200">
-                                      Wrong ×{wrongN}
+                                {density === "compact" ? (
+                                  <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs leading-snug">
+                                    <span className="font-medium">
+                                      {row.description || row.part_number || row.part_id}
                                     </span>
-                                  ) : null}
-                                </div>
-                                <div className="mt-0.5 text-sm text-muted">
-                                  <Link
-                                    to={`/ro/${row.ro_id}`}
-                                    className="text-accent hover:underline"
-                                  >
-                                    {row.ro_id}
-                                  </Link>
-                                  {row.work_item_id ? ` / ${row.work_item_id}` : ""}
-                                  {row.part_number ? ` · Actual ${row.part_number}` : ""}
-                                  {row.oem_part_number ? ` · OEM ${row.oem_part_number}` : ""}
-                                  {row.supplier ? ` · ${row.supplier}` : ""}
-                                  {row.vehicle ? ` · ${row.vehicle}` : ""}
-                                </div>
+                                    {wrongN > 0 ? (
+                                      <span className="rounded bg-amber-500/15 px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-200">
+                                        Wrong ×{wrongN}
+                                      </span>
+                                    ) : null}
+                                    <span className="truncate text-muted">
+                                      <Link
+                                        to={`/ro/${row.ro_id}`}
+                                        className="text-accent hover:underline"
+                                      >
+                                        {row.ro_id}
+                                      </Link>
+                                      {row.work_item_id ? ` / ${row.work_item_id}` : ""}
+                                      {row.part_number ? ` · ${row.part_number}` : ""}
+                                      {row.supplier ? ` · ${row.supplier}` : ""}
+                                      {row.vehicle ? ` · ${row.vehicle}` : ""}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div className="font-medium">
+                                      {row.description || row.part_number || row.part_id}
+                                      {wrongN > 0 ? (
+                                        <span className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-200">
+                                          Wrong ×{wrongN}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    <div className="mt-0.5 text-sm text-muted">
+                                      <Link
+                                        to={`/ro/${row.ro_id}`}
+                                        className="text-accent hover:underline"
+                                      >
+                                        {row.ro_id}
+                                      </Link>
+                                      {row.work_item_id ? ` / ${row.work_item_id}` : ""}
+                                      {row.part_number ? ` · Actual ${row.part_number}` : ""}
+                                      {row.oem_part_number ? ` · OEM ${row.oem_part_number}` : ""}
+                                      {row.supplier ? ` · ${row.supplier}` : ""}
+                                      {row.vehicle ? ` · ${row.vehicle}` : ""}
+                                    </div>
+                                  </>
+                                )}
                                 {row.wrong_note ? (
-                                  <div className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                                  <div className="mt-0.5 text-xs text-amber-700 dark:text-amber-300">
                                     {row.wrong_note}
                                   </div>
                                 ) : null}
                               </div>
                               {advisorOn ? (
-                                <div className="flex flex-wrap gap-2">
+                                <div
+                                  className={cn(
+                                    "flex flex-wrap",
+                                    density === "compact" ? "gap-1" : "gap-2",
+                                  )}
+                                >
                                   {s !== "ordered" ? (
                                     <Button
                                       type="button"
-                                      size="sm"
+                                      size={density === "compact" ? "xs" : "sm"}
                                       disabled={actingId === key}
                                       onClick={() => void runPartStatus(row, "ordered")}
                                     >
@@ -1707,7 +2584,7 @@ export function AssignedWorkPage() {
                                   ) : null}
                                   <Button
                                     type="button"
-                                    size="sm"
+                                    size={density === "compact" ? "xs" : "sm"}
                                     variant="secondary"
                                     disabled={actingId === key}
                                     onClick={() => void runPartStatus(row, "received")}
@@ -1725,14 +2602,16 @@ export function AssignedWorkPage() {
                 ) : null,
               )}
             </div>
-          )}
-        </section>
+          </section>
+        ) : null}
 
         {jobSection(
           "Waiting on parts",
           attentionWaitingParts,
           "No jobs waiting on a parts order.",
           advisorOn ? deskJobActions : undefined,
+          true,
+          true,
         )}
 
         {jobSection(
@@ -1740,6 +2619,25 @@ export function AssignedWorkPage() {
           attentionWaitingCustomer,
           "No jobs waiting on customer approval.",
           advisorOn ? deskJobActions : undefined,
+          true,
+          true,
+        )}
+
+        {roSection(
+          "Needs a work item",
+          board?.needs_work_item,
+          "Every open RO has at least one concern.",
+          (o) => (
+            <Link
+              to={`/ro/${o.id}`}
+              className="inline-flex h-8 items-center justify-center rounded-lg border border-border bg-surface px-3 text-xs font-medium hover:bg-border/40"
+            >
+              Open RO — add concern
+            </Link>
+          ),
+          true,
+          false,
+          true,
         )}
 
         {jobSection(
@@ -1747,6 +2645,8 @@ export function AssignedWorkPage() {
           attentionUnassigned,
           "All open concerns have an assignee — or approve a found issue into this lane.",
           advisorOn ? unassignedDeskActions : loggedIn ? unassignedActions : undefined,
+          true,
+          true,
         )}
       </div>
 
@@ -1780,7 +2680,7 @@ export function AssignedWorkPage() {
       </div>
 
       {deskTab === "floor" ? (
-        <div className="space-y-8">
+        <div className={density === "compact" ? "space-y-4" : "space-y-8"}>
 <section className="space-y-3">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
           Available techs (on the clock)
@@ -1948,99 +2848,560 @@ export function AssignedWorkPage() {
         advisorOn ? deskJobActions : undefined,
       )}
 
-      {jobSection(
-        workingPrivilege ? "My work (today)" : "Today (my daily queue)",
-        board?.mine_daily ?? board?.mine,
-        workingPrivilege
-          ? "Nothing assigned to you yet — use Assign to me or Add to my queue."
-          : "Nothing in today's queue for the signed-in tech session.",
-        advisorOn ? deskJobActions : undefined,
-      )}
+      <section className={density === "compact" ? "space-y-1.5" : "space-y-3"}>
+        {queuePathList(
+          workingPrivilege ? "My work (today)" : "Today (my daily queue)",
+          board?.mine_daily ?? board?.mine,
+          workingPrivilege
+            ? "Nothing assigned to you yet — use Assign to me or Add to my queue."
+            : "Nothing in today's queue for the signed-in tech session.",
+          board?.tech_id || "",
+          board?.tech_name || "",
+          "daily",
+          advisorOn ? deskJobActions : undefined,
+        )}
+      </section>
 
       <section className="space-y-4">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
-          Today by technician
+          By technician
         </h2>
         <p className="text-sm text-muted">
-          Each tech&apos;s daily queue — assign or move lanes from the job row.
+          Numbered work path per tech — one number per car, items listed under it. Reorder
+          cars or send the whole car to next day / today.
         </p>
-        {(board?.daily_by_tech || []).length === 0 ? (
-          <p className="text-sm text-muted">No daily-queue jobs assigned.</p>
+        {!(board?.daily_by_tech || []).length && !(board?.next_day_by_tech || []).length ? (
+          <p className="text-sm text-muted">No daily or next-day jobs assigned.</p>
         ) : (
-          (board?.daily_by_tech || []).map((bucket) => (
-            <div key={bucket.id || bucket.name} className="space-y-2">
-              <h3 className="text-sm font-medium">{bucket.name}</h3>
-              <ul className={cn("space-y-3", density === "compact" && "space-y-2")}>
-                {(bucket.jobs || []).map((j) => (
-                  <JobCard
-                    key={`daily-${bucket.name}-${j.id}`}
-                    j={j}
-                    density={density}
-                    actions={advisorOn ? deskJobActions(j) : undefined}
-                  />
-                ))}
-              </ul>
-            </div>
-          ))
+          Array.from(
+            (() => {
+              const map = new Map<
+                string,
+                { id: string; name: string; daily: AssignedJobSummary[]; next: AssignedJobSummary[] }
+              >();
+              for (const b of board?.daily_by_tech || []) {
+                map.set(b.id || b.name, {
+                  id: b.id,
+                  name: b.name,
+                  daily: b.jobs || [],
+                  next: [],
+                });
+              }
+              for (const b of board?.next_day_by_tech || []) {
+                const key = b.id || b.name;
+                const existing = map.get(key);
+                if (existing) existing.next = b.jobs || [];
+                else {
+                  map.set(key, {
+                    id: b.id,
+                    name: b.name,
+                    daily: [],
+                    next: b.jobs || [],
+                  });
+                }
+              }
+              return map.values();
+            })(),
+          )
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((bucket) => (
+              <div key={bucket.id || bucket.name} className="space-y-3">
+                <h3 className="text-sm font-medium">{bucket.name}</h3>
+                {queuePathList(
+                  "Today",
+                  bucket.daily,
+                  "Nothing in today's queue.",
+                  bucket.id,
+                  bucket.name,
+                  "daily",
+                  advisorOn ? deskJobActions : undefined,
+                )}
+                {queuePathList(
+                  "Next day",
+                  bucket.next,
+                  "Nothing parked for tomorrow.",
+                  bucket.id,
+                  bucket.name,
+                  "next_day",
+                  advisorOn ? deskJobActions : undefined,
+                )}
+              </div>
+            ))
         )}
       </section>
         </div>
       ) : null}
 
       {deskTab === "queues" ? (
-        <div className="space-y-8">
-        <p className="text-sm text-muted">
-          Shop-wide parking lanes: next-day rolls into today at midnight (assigned stays
-          with that tech; unassigned returns to Needs attention). Today&apos;s unfinished
-          work stays on today — it is not auto-moved to next day. Long-term parks
-          unassigned (no tech). Use Unmark long-term to put it on today&apos;s unassigned,
-          or Back to long-term
-          to park it again. Assign a tech when you plan to work it.
-        </p>
+        <div className={density === "compact" ? "space-y-4" : "space-y-8"}>
+        {advisorOn ? (
+          <section className="space-y-3 rounded-lg border border-border/80 bg-panel/40 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
+                  Day plan notify
+                </h2>
+                <p className="mt-1 max-w-xl text-sm text-muted">
+                  Step 1: pick a tech and press <span className="font-medium text-fg">Plan today</span>{" "}
+                  or <span className="font-medium text-fg">Plan tomorrow</span> (item stays unassigned
+                  until send). Step 2: press{" "}
+                  <span className="font-medium text-fg">Send day plan</span> — assigns staged work,
+                  then one message per tech. Today goes out now; Next day waits until{" "}
+                  {dayPlan?.next_day_notify_hour ?? 8}:00 AM.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg disabled:opacity-50"
+                disabled={
+                  sendingPlan ||
+                  !dayPlan ||
+                  ((dayPlan.dirty || []).length === 0 && stagedCount === 0)
+                }
+                onClick={() => void sendDayPlan()}
+                title="Apply staged plans and notify techs"
+              >
+                {sendingPlan
+                  ? "Sending…"
+                  : stagedCount || (dayPlan?.dirty || []).length
+                    ? `Send day plan (${stagedCount + (dayPlan?.dirty || []).length})`
+                    : "Send day plan"}
+              </button>
+            </div>
+            {!dayPlan ? (
+              <p className="text-sm text-danger">
+                Day plan status unavailable — confirm you are logged in as an advisor, then Refresh.
+              </p>
+            ) : (dayPlan.dirty || []).length === 0 && stagedCount === 0 ? (
+              <p className="text-sm text-muted">
+                {(dayPlan.pending_next_day || []).length
+                  ? "No new changes — next-day plans are already queued for 8:00 AM. Use Send plan on a tech below to update or re-notify."
+                  : planPoolJobs.length
+                    ? "Nothing staged yet. In the pool: pick a tech → Plan today / Plan tomorrow, then Send day plan."
+                    : "No unsent plan changes. Stage work from the pool, or use Send plan on a tech who already has a Today / Next day path."}
+              </p>
+            ) : (
+              <ul className="space-y-2 text-sm">
+                {stagedCount > 0 ? (
+                  <li className="text-xs text-muted">
+                    Staged (unsent): {stagedCount} item{stagedCount === 1 ? "" : "s"} — Send applies
+                    them onto tech queues, then notifies.
+                  </li>
+                ) : null}
+                {(dayPlan.dirty || []).map((d) => (
+                  <li
+                    key={d.tech_id}
+                    className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-2 last:border-0"
+                  >
+                    <div>
+                      <div className="font-medium">{d.tech_name}</div>
+                      <div className="text-xs text-muted">
+                        {d.daily_changed
+                          ? `Today · ${d.daily.length} car${d.daily.length === 1 ? "" : "s"} · notify now`
+                          : null}
+                        {d.daily_changed && d.next_day_changed ? " · " : null}
+                        {d.next_day_changed
+                          ? `Next day · ${d.next_day.length} car${d.next_day.length === 1 ? "" : "s"} · 8:00 AM`
+                          : null}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="rounded-md border border-accent/40 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent disabled:opacity-50"
+                      disabled={sendingPlan}
+                      onClick={() => void sendDayPlan([d.tech_id])}
+                    >
+                      Send {d.tech_name.split(" ")[0] || "tech"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {(dayPlan?.pending_next_day || []).length > 0 ? (
+              <div className="text-xs text-muted">
+                Scheduled for 8:00 AM:{" "}
+                {(dayPlan?.pending_next_day || [])
+                  .map((p) => `${p.tech_name} (${(p.cars || []).length})`)
+                  .join(" · ")}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
 
-        {jobSection(
-          "Next day (shop)",
-          board?.next_day,
-          "Next-day pool is empty — push jobs here when they should wait until tomorrow.",
-          advisorOn ? deskJobActions : undefined,
-        )}
+        <section className={density === "compact" ? "space-y-2" : "space-y-3"}>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
+              Unassigned work
+              {planPoolJobs.length ? ` · ${planPoolJobs.length}` : ""}
+            </h2>
+            <p className="text-xs text-muted">
+              Pick a tech, then Plan today or Plan tomorrow. Staging does not move the job until you
+              Send day plan.
+            </p>
+          </div>
+          <div
+            {...(() => {
+              const p = planDropProps({ kind: "pool" });
+              return {
+                onDragOver: p.onDragOver,
+                onDragLeave: p.onDragLeave,
+                onDrop: p.onDrop,
+                className: cn(
+                  density === "compact" ? "space-y-1 p-2" : "space-y-2 p-3",
+                  "min-h-[3rem] border border-border bg-surface",
+                  density === "compact" ? "rounded-md" : "rounded-xl",
+                  planDropTarget === "pool" ? "border-accent bg-accent/10" : "",
+                ),
+              };
+            })()}
+          >
+              {planPoolJobs.length === 0 ? (
+              <p className="text-sm text-muted">
+                No unassigned work to plan — park returns or new Needs attention items show here.
+              </p>
+            ) : (
+              <ul className={density === "compact" ? "space-y-1" : "space-y-2"}>
+                {planPoolJobs.map((j) => (
+                  <li
+                    key={`pool-${j.id}`}
+                    draggable={advisorOn}
+                    onDragStart={(e) =>
+                      onPlanDragStart(e, { type: "job", ro_id: j.ro_id, item_id: j.item_id })
+                    }
+                    onDragEnd={onPlanDragEnd}
+                    className={cn(
+                      "border border-border bg-panel/30",
+                      density === "compact" ? "rounded-md px-2 py-1.5" : "rounded-lg px-3 py-2",
+                      advisorOn ? "cursor-grab active:cursor-grabbing" : "",
+                    )}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <Link
+                          to={`/ro/${j.ro_id}`}
+                          className="font-medium text-accent hover:underline"
+                        >
+                          {j.ro_id}
+                        </Link>
+                        <span className="text-sm text-fg/90">
+                          {" "}
+                          · {j.vehicle}
+                          {j.customer ? ` · ${j.customer}` : ""}
+                        </span>
+                        <div className="mt-0.5 text-sm">
+                          <span className="font-medium">{j.item_id}</span>{" "}
+                          {j.concern || "(no concern)"}
+                          <span className="text-xs text-muted">
+                            {" "}
+                            · {[j.item_type, formatStatus(j.item_status)].filter(Boolean).join(" · ")}
+                          </span>
+                        </div>
+                      </div>
+                      {advisorOn ? planJobControls(j) : null}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </section>
 
-        {jobSection(
-          "Unassigned long-term",
-          board?.long_term_unassigned,
-          "No unassigned long-term jobs — park multi-day work here without assigning a tech yet.",
-          advisorOn ? deskJobActions : undefined,
-          false,
-        )}
+        <section className={density === "compact" ? "space-y-2" : "space-y-3"}>
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">Parking</h2>
+          <p className="text-sm text-muted">
+            Park here to pull work out of the selectable pool (unassigned next day or long-term).
+          </p>
+          <div className={cn("grid gap-3", density === "compact" ? "lg:grid-cols-2" : "lg:grid-cols-2")}>
+            {(
+              [
+                {
+                  key: "next_day" as const,
+                  title: "Unassigned next day",
+                  items: board?.next_day_unassigned || [],
+                  empty: "Drop or park jobs for tomorrow without a tech.",
+                },
+                {
+                  key: "long_term" as const,
+                  title: "Long-term",
+                  items: (() => {
+                    const seen = new Set<string>();
+                    const out: AssignedJobSummary[] = [];
+                    for (const j of [
+                      ...(board?.long_term_unassigned || []),
+                      ...((board?.long_term_by_tech || []).flatMap((b) => b.jobs || []) ||
+                        []),
+                    ]) {
+                      const id = j.id || `${j.ro_id}:${j.item_id}`;
+                      if (seen.has(id)) continue;
+                      seen.add(id);
+                      out.push(j);
+                    }
+                    return out;
+                  })(),
+                  empty: "Multi-day park — removed from the day plan pool.",
+                },
+              ] as const
+            ).map((lane) => (
+              <div
+                key={lane.key}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  setPlanDropTarget(`parking:${lane.key}`);
+                }}
+                onDragLeave={() =>
+                  setPlanDropTarget((cur) => (cur === `parking:${lane.key}` ? null : cur))
+                }
+                onDrop={(e) => void handlePlanDrop({ kind: "parking", lane: lane.key }, e)}
+                className={cn(
+                  "border border-border bg-surface",
+                  density === "compact" ? "rounded-md p-2" : "rounded-xl p-3",
+                  planDropTarget === `parking:${lane.key}`
+                    ? "border-accent bg-accent/10"
+                    : "border-dashed border-border/80",
+                )}
+              >
+                <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted">
+                  {lane.title}
+                  {lane.items.length ? ` · ${lane.items.length}` : ""}
+                </h3>
+                {lane.items.length === 0 ? (
+                  <p className="mt-2 text-sm text-muted">{lane.empty}</p>
+                ) : (
+                  <ul className={cn("mt-2", density === "compact" ? "space-y-1" : "space-y-2")}>
+                    {lane.items.map((j) => (
+                      <li
+                        key={`park-${lane.key}-${j.id}`}
+                        draggable={advisorOn}
+                        onDragStart={(e) =>
+                          onPlanDragStart(e, {
+                            type: "job",
+                            ro_id: j.ro_id,
+                            item_id: j.item_id,
+                          })
+                        }
+                        onDragEnd={onPlanDragEnd}
+                        className={cn(
+                          "border border-border/70 bg-panel/20",
+                          density === "compact" ? "rounded px-2 py-1" : "rounded-lg px-2.5 py-1.5",
+                          advisorOn ? "cursor-grab active:cursor-grabbing" : "",
+                        )}
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="min-w-0 text-sm">
+                            <Link to={`/ro/${j.ro_id}`} className="font-medium text-accent hover:underline">
+                              {j.ro_id}
+                            </Link>
+                            <span className="text-muted">
+                              {" "}
+                              · {j.vehicle} · {j.item_id}
+                            </span>
+                            {j.assigned_to_name ? (
+                              <span className="text-muted"> · {j.assigned_to_name}</span>
+                            ) : null}
+                          </div>
+                          {advisorOn ? planJobControls(j, { fromParking: true }) : null}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
 
-        <section className="space-y-4">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
-            Long-term by technician
-            {(board?.long_term_by_tech || []).reduce((n, b) => n + (b.jobs || []).length, 0)
-              ? ` · ${(board?.long_term_by_tech || []).reduce((n, b) => n + (b.jobs || []).length, 0)}`
-              : ""}
+        <section className={density === "compact" ? "space-y-3" : "space-y-4"}>
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
+            Technicians
           </h2>
           <p className="text-sm text-muted">
-            Each tech&apos;s parked long-term queue — assign or pull back to today from the job row.
+            Live Today / Next day paths plus planned (unsent) staging.{" "}
+            <span className="font-medium text-fg">Send plan</span> applies staged items for that tech,
+            then notifies. Unfinished Today work returns to Needs attention at end of day.
           </p>
-          {(board?.long_term_by_tech || []).length === 0 ? (
-            <p className="text-sm text-muted">No long-term jobs assigned to technicians.</p>
+          {planTechBuckets.length === 0 ? (
+            <p className="text-sm text-muted">No technicians in the roster yet.</p>
           ) : (
-            (board?.long_term_by_tech || []).map((bucket) => (
-              <div key={`lt-${bucket.id || bucket.name}`} className="space-y-2">
-                <h3 className="text-sm font-medium">{bucket.name}</h3>
-                <ul className={cn("space-y-3", density === "compact" && "space-y-2")}>
-                  {(bucket.jobs || []).map((j) => (
-                    <JobCard
-                      key={`lt-${bucket.name}-${j.id}`}
-                      j={j}
-                      density={density}
-                      actions={advisorOn ? deskJobActions(j) : undefined}
-                    />
-                  ))}
-                </ul>
-              </div>
-            ))
+            <div className={density === "compact" ? "space-y-3" : "space-y-5"}>
+              {planTechBuckets.map((bucket) => {
+                const techStaged = (dayPlan?.staged || []).filter(
+                  (s) => s.tech_id === bucket.id,
+                );
+                const stagedDaily = techStaged.filter((s) => s.lane !== "next_day");
+                const stagedNext = techStaged.filter((s) => s.lane === "next_day");
+                return (
+                <div
+                  key={bucket.id || bucket.name}
+                  className={cn(
+                    "border border-border bg-surface",
+                    density === "compact" ? "space-y-2 rounded-md p-2" : "space-y-3 rounded-xl p-3",
+                  )}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-medium">{bucket.name}</h3>
+                    <button
+                      type="button"
+                      className="rounded-md border border-accent/40 bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent disabled:opacity-50"
+                      disabled={
+                        sendingPlan ||
+                        !bucket.id ||
+                        (bucket.daily.length === 0 &&
+                          bucket.next.length === 0 &&
+                          techStaged.length === 0)
+                      }
+                      onClick={() => void sendDayPlan([bucket.id])}
+                      title="Apply staged + notify this tech's Today / Next day plan"
+                    >
+                      {sendingPlan ? "Sending…" : "Send plan"}
+                    </button>
+                  </div>
+                  {techStaged.length > 0 ? (
+                    <div
+                      className={cn(
+                        "border border-dashed border-accent/40 bg-accent/5",
+                        density === "compact" ? "rounded-md p-2" : "rounded-lg p-2.5",
+                      )}
+                    >
+                      <h4 className="text-[11px] font-semibold uppercase tracking-wide text-accent">
+                        Planned (unsent)
+                        {techStaged.length ? ` · ${techStaged.length}` : ""}
+                      </h4>
+                      <ul
+                        className={cn(
+                          "mt-1.5 text-sm",
+                          density === "compact" ? "space-y-1" : "space-y-1.5",
+                        )}
+                      >
+                        {[...stagedDaily, ...stagedNext].map((s) => (
+                          <li
+                            key={s.key || `${s.ro_id}:${s.item_id}`}
+                            className="flex flex-wrap items-center justify-between gap-2"
+                          >
+                            <span>
+                              <Link
+                                to={`/ro/${s.ro_id}`}
+                                className="font-medium text-accent hover:underline"
+                              >
+                                {s.ro_id}
+                              </Link>
+                              <span className="text-muted">
+                                {" "}
+                                · {s.item_id}
+                                {s.vehicle ? ` · ${s.vehicle}` : ""}
+                                {" · "}
+                                {s.lane === "next_day" ? "Tomorrow" : "Today"}
+                              </span>
+                            </span>
+                            <button
+                              type="button"
+                              className="text-xs text-accent underline disabled:opacity-50"
+                              disabled={actingId === `unstage:${s.item_id}`}
+                              onClick={() =>
+                                void planUnstage({ ro_id: s.ro_id, item_id: s.item_id })
+                              }
+                            >
+                              Unstage
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  <div
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                      setPlanDropTarget(`tech:${bucket.id}:daily`);
+                    }}
+                    onDragLeave={() =>
+                      setPlanDropTarget((cur) =>
+                        cur === `tech:${bucket.id}:daily` ? null : cur,
+                      )
+                    }
+                    onDrop={(e) =>
+                      void handlePlanDrop(
+                        { kind: "tech", techId: bucket.id, lane: "daily" },
+                        e,
+                      )
+                    }
+                    className={cn(
+                      planDropTarget === `tech:${bucket.id}:daily`
+                        ? "rounded-md border border-dashed border-accent bg-accent/10 p-1"
+                        : "",
+                    )}
+                  >
+                    {queuePathList(
+                      "Today",
+                      bucket.daily,
+                      "Nothing in today's queue — drop here or Plan today from the pool.",
+                      bucket.id,
+                      bucket.name,
+                      "daily",
+                      advisorOn
+                        ? (j) => (
+                            <>
+                              {btn(
+                                `pool:${j.item_id}`,
+                                density === "compact" ? "Pool" : "Back to pool",
+                                () => void planReturnToPool(j),
+                                "ghost",
+                              )}
+                              {deskJobActions(j)}
+                            </>
+                          )
+                        : undefined,
+                    )}
+                  </div>
+                  <div
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                      setPlanDropTarget(`tech:${bucket.id}:next_day`);
+                    }}
+                    onDragLeave={() =>
+                      setPlanDropTarget((cur) =>
+                        cur === `tech:${bucket.id}:next_day` ? null : cur,
+                      )
+                    }
+                    onDrop={(e) =>
+                      void handlePlanDrop(
+                        { kind: "tech", techId: bucket.id, lane: "next_day" },
+                        e,
+                      )
+                    }
+                    className={cn(
+                      planDropTarget === `tech:${bucket.id}:next_day`
+                        ? "rounded-md border border-dashed border-accent bg-accent/10 p-1"
+                        : "",
+                    )}
+                  >
+                    {queuePathList(
+                      "Next day",
+                      bucket.next,
+                      "Nothing for tomorrow — drop here or Plan tomorrow from the pool.",
+                      bucket.id,
+                      bucket.name,
+                      "next_day",
+                      advisorOn
+                        ? (j) => (
+                            <>
+                              {btn(
+                                `pool:${j.item_id}`,
+                                density === "compact" ? "Pool" : "Back to pool",
+                                () => void planReturnToPool(j),
+                                "ghost",
+                              )}
+                              {deskJobActions(j)}
+                            </>
+                          )
+                        : undefined,
+                    )}
+                  </div>
+                </div>
+                );
+              })}
+            </div>
           )}
         </section>
 
@@ -2075,11 +3436,14 @@ export function AssignedWorkPage() {
         {(board?.found_issues_pending || []).length === 0 ? (
           <p className="text-sm text-muted">No pending found-issue or diag repair requests.</p>
         ) : (
-          <ul className="space-y-3">
+          <ul className={density === "compact" ? "space-y-1" : "space-y-3"}>
             {(board?.found_issues_pending || []).map((fi: FoundIssueSummary) => (
               <li
                 key={`${fi.ro_id}-${fi.id}`}
-                className="rounded-xl border border-border bg-surface px-4 py-3"
+                className={cn(
+                  "border border-border bg-surface",
+                  density === "compact" ? "rounded-md px-2 py-1" : "rounded-xl px-4 py-3",
+                )}
               >
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
@@ -2149,7 +3513,7 @@ export function AssignedWorkPage() {
       ) : null}
 
       {deskTab === "assign" ? (
-        <div className="space-y-8">
+        <div className={density === "compact" ? "space-y-4" : "space-y-8"}>
           <p className="text-sm text-muted">
             Dish work to a tech from Unassigned (or reassign from another tech). Techs can also pick
             up Unassigned items themselves on their Assigned page.
@@ -2166,31 +3530,75 @@ export function AssignedWorkPage() {
             <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
               On other techs
             </h2>
-            {(board?.by_tech || []).length === 0 ? (
+            {!(board?.daily_by_tech || []).length && !(board?.next_day_by_tech || []).length ? (
               <p className="text-sm text-muted">No work items assigned to other technicians.</p>
             ) : (
-              (board?.by_tech || []).map((bucket) => (
-                <div key={bucket.id || bucket.name} className="space-y-2">
-                  <h3 className="text-sm font-medium">{bucket.name}</h3>
-                  <ul className={cn("space-y-3", density === "compact" && "space-y-2")}>
-                    {(bucket.jobs || []).map((j) => (
-                      <JobCard
-                        key={`${bucket.name}-${j.id}`}
-                        j={j}
-                        density={density}
-                        actions={advisorOn ? deskJobActions(j) : undefined}
-                      />
-                    ))}
-                  </ul>
-                </div>
-              ))
+              Array.from(
+                (() => {
+                  const map = new Map<
+                    string,
+                    {
+                      id: string;
+                      name: string;
+                      daily: AssignedJobSummary[];
+                      next: AssignedJobSummary[];
+                    }
+                  >();
+                  for (const b of board?.daily_by_tech || []) {
+                    map.set(b.id || b.name, {
+                      id: b.id,
+                      name: b.name,
+                      daily: b.jobs || [],
+                      next: [],
+                    });
+                  }
+                  for (const b of board?.next_day_by_tech || []) {
+                    const key = b.id || b.name;
+                    const existing = map.get(key);
+                    if (existing) existing.next = b.jobs || [];
+                    else {
+                      map.set(key, {
+                        id: b.id,
+                        name: b.name,
+                        daily: [],
+                        next: b.jobs || [],
+                      });
+                    }
+                  }
+                  return map.values();
+                })(),
+              )
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .map((bucket) => (
+                  <div key={bucket.id || bucket.name} className="space-y-3">
+                    <h3 className="text-sm font-medium">{bucket.name}</h3>
+                    {queuePathList(
+                      "Today",
+                      bucket.daily,
+                      "Nothing in today's queue.",
+                      bucket.id,
+                      bucket.name,
+                      "daily",
+                      advisorOn ? deskJobActions : undefined,
+                    )}
+                    {queuePathList(
+                      "Next day",
+                      bucket.next,
+                      "Nothing parked for tomorrow.",
+                      bucket.id,
+                      bucket.name,
+                      "next_day",
+                      advisorOn ? deskJobActions : undefined,
+                    )}
+                  </div>
+                ))
             )}
           </section>
         </div>
       ) : null}
 
       {deskTab === "punches" ? (
-        <div className="space-y-8">
+        <div className={density === "compact" ? "space-y-4" : "space-y-8"}>
           <section className="space-y-3">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
               Today&apos;s punches

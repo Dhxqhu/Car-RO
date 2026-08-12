@@ -23,6 +23,7 @@ from carro.config import (
     resolve_local_parts_received_keep_hours,
     resolve_idle_nudge_hours,
     resolve_local_photo_keep,
+    resolve_pa_inspection_types,
     save_config,
 )
 from carro.core.logo_setup import logo_status
@@ -131,6 +132,11 @@ def run_config_menu() -> None:
             "Autosync (minutes)",
             "off" if mins <= 0 else f"every {mins} min",
         )
+        table.add_row(
+            "[bold cyan]16[/]",
+            "PA inspection types (SI/IM)",
+            "on" if resolve_pa_inspection_types(cfg) else "off",
+        )
         table.add_row("[bold cyan]b[/]", "Back", "")
 
         CONSOLE.print()
@@ -187,6 +193,8 @@ def run_config_menu() -> None:
                 run_technicians_config_menu()
             elif choice == "15":
                 _edit_autosync(cfg)
+            elif choice == "16":
+                _edit_pa_inspection_types(cfg)
             else:
                 CONSOLE.print("[yellow]Unknown option[/]")
         except (ValueError, OSError) as exc:
@@ -222,6 +230,19 @@ def _edit_autosync(cfg: dict) -> None:
         CONSOLE.print("[dim]Autosync off.[/]")
     else:
         CONSOLE.print(f"[dim]Autosync every {n} minute(s) when engine/CLI menu is running.[/]")
+
+
+def _edit_pa_inspection_types(cfg: dict) -> None:
+    """Toggle SI/IM and SI only in type pickers (PA shops). Default on."""
+    cur = resolve_pa_inspection_types(cfg)
+    CONSOLE.print(
+        "[dim]Pennsylvania SI/IM and SI only work-item / calendar tags. "
+        "Turn off for shops outside PA.[/]"
+    )
+    cfg["pa_inspection_types"] = Confirm.ask(
+        "Show PA inspection types (SI/IM, SI only)?", default=cur
+    )
+    _save(cfg)
 
 
 def _save(cfg: dict) -> None:
@@ -405,6 +426,8 @@ def print_config_summary() -> None:
             f"idle_nudge_hours: {resolve_idle_nudge_hours(cfg):g}\n"
             f"autosync_minutes: "
             f"{'off' if int(cfg.get('autosync_minutes') or 0) <= 0 else int(cfg.get('autosync_minutes') or 0)}\n"
+            f"pa_inspection_types: "
+            f"{'on' if resolve_pa_inspection_types(cfg) else 'off'}\n"
             f"logo: {logo_status(cfg)[0]}\n"
             f"photos.provider: {(cfg.get('photos') or {}).get('provider')}\n"
             f"photos.dir: {(cfg.get('photos') or {}).get('dir')}\n"

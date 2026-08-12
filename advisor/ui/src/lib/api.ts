@@ -27,6 +27,9 @@ export type WorkItemTimeEntry = {
   at?: string;
   note?: string;
   source?: string;
+  covers_item_ids?: string[];
+  time_group_id?: string;
+  completed_with_id?: string;
 };
 
 export type WorkItemPart = {
@@ -54,6 +57,10 @@ export type WorkItem = {
   item_type?: string;
   status: string;
   priority?: number;
+  car_turn?: number;
+  time_group_id?: string;
+  completed_with_id?: string;
+  covers_item_ids?: string[];
   assigned_to_id?: string;
   assigned_to_name?: string;
   assigned_at?: string;
@@ -109,6 +116,9 @@ export type WorkItem = {
     target_before?: { concern?: string; notes?: string; private_notes?: string };
     sources?: WorkItem[];
   };
+  service_plan_id?: string;
+  service_plan_line_id?: string;
+  service_plan_enroll?: string;
 };
 
 export type PartsSheetRow = {
@@ -154,6 +164,123 @@ export type PartSuggestion = {
   brand?: string;
   description: string;
   use_count?: number;
+};
+
+export type Appointment = {
+  id: string;
+  scheduled_at: string;
+  all_day?: boolean;
+  first_name?: string;
+  last_name?: string;
+  phone?: string;
+  year?: string;
+  make?: string;
+  model?: string;
+  vin?: string;
+  notes?: string;
+  tag?: string;
+  requested_tech_id?: string;
+  requested_tech_name?: string;
+  status?: string;
+  converted_ro_id?: string;
+  prior_ro_id?: string;
+  service_plan_id?: string;
+  service_plan_line_id?: string;
+  service_plan_enroll?: string;
+  waiter?: boolean;
+  urgent?: boolean;
+  canceled_at?: string;
+  confirm_veto_until?: string;
+  no_show_at?: string;
+  confirm_status?: string;
+  confirm_at?: string;
+  confirm_by?: string;
+  confirm_by_id?: string;
+  confirm_attempts?: number;
+  created_by?: string;
+  created?: string;
+  updated?: string;
+};
+
+export type CalendarPartEvent = {
+  kind: "ordered" | "received" | string;
+  at: string;
+  day?: string;
+  ro_id: string;
+  item_id?: string;
+  part_id?: string;
+  description?: string;
+  customer?: string;
+  vehicle?: string;
+};
+
+export type CalendarPayload = {
+  start: string;
+  end: string;
+  appointments: Appointment[];
+  converted?: Appointment[];
+  canceled: Appointment[];
+  no_show: Appointment[];
+  parts: CalendarPartEvent[];
+  tags?: string[];
+  today?: string;
+  tomorrow?: string;
+  tomorrow_calls?: Appointment[];
+  today_open?: Appointment[];
+  due_calls?: ServiceDueItem[];
+};
+
+export type ServicePlanLine = {
+  id: string;
+  label: string;
+  interval_months: number;
+  tag: string;
+  last_done_at?: string;
+  next_due?: string;
+  call_status?: string;
+  call_at?: string;
+  call_attempts?: number;
+  last_appt_id?: string;
+  last_ro_id?: string;
+  notes?: string;
+};
+
+export type ServicePlan = {
+  id: string;
+  first_name?: string;
+  last_name?: string;
+  phone?: string;
+  year?: string;
+  make?: string;
+  model?: string;
+  vin?: string;
+  notes?: string;
+  lines?: ServicePlanLine[];
+  match_key?: string;
+  updated?: string;
+};
+
+export type ServiceDueItem = {
+  plan_id: string;
+  line_id: string;
+  label: string;
+  tag: string;
+  interval_months: number;
+  next_due: string;
+  last_done_at?: string;
+  overdue?: boolean;
+  call_status?: string;
+  call_attempts?: number;
+  phone?: string;
+  first_name?: string;
+  last_name?: string;
+  year?: string;
+  make?: string;
+  model?: string;
+  vin?: string;
+  customer?: string;
+  vehicle?: string;
+  notes?: string;
 };
 
 export type IdleNudge = {
@@ -312,6 +439,17 @@ export type AssignedJobSummary = {
   updated?: string;
   /** Set when this job was created by approving a found issue (advisor undo). */
   from_found_issue_id?: string;
+  car_turn?: number;
+  car_turn_count?: number;
+  split_ro?: boolean;
+  waiting_on_car?: boolean;
+  car_held_by_name?: string;
+  car_held_item_id?: string;
+  car_held_concern?: string;
+  time_group_id?: string;
+  completed_with_id?: string;
+  covers_item_ids?: string[];
+  queue_order?: number;
 };
 
 export type AssignedOrderSummary = {
@@ -380,6 +518,7 @@ export type AssignedBoard = {
   mine_next_day?: AssignedJobSummary[];
   mine_long_term?: AssignedJobSummary[];
   next_day?: AssignedJobSummary[];
+  next_day_unassigned?: AssignedJobSummary[];
   long_term?: AssignedJobSummary[];
   long_term_unassigned?: AssignedJobSummary[];
   long_term_by_tech?: Array<{
@@ -388,6 +527,11 @@ export type AssignedBoard = {
     jobs: AssignedJobSummary[];
   }>;
   daily_by_tech?: Array<{
+    id: string;
+    name: string;
+    jobs: AssignedJobSummary[];
+  }>;
+  next_day_by_tech?: Array<{
     id: string;
     name: string;
     jobs: AssignedJobSummary[];
@@ -409,6 +553,7 @@ export type AssignedBoard = {
     current?: AssignedJobSummary | AssignedOrderSummary | null;
   }>;
   unassigned: AssignedJobSummary[];
+  needs_work_item?: AssignedOrderSummary[];
   now_working?: NowWorkingEntry[];
   my_current?: AssignedJobSummary | null;
   tech_id?: string;
@@ -594,6 +739,8 @@ export type ConfigSnapshot = {
   photos_inbox_dir: string;
   photos_provider: string;
   autosync_minutes: number;
+  /** PA SI/IM + SI only in type pickers (default true). */
+  pa_inspection_types?: boolean;
   autosync?: {
     enabled: boolean;
     interval_minutes: number;
@@ -984,6 +1131,69 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ prior_id: priorId, prefer_actor: "advisor" }),
     }),
+  calendar: (start: string, end: string) => {
+    const params = new URLSearchParams();
+    if (start) params.set("start", start);
+    if (end) params.set("end", end);
+    return req<CalendarPayload>(`/calendar?${params.toString()}`);
+  },
+  saveAppointment: (body: Partial<Appointment> & { scheduled_at: string }) =>
+    req<Appointment>("/appointments", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  archiveAppointment: (id: string, status: "canceled" | "no_show") =>
+    req<Appointment>(`/appointments/${encodeURIComponent(id)}/archive`, {
+      method: "POST",
+      body: JSON.stringify({ status }),
+    }),
+  confirmAppointment: (
+    id: string,
+    outcome: "confirmed" | "canceled" | "no_answer" | "veto_next" | "veto",
+  ) =>
+    req<Appointment>(`/appointments/${encodeURIComponent(id)}/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ outcome }),
+    }),
+  restoreAppointment: (id: string) =>
+    req<Appointment>(`/appointments/${encodeURIComponent(id)}/restore`, {
+      method: "POST",
+    }),
+  convertAppointment: (id: string) =>
+    req<{ appointment: Appointment; order: RepairOrder }>(
+      `/appointments/${encodeURIComponent(id)}/convert`,
+      { method: "POST" },
+    ),
+  listServicePlans: () => req<{ plans: ServicePlan[] }>("/service-plans"),
+  getServicePlan: (id: string) =>
+    req<ServicePlan>(`/service-plans/${encodeURIComponent(id)}`),
+  saveServicePlan: (body: Partial<ServicePlan>) =>
+    req<ServicePlan>("/service-plans", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteServicePlan: (id: string) =>
+    req<{ ok: boolean }>(`/service-plans/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  saveServicePlanLine: (
+    planId: string,
+    line: Partial<ServicePlanLine> & { delete?: boolean },
+  ) =>
+    req<ServicePlan>(`/service-plans/${encodeURIComponent(planId)}/lines`, {
+      method: "POST",
+      body: JSON.stringify(line),
+    }),
+  servicePlanCall: (
+    planId: string,
+    lineId: string,
+    outcome: "confirmed" | "no_answer" | "skip" | "veto_next" | "veto",
+  ) =>
+    req<ServicePlan>(
+      `/service-plans/${encodeURIComponent(planId)}/lines/${encodeURIComponent(lineId)}/call`,
+      { method: "POST", body: JSON.stringify({ outcome }) },
+    ),
+  servicePlansDue: () => req<{ due_calls: ServiceDueItem[] }>("/service-plans/due"),
   sync: () =>
     req<{
       ok: boolean;
@@ -1017,6 +1227,9 @@ export const api = {
       priority?: number;
       assign_to_id?: string;
       assign_to_name?: string;
+      service_plan_enroll?: string;
+      service_plan_id?: string;
+      service_plan_line_id?: string;
     },
   ) =>
     req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/work-items`, {
@@ -1141,6 +1354,101 @@ export const api = {
       { method: "DELETE" },
     ),
   assignedBoard: () => req<AssignedBoard>("/assigned"),
+  dayPlan: () =>
+    req<{
+      today: string;
+      next_day_date: string;
+      next_day_notify_hour: number;
+      dirty: Array<{
+        tech_id: string;
+        tech_name: string;
+        daily: Array<{ ro_id: string; queue_order: number; label: string }>;
+        next_day: Array<{ ro_id: string; queue_order: number; label: string }>;
+        daily_changed: boolean;
+        next_day_changed: boolean;
+      }>;
+      pending_next_day: Array<{
+        tech_id: string;
+        tech_name: string;
+        for_date: string;
+        deliver_at: string;
+        cars: Array<{ ro_id: string; queue_order: number; label: string }>;
+      }>;
+      last_sent_at: string;
+      staged: Array<{
+        key?: string;
+        ro_id: string;
+        item_id: string;
+        tech_id: string;
+        tech_name: string;
+        lane: "daily" | "next_day" | string;
+        concern?: string;
+        vehicle?: string;
+        customer?: string;
+        staged_at?: string;
+      }>;
+      staged_count: number;
+    }>("/day-plan"),
+  stageDayPlan: (body: {
+    ro_id: string;
+    item_id: string;
+    tech_id: string;
+    tech_name?: string;
+    lane: "daily" | "next_day";
+    concern?: string;
+    vehicle?: string;
+    customer?: string;
+  }) =>
+    req<{
+      ok: boolean;
+      staged: {
+        ro_id: string;
+        item_id: string;
+        tech_id: string;
+        tech_name: string;
+        lane: string;
+      };
+      view: {
+        dirty: unknown[];
+        pending_next_day: unknown[];
+        staged?: unknown[];
+        staged_count?: number;
+      };
+    }>("/day-plan/stage", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  unstageDayPlan: (body: { ro_id: string; item_id: string }) =>
+    req<{
+      ok: boolean;
+      removed: boolean;
+      view: {
+        dirty: unknown[];
+        pending_next_day: unknown[];
+        staged?: unknown[];
+        staged_count?: number;
+      };
+    }>("/day-plan/unstage", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  sendDayPlan: (techIds?: string[]) =>
+    req<{
+      ok: boolean;
+      sent_daily: Array<{ tech_id: string; tech_name: string }>;
+      scheduled_next_day: Array<{ tech_id: string; tech_name: string; deliver_at?: string }>;
+      applied_staged?: Array<{ ro_id: string; item_id: string; tech_id: string }>;
+      next_day_notify_hour: number;
+      view: {
+        dirty: unknown[];
+        pending_next_day: unknown[];
+        staged?: unknown[];
+        staged_count?: number;
+      };
+    }>("/day-plan/send", {
+      method: "POST",
+      body: JSON.stringify({ tech_ids: techIds || [] }),
+    }),
   assignRo: (
     roId: string,
     body: {
@@ -1155,11 +1463,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  setCurrentTask: (roId: string, active = true, itemId?: string) =>
+  setCurrentTask: (roId: string, active = true, itemId?: string, override = false) =>
     req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/current`, {
       method: "POST",
-      body: JSON.stringify({ active, item_id: itemId || null }),
+      body: JSON.stringify({
+        active,
+        item_id: itemId || null,
+        override: active ? override : false,
+      }),
     }),
+  setWorkItemCarTurn: (roId: string, itemId: string, turn: number) =>
+    req<RepairOrder>(
+      `/ros/${encodeURIComponent(roId)}/work-items/${encodeURIComponent(itemId)}/car-turn`,
+      { method: "POST", body: JSON.stringify({ turn }) },
+    ),
   queueAction: (
     roId: string,
     action:
@@ -1167,6 +1484,7 @@ export const api = {
       | "remove"
       | "complete"
       | "complete_item"
+      | "complete_with"
       | "billed_out"
       | "canceled"
       | "no_call_no_show"
@@ -1180,10 +1498,21 @@ export const api = {
       | "item_release_wait"
       | "item_return_to_requester",
     itemId?: string,
+    extra?: {
+      with_item_id?: string;
+      also_item_ids?: string[];
+      also_complete_timed?: boolean;
+    },
   ) =>
     msgReq<RepairOrder>(`/ros/${encodeURIComponent(roId)}/queue`, {
       method: "POST",
-      body: JSON.stringify({ action, item_id: itemId || null }),
+      body: JSON.stringify({
+        action,
+        item_id: itemId || null,
+        with_item_id: extra?.with_item_id || null,
+        also_item_ids: extra?.also_item_ids || null,
+        also_complete_timed: extra?.also_complete_timed || false,
+      }),
     }),
   unmergeWorkItem: (roId: string, itemId: string) =>
     req<RepairOrder & { unmerged_sources?: string[] }>(
@@ -1195,6 +1524,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify(flags),
     }),
+  setTechQueue: (
+    techId: string,
+    lane: "daily" | "next_day",
+    roIds: string[],
+    techName = "",
+  ) =>
+    req<{ ok: boolean; updated?: string[] }>(
+      `/technicians/${encodeURIComponent(techId)}/queue`,
+      {
+        method: "POST",
+        body: JSON.stringify({ lane, ro_ids: roIds, tech_name: techName }),
+      },
+    ),
   setWorkItemQueueLane: (
     roId: string,
     itemId: string,

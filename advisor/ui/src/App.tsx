@@ -16,6 +16,8 @@ import { WeeklyReportsPage } from "@/pages/WeeklyReportsPage";
 import { EfficiencyPage } from "@/pages/EfficiencyPage";
 import { TimeCardsPage } from "@/pages/TimeCardsPage";
 import { AdminPage } from "@/pages/AdminPage";
+import { CalendarPage } from "@/pages/CalendarPage";
+import { ServicePlansPage } from "@/pages/ServicePlansPage";
 
 export default function App() {
   const [advisorName, setAdvisorName] = useState<string | null>(null);
@@ -72,6 +74,8 @@ export default function App() {
               }
             >
               <Route index element={<AssignedWorkPage />} />
+              <Route path="calendar" element={<CalendarPage />} />
+              <Route path="plans" element={<ServicePlansPage />} />
               <Route path="orders" element={<RoListPage />} />
               <Route path="ro/:id" element={<RoEditorPage />} />
               <Route path="parts" element={<PartsPage />} />

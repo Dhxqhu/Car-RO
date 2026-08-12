@@ -1,9 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { Camera, Images } from "lucide-react";
+import { CameraSheet } from "@/components/CameraSheet";
 import { api, photoUrl, type RepairOrder } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { customerLabel, formatStatus, vehicleLabel } from "@/lib/utils";
+import { cn, customerLabel, formatStatus, vehicleLabel } from "@/lib/utils";
+
+const PHOTO_TAGS = ["intake", "diag", "other"] as const;
 
 export function RoPage() {
   const { id = "" } = useParams();
@@ -12,6 +16,9 @@ export function RoPage() {
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  const [photoTag, setPhotoTag] = useState<(typeof PHOTO_TAGS)[number]>("diag");
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const libraryRef = useRef<HTMLInputElement | null>(null);
 
   async function load() {
     setError("");
@@ -51,18 +58,22 @@ export function RoPage() {
     }
   }
 
-  async function onPhoto(file: File | undefined) {
-    if (!file || !order) return;
+  async function uploadFiles(files: File[]) {
+    if (!order || !files.length) return;
     setBusy(true);
     setError("");
+    setMsg("");
     try {
-      await api.uploadPhoto(order.id, file, "other");
+      for (const file of files) {
+        await api.uploadPhoto(order.id, file, photoTag);
+      }
       await load();
-      setMsg("Photo uploaded");
+      setMsg(files.length === 1 ? "Photo added" : `${files.length} photos added`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Upload failed");
     } finally {
       setBusy(false);
+      if (libraryRef.current) libraryRef.current.value = "";
     }
   }
 
@@ -120,37 +131,81 @@ export function RoPage() {
       </div>
 
       <div className="space-y-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">Photos</h2>
-        <label className="inline-flex">
-          <input
-            type="file"
-            accept="image/*"
-            capture="environment"
-            className="hidden"
-            onChange={(e) => void onPhoto(e.target.files?.[0])}
-          />
-          <span className="inline-flex h-11 cursor-pointer items-center rounded-xl border border-border bg-surface px-4 text-sm">
-            Take / upload photo
-          </span>
-        </label>
-        <div className="grid grid-cols-3 gap-2">
-          {(order.photos || []).map((p) => (
-            <a
-              key={p.id || p.relpath}
-              href={photoUrl(order.id, p)}
-              target="_blank"
-              rel="noreferrer"
-              className="block overflow-hidden rounded-lg border border-border"
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
+          Photos{(order.photos || []).length ? ` · ${(order.photos || []).length}` : ""}
+        </h2>
+        <div className="flex gap-2">
+          {PHOTO_TAGS.map((t) => (
+            <button
+              key={t}
+              type="button"
+              className={cn(
+                "rounded-full border px-3 py-1 text-xs capitalize",
+                photoTag === t
+                  ? "border-accent bg-accent/15 font-semibold text-accent"
+                  : "border-border bg-surface text-muted",
+              )}
+              onClick={() => setPhotoTag(t)}
             >
-              <img
-                src={photoUrl(order.id, p)}
-                alt={p.filename || "photo"}
-                className="aspect-square w-full object-cover"
-              />
-            </a>
+              {t}
+            </button>
           ))}
         </div>
+        <div className="grid grid-cols-2 gap-2">
+          <Button type="button" disabled={busy} onClick={() => setCameraOpen(true)}>
+            <Camera size={16} />
+            Camera
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={busy}
+            onClick={() => libraryRef.current?.click()}
+          >
+            <Images size={16} />
+            Library
+          </Button>
+        </div>
+        <input
+          ref={libraryRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={(e) => void uploadFiles(Array.from(e.target.files || []))}
+        />
+        {(order.photos || []).length === 0 ? (
+          <p className="text-sm text-muted">No photos yet. Camera asks for access the first time.</p>
+        ) : (
+          <div className="grid grid-cols-3 gap-2">
+            {(order.photos || []).map((p) => (
+              <a
+                key={p.id || p.relpath}
+                href={photoUrl(order.id, p)}
+                target="_blank"
+                rel="noreferrer"
+                className="block overflow-hidden rounded-lg border border-border"
+              >
+                <img
+                  src={photoUrl(order.id, p)}
+                  alt={p.filename || "photo"}
+                  className="aspect-square w-full object-cover"
+                />
+              </a>
+            ))}
+          </div>
+        )}
       </div>
+
+      {cameraOpen ? (
+        <CameraSheet
+          onClose={() => setCameraOpen(false)}
+          onCapture={(file) => {
+            setCameraOpen(false);
+            void uploadFiles([file]);
+          }}
+        />
+      ) : null}
 
       {msg ? <p className="text-sm text-muted">{msg}</p> : null}
       {error ? <p className="text-sm text-danger">{error}</p> : null}
