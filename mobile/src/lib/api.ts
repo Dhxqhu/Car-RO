@@ -22,8 +22,12 @@ export type WorkItem = {
   notes?: string;
   status?: string;
   kind?: string;
+  assigned_to_id?: string;
   assigned_to_name?: string;
   worked_minutes?: number;
+  timer_started_at?: string;
+  timer_tech_id?: string;
+  timer_tech_name?: string;
 };
 
 export type PhotoMeta = {
@@ -49,8 +53,12 @@ export type RepairOrder = {
   complaint?: string;
   tech_notes?: string;
   status?: string;
+  waiter?: boolean;
+  urgent?: boolean;
   assigned_to_name?: string;
+  current_tech_id?: string;
   current_tech_name?: string;
+  current_item_id?: string;
   photos?: PhotoMeta[];
   work_items?: WorkItem[];
   found_issues?: Array<{ id: string; description?: string; status?: string }>;
@@ -94,6 +102,12 @@ export type AssignedJob = {
   status?: string;
   concern?: string;
   item_status?: string;
+  waiter?: boolean;
+  urgent?: boolean;
+  current_item_id?: string;
+  current_tech_id?: string;
+  current_tech_name?: string;
+  work_items?: WorkItem[];
 };
 
 export class ApiError extends Error {
@@ -165,6 +179,14 @@ export const api = {
     }),
   createRo: (body: Partial<RepairOrder>) =>
     req<RepairOrder>("/ros", { method: "POST", body: JSON.stringify(body) }),
+  setCurrentTask: (roId: string, active = true, itemId?: string) =>
+    req<RepairOrder>(`/ros/${encodeURIComponent(roId)}/current`, {
+      method: "POST",
+      body: JSON.stringify({
+        active,
+        item_id: itemId || null,
+      }),
+    }),
   assigned: (techId: string) =>
     req<{
       mine?: AssignedJob[];

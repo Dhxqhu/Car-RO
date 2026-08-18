@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { api, type PartsSheetRow, type PartsUsageRow } from "@/lib/api";
+import { api, type PartsSheetRow, type PartsUsageRow, type PartSupersession } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,6 +23,8 @@ type EditDraft = {
   supplier: string;
   manufacturer: string;
   brand: string;
+  superseded_by: string;
+  supersedes: string;
 };
 
 function statusLabel(s: string): string {
@@ -51,6 +53,8 @@ function draftFromRow(row: PartsSheetRow): EditDraft {
     supplier: row.supplier || "",
     manufacturer: row.manufacturer || row.make || "",
     brand: row.brand || "",
+    superseded_by: row.superseded_by || "",
+    supersedes: row.supersedes || "",
   };
 }
 
@@ -144,6 +148,24 @@ function PartEditForm({
             onChange={(e) => setDraft({ ...draft, manufacturer: e.target.value })}
           />
         </div>
+        <div>
+          <Label>Superseded by</Label>
+          <Input
+            className="mt-1"
+            value={draft.superseded_by}
+            onChange={(e) => setDraft({ ...draft, superseded_by: e.target.value })}
+            placeholder="Current PN if this number is old"
+          />
+        </div>
+        <div>
+          <Label>This replaces</Label>
+          <Input
+            className="mt-1"
+            value={draft.supersedes}
+            onChange={(e) => setDraft({ ...draft, supersedes: e.target.value })}
+            placeholder="Old PN this line replaces"
+          />
+        </div>
       </div>
       <div className="flex flex-wrap gap-2">
         <Button type="button" size="sm" disabled={busy || !draft.description.trim()} onClick={onSave}>
@@ -197,6 +219,15 @@ function PartRow({
             {wrongN > 0 ? (
               <span className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-200">
                 Wrong ×{wrongN}
+              </span>
+            ) : null}
+            {row.superseded_by ? (
+              <span className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-200">
+                Superseded → {row.superseded_by}
+              </span>
+            ) : row.supersedes ? (
+              <span className="ml-2 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-800 dark:text-sky-200">
+                Replaces {row.supersedes}
               </span>
             ) : null}
           </div>
@@ -366,6 +397,9 @@ export function PartsPage() {
   const [draft, setDraft] = useState<EditDraft | null>(null);
   const [editingRow, setEditingRow] = useState<PartsSheetRow | null>(null);
   const [newSupplierName, setNewSupplierName] = useState("");
+  const [supersessions, setSupersessions] = useState<PartSupersession[]>([]);
+  const [oldPn, setOldPn] = useState("");
+  const [newPn, setNewPn] = useState("");
 
   const loadSuppliers = useCallback(async () => {
     try {
@@ -373,6 +407,15 @@ export function PartsPage() {
       setSuppliers(r.suppliers || []);
     } catch {
       setSuppliers([]);
+    }
+  }, []);
+
+  const loadSupersessions = useCallback(async () => {
+    try {
+      const r = await api.listPartSupersessions();
+      setSupersessions(r.links || []);
+    } catch {
+      setSupersessions([]);
     }
   }, []);
 
@@ -414,7 +457,8 @@ export function PartsPage() {
 
   useEffect(() => {
     void loadSuppliers();
-  }, [loadSuppliers]);
+    void loadSupersessions();
+  }, [loadSuppliers, loadSupersessions]);
 
   useEffect(() => {
     if (tab === "sheet") void loadSheet();
@@ -458,6 +502,8 @@ export function PartsPage() {
         supplier: draft.supplier,
         manufacturer: draft.manufacturer,
         brand: draft.brand,
+        superseded_by: draft.superseded_by,
+        supersedes: draft.supersedes,
         ...(forOrder ? { status: "ordered" } : {}),
       });
       setMsg(
@@ -568,6 +614,40 @@ export function PartsPage() {
     }
   }
 
+  async function addSupersession() {
+    const old_number = oldPn.trim();
+    const new_number = newPn.trim();
+    if (!old_number || !new_number) return;
+    setBusy(true);
+    setErr("");
+    try {
+      await api.addPartSupersession({ old_number, new_number });
+      setOldPn("");
+      setNewPn("");
+      await loadSupersessions();
+      setMsg(`${old_number} → ${new_number}`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not add supersession");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeSupersession(id: string, label: string) {
+    if (!window.confirm(`Remove supersession ${label}?`)) return;
+    setBusy(true);
+    setErr("");
+    try {
+      await api.deletePartSupersession(id);
+      await loadSupersessions();
+      setMsg(`Removed ${label}`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not remove supersession");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function drillUsage(u: PartsUsageRow) {
     setTab("sheet");
     setPartNumber(u.part_number || "");
@@ -669,8 +749,8 @@ export function PartsPage() {
       <div>
         <h1 className="font-[family-name:var(--font-display)] text-3xl font-semibold">Parts</h1>
         <p className="mt-1 text-sm text-muted">
-          Fill actual PN, OEM PN, and supplier when ordering. Suppliers stay uniform via the shared
-          list below.
+          Fill actual PN, OEM PN, and supplier when ordering. Mark superseded numbers so lookup
+          fills the current PN. Suppliers stay uniform via the shared list below.
         </p>
       </div>
 
@@ -791,6 +871,60 @@ export function PartsPage() {
                       className="text-xs text-muted hover:text-danger"
                       disabled={busy}
                       onClick={() => void removeSupplier(s.id, s.name)}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="space-y-3 rounded-2xl border border-border bg-surface p-4">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
+              Superseded numbers
+              {supersessions.length ? ` · ${supersessions.length}` : ""}
+            </h2>
+            <p className="text-xs text-muted">
+              Old PN → current PN. Searching an old number on an RO fills the replacement.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Input
+                className="max-w-[10rem]"
+                value={oldPn}
+                onChange={(e) => setOldPn(e.target.value)}
+                placeholder="Old PN"
+              />
+              <Input
+                className="max-w-[10rem]"
+                value={newPn}
+                onChange={(e) => setNewPn(e.target.value)}
+                placeholder="Current PN"
+              />
+              <Button
+                type="button"
+                size="sm"
+                disabled={busy || !oldPn.trim() || !newPn.trim()}
+                onClick={() => void addSupersession()}
+              >
+                Link
+              </Button>
+            </div>
+            {supersessions.length === 0 ? (
+              <p className="text-sm text-muted">No supersessions yet — e.g. 5W30-OLD → 5W30-NEW.</p>
+            ) : (
+              <ul className="flex flex-wrap gap-2">
+                {supersessions.map((s) => (
+                  <li
+                    key={s.id}
+                    className="inline-flex items-center gap-2 rounded-lg border border-border px-2.5 py-1 font-mono text-sm"
+                  >
+                    {s.old_number} → {s.new_number}
+                    <button
+                      type="button"
+                      className="text-xs text-muted hover:text-danger"
+                      disabled={busy}
+                      onClick={() => void removeSupersession(s.id, `${s.old_number} → ${s.new_number}`)}
                     >
                       Remove
                     </button>

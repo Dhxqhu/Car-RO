@@ -365,7 +365,7 @@ def run_technicians_config_menu() -> None:
 
                     remote = RemoteClient()
                     if remote.enabled and advmod.has_advisors():
-                        remote.put_advisors(advmod.roster_for_sync())
+                        remote.put_advisors({**advmod.roster_for_sync(), "replace": True})
                         ok_adv = True
                 except Exception:
                     pass
@@ -528,16 +528,120 @@ def _try_push_roster() -> bool:
         remote = RemoteClient()
         if not remote.enabled:
             return False
-        remote.put_technicians(techmod.roster_for_sync())
+        remote.put_technicians({**techmod.roster_for_sync(), "replace": True})
         return True
     except Exception:
         return False
 
 
+def merge_named_records(
+    local_items: list,
+    remote_items: list,
+    *,
+    local_updated: str = "",
+    remote_updated: str = "",
+) -> tuple[list[dict], bool, bool]:
+    """Union roster rows by id.
+
+    Newer ``updated`` stamp wins on the same id; equal/empty stamps keep the
+    server copy so a leftover bay file cannot hide shop techs. Returns
+    ``(merged, local_needs_save, remote_needs_push)``.
+    """
+    local_by: dict[str, dict] = {}
+    for item in local_items:
+        if isinstance(item, dict) and str(item.get("id") or "").strip():
+            local_by[str(item.get("id")).strip()] = item
+    remote_by: dict[str, dict] = {}
+    for item in remote_items:
+        if isinstance(item, dict) and str(item.get("id") or "").strip():
+            remote_by[str(item.get("id")).strip()] = item
+
+    prefer_local = bool(local_updated) and (
+        not remote_updated or local_updated > remote_updated
+    )
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for key in list(remote_by.keys()) + list(local_by.keys()):
+        if key in seen:
+            continue
+        seen.add(key)
+        if key in local_by and key in remote_by:
+            merged.append(local_by[key] if prefer_local else remote_by[key])
+        elif key in local_by:
+            merged.append(local_by[key])
+        else:
+            merged.append(remote_by[key])
+
+    def _sig(rows: list[dict]) -> set[tuple[str, str, str, str]]:
+        out: set[tuple[str, str, str, str]] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            out.add(
+                (
+                    str(row.get("id") or ""),
+                    str(row.get("name") or ""),
+                    str(row.get("pin_hash") or ""),
+                    str(row.get("working_privilege") or ""),
+                )
+            )
+        return out
+
+    merged_sig = _sig(merged)
+    return merged, merged_sig != _sig(list(local_by.values())), merged_sig != _sig(list(remote_by.values()))
+
+
+def pull_rosters_from_server() -> str:
+    """Replace local rosters from the shop server. Never push.
+
+    Used when joining a shop so leftover testers on this PC cannot overwrite
+    the live technician / advisor list.
+    """
+    try:
+        from carro.core import advisors as advmod
+        from carro.core import suppliers as suppliersmod
+        from carro.storage.remote import RemoteClient
+
+        remote = RemoteClient()
+        if not remote.enabled:
+            return "skipped"
+        techs = remote.get_technicians()
+        advs = remote.get_advisors()
+        if not isinstance(techs, dict) or not isinstance(advs, dict):
+            return "error: bad server response"
+        techmod.apply_remote_roster(techs, force=True)
+        advmod.apply_remote_roster(advs, force=True)
+        try:
+            sups = remote.get_suppliers()
+            if isinstance(sups, dict):
+                suppliersmod.replace_roster(sups)
+        except Exception:
+            pass
+        try:
+            from carro.core import part_supersessions as ssmod
+
+            links = remote.get_part_supersessions()
+            if isinstance(links, dict):
+                ssmod.replace_roster(links)
+        except Exception:
+            pass
+        try:
+            from carro.core import shop_branding as brandmod
+
+            brandmod.pull_from_server()
+        except Exception:
+            pass
+        n_tech = len(techs.get("technicians") or [])
+        n_adv = len(advs.get("advisors") or [])
+        return f"pulled techs={n_tech};advisors={n_adv}"
+    except Exception as exc:
+        return f"error: {exc}"
+
+
 def sync_roster_with_server() -> str:
     """
-    Pull if server roster is newer; push if local is newer / server empty.
-    Syncs technicians, advisors, and suppliers. Returns combined status string.
+    Merge local + shop-server rosters by id (technicians, advisors, suppliers).
+    Pulls missing people down; pushes people that only exist on this PC.
     """
     try:
         from carro.core import advisors as advmod
@@ -563,32 +667,49 @@ def sync_roster_with_server() -> str:
             remote_updated = str(data.get("updated") or "")
             local_updated = str(local.get("updated") or "")
             remote_items = [t for t in (data.get(list_key) or []) if isinstance(t, dict)]
-            local_items = list(local.get(list_key) or [])
+            local_items = [t for t in (local.get(list_key) or []) if isinstance(t, dict)]
 
-            remote_newer = bool(remote_items) and (
-                not local_items
-                or (remote_updated and not local_updated)
-                or (remote_updated and local_updated and remote_updated > local_updated)
+            merged, local_changed, remote_changed = merge_named_records(
+                local_items,
+                remote_items,
+                local_updated=local_updated,
+                remote_updated=remote_updated,
             )
-            if remote_newer:
-                apply_remote(data)
+            if not local_changed and not remote_changed:
+                return "ok"
+
+            stamp = remote_updated or local_updated
+            if local_changed and remote_changed:
+                stamp = max(local_updated, remote_updated) or stamp
+            if remote_changed:
+                from carro.core.models import now_iso
+
+                stamp = now_iso()
+
+            payload = dict(data) if isinstance(data, dict) else {}
+            payload[list_key] = merged
+            payload["updated"] = stamp
+            if list_key == "technicians":
+                loc_hash = str(local.get("admin_pin_hash") or "")
+                rem_hash = str(data.get("admin_pin_hash") or "")
+                payload["admin_pin_hash"] = (
+                    loc_hash if (local_updated and (not remote_updated or local_updated > remote_updated) and loc_hash) else (rem_hash or loc_hash)
+                )
+            if local_changed or remote_changed:
+                apply_remote(payload)
+            if remote_changed:
+                put_remote(payload)
+            if local_changed and remote_changed:
+                return "merged"
+            if local_changed:
                 return "pulled"
-
-            local_newer = bool(local_items) and (
-                not remote_items
-                or (local_updated and not remote_updated)
-                or (local_updated and remote_updated and local_updated > remote_updated)
-            )
-            if local_newer:
-                put_remote(roster_for_sync())
-                return "pushed"
-            return "ok"
+            return "pushed"
 
         tech_status = _sync_one(
             get_remote=remote.get_technicians,
             put_remote=remote.put_technicians,
             load_local=techmod.load_roster,
-            apply_remote=techmod.apply_remote_roster,
+            apply_remote=lambda payload: techmod.apply_remote_roster(payload, force=True),
             roster_for_sync=techmod.roster_for_sync,
             list_key="technicians",
         )
@@ -596,7 +717,7 @@ def sync_roster_with_server() -> str:
             get_remote=remote.get_advisors,
             put_remote=remote.put_advisors,
             load_local=advmod.load_roster,
-            apply_remote=advmod.apply_remote_roster,
+            apply_remote=lambda payload: advmod.apply_remote_roster(payload, force=True),
             roster_for_sync=advmod.roster_for_sync,
             list_key="advisors",
         )
@@ -610,6 +731,22 @@ def sync_roster_with_server() -> str:
             roster_for_sync=suppliersmod.roster_for_sync,
             list_key="suppliers",
         )
-        return f"techs={tech_status};advisors={adv_status};suppliers={sup_status}"
+        from carro.core import part_supersessions as ssmod
+
+        ss_status = _sync_one(
+            get_remote=remote.get_part_supersessions,
+            put_remote=remote.put_part_supersessions,
+            load_local=ssmod.load_roster,
+            apply_remote=ssmod.replace_roster,
+            roster_for_sync=ssmod.roster_for_sync,
+            list_key="links",
+        )
+        from carro.core import shop_branding as brandmod
+
+        brand_status = brandmod.sync_with_server()
+        return (
+            f"techs={tech_status};advisors={adv_status};suppliers={sup_status};"
+            f"supersessions={ss_status};branding={brand_status}"
+        )
     except Exception as exc:
         return f"error: {exc}"

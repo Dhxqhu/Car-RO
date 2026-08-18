@@ -42,7 +42,7 @@ $ConfigFile = Join-Path $ConfigDir "config.toml"
 if (Test-Path $ConfigFile) {
   Write-Host "    config: $ConfigFile (kept)"
 } else {
-  Write-Host "    note: no config.toml yet — run Install-Car-RO.bat / install.ps1 on a new PC"
+  Write-Host "    note: no config.toml yet - run Install-Car-RO.bat / install.ps1 on a new PC"
 }
 
 $py = Get-Command python -ErrorAction SilentlyContinue

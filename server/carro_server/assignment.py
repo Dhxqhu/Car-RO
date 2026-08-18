@@ -46,6 +46,8 @@ def _summarize(d: dict[str, Any]) -> dict[str, Any]:
         "current_tech_name": d.get("current_tech_name") or "",
         "current_since": d.get("current_since") or "",
         "current_item_id": d.get("current_item_id") or "",
+        "waiter": bool(d.get("waiter")),
+        "urgent": bool(d.get("urgent")),
         "started_at": d.get("started_at") or "",
         "done_at": d.get("done_at") or "",
         "billed_out_at": d.get("billed_out_at") or "",
@@ -77,6 +79,8 @@ def _summarize(d: dict[str, Any]) -> dict[str, Any]:
                 "worked_first_at": it.get("worked_first_at") or "",
                 "worked_last_at": it.get("worked_last_at") or "",
                 "timer_started_at": it.get("timer_started_at") or "",
+                "timer_tech_id": it.get("timer_tech_id") or "",
+                "timer_tech_name": it.get("timer_tech_name") or "",
             }
             for it in items
         ],

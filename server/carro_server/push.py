@@ -131,7 +131,7 @@ def vapid_mailto() -> str:
         raw = (
             os.environ.get("CARRO_PUBLIC_HOST")
             or os.environ.get("CARRO_VAPID_HOST")
-            or "homebaseserver.taila7bd22.ts.net"
+            or "shop-server"
         ).strip()
     if raw.startswith("mailto:") or raw.startswith("https://"):
         return raw

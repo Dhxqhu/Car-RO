@@ -209,3 +209,48 @@ export function turnOrdinal(n: number): string {
             : "th";
   return `${v}${suf}`;
 }
+
+/** Newest RO per car (VIN, then plate, then year/make/model + customer). */
+export function latestOrdersPerCar<
+  T extends {
+    id: string;
+    vin?: string;
+    plate?: string;
+    year?: string;
+    make?: string;
+    model?: string;
+    first_name?: string;
+    last_name?: string;
+    updated?: string;
+    created?: string;
+  },
+>(orders: T[] | undefined | null): T[] {
+  const list = [...(orders || [])].sort((a, b) => {
+    const ta = a.updated || a.created || "";
+    const tb = b.updated || b.created || "";
+    if (ta !== tb) return tb.localeCompare(ta);
+    return b.id.localeCompare(a.id);
+  });
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const o of list) {
+    const vin = (o.vin || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    const plate = (o.plate || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    const year = (o.year || "").trim().toLowerCase();
+    const make = (o.make || "").trim().toLowerCase();
+    const model = (o.model || "").trim().toLowerCase();
+    const last = (o.last_name || "").trim().toLowerCase();
+    const first = (o.first_name || "").trim().toLowerCase();
+    const key = vin
+      ? `vin:${vin}`
+      : plate
+        ? `plate:${plate}`
+        : year || make || model
+          ? `veh:${year}|${make}|${model}|${last}|${first}`
+          : `ro:${o.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(o);
+  }
+  return out;
+}

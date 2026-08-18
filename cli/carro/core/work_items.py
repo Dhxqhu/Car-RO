@@ -26,6 +26,10 @@ WORK_ITEM_TYPE_LABELS = {
     "si_only": "SI only",
     "other": "Other",
 }
+INSPECTION_CONCERN_TEXT = {
+    "si_im": "State Inspection and Emissions Testing",
+    "si_only": "State Inspection Only",
+}
 PART_STATUSES = ("new_request", "ordered", "received", "received_wrong")
 PART_STATUS_LABELS = {
     "new_request": "New request",
@@ -43,6 +47,28 @@ def normalize_item_type(raw: object, *, default: str = "other") -> str:
 def item_type_label(raw: object) -> str:
     key = normalize_item_type(raw)
     return WORK_ITEM_TYPE_LABELS.get(key, key.title())
+
+
+def default_concern_for_item_type(raw: object) -> str:
+    key = normalize_item_type(raw, default="")
+    return INSPECTION_CONCERN_TEXT.get(key, "")
+
+
+def _apply_inspection_concern(
+    target: WorkItem,
+    *,
+    previous_type: str = "",
+    force_if_empty: bool = False,
+) -> None:
+    auto = default_concern_for_item_type(target.item_type)
+    if not auto:
+        return
+    cur = (target.concern or "").strip()
+    prev_auto = default_concern_for_item_type(previous_type)
+    if force_if_empty and not cur:
+        target.concern = auto
+    elif not cur or (prev_auto and cur == prev_auto):
+        target.concern = auto
 
 
 def normalize_part_status(raw: object, *, default: str = "new_request") -> str:
@@ -69,6 +95,31 @@ def new_part_id(existing: list[dict[str, Any]] | None) -> str:
     return f"PN-{n:03d}"
 
 
+def _remember_supersession(part: dict[str, Any]) -> None:
+    """If this line names an old→new pair, keep it in the shop catalog."""
+    try:
+        from carro.core import part_supersessions as ssmod
+    except Exception:
+        return
+    old = str(part.get("supersedes") or "").strip()
+    new = str(part.get("part_number") or "").strip()
+    if old and new and old.upper() != new.upper():
+        try:
+            ssmod.upsert_link(old, new, manufacturer=str(part.get("manufacturer") or ""))
+        except ValueError:
+            pass
+        return
+    current = str(part.get("part_number") or "").strip()
+    replacement = str(part.get("superseded_by") or "").strip()
+    if current and replacement and current.upper() != replacement.upper():
+        try:
+            ssmod.upsert_link(
+                current, replacement, manufacturer=str(part.get("manufacturer") or "")
+            )
+        except ValueError:
+            pass
+
+
 def normalize_part(data: dict[str, Any] | None, *, default_manufacturer: str = "") -> dict[str, Any]:
     if not isinstance(data, dict):
         data = {}
@@ -87,6 +138,8 @@ def normalize_part(data: dict[str, Any] | None, *, default_manufacturer: str = "
         # Actual part brand / cross (e.g. Denso, Motorcraft) — distinct from OEM manufacturer.
         "brand": str(data.get("brand") or "").strip(),
         "supplier": str(data.get("supplier") or "").strip(),
+        "superseded_by": str(data.get("superseded_by") or "").strip(),
+        "supersedes": str(data.get("supersedes") or "").strip(),
         "status": normalize_part_status(data.get("status")),
         "requested_at": str(data.get("requested_at") or "").strip(),
         "ordered_at": str(data.get("ordered_at") or "").strip(),
@@ -523,6 +576,7 @@ def upsert_work_item(
         items.append(target)
 
     old_notes = target.notes or ""
+    previous_type = target.item_type or ""
 
     if item_type is not None:
         target.item_type = normalize_item_type(item_type, default=target.item_type or "other")
@@ -538,6 +592,10 @@ def upsert_work_item(
             target.created_by = actor or target.created_by
             target.created_by_id = actor_id or target.created_by_id
             target.created_by_role = actor_role or target.created_by_role
+    elif is_new:
+        _apply_inspection_concern(target, force_if_empty=True)
+    elif item_type is not None:
+        _apply_inspection_concern(target, previous_type=previous_type)
 
     if notes is not None:
         target.notes = notes
@@ -1096,6 +1154,8 @@ def add_part(
     manufacturer: str | None = None,
     brand: str = "",
     supplier: str = "",
+    superseded_by: str = "",
+    supersedes: str = "",
 ) -> dict[str, Any]:
     """Add a needed-part line to a work item."""
     items, target = _find_item(order, item_id)
@@ -1114,6 +1174,8 @@ def add_part(
             "manufacturer": mfr,
             "brand": (brand or "").strip(),
             "supplier": (supplier or "").strip(),
+            "superseded_by": (superseded_by or "").strip(),
+            "supersedes": (supersedes or "").strip(),
             "status": "new_request",
             "requested_at": ts,
             "updated_at": ts,
@@ -1125,6 +1187,7 @@ def add_part(
     target.updated = ts
     order.work_items = work_items_to_dicts(items)
     apply_rollups(order)
+    _remember_supersession(part)
     return part
 
 
@@ -1139,6 +1202,8 @@ def update_part(
     manufacturer: str | None = None,
     brand: str | None = None,
     supplier: str | None = None,
+    superseded_by: str | None = None,
+    supersedes: str | None = None,
 ) -> dict[str, Any]:
     items, target = _find_item(order, item_id)
     parts = list(target.parts or [])
@@ -1157,12 +1222,17 @@ def update_part(
             p["brand"] = brand.strip()
         if supplier is not None:
             p["supplier"] = supplier.strip()
+        if superseded_by is not None:
+            p["superseded_by"] = superseded_by.strip()
+        if supersedes is not None:
+            p["supersedes"] = supersedes.strip()
         p["updated_at"] = now_iso()
         parts[i] = normalize_part(p)
         target.parts = parts
         target.updated = now_iso()
         order.work_items = work_items_to_dicts(items)
         apply_rollups(order)
+        _remember_supersession(parts[i])
         return parts[i]
     raise ValueError(f"Part not found: {part_id}")
 
@@ -1348,14 +1418,16 @@ def collect_parts_sheet(
                 if want_mfr and want_mfr not in mfr.lower():
                     continue
                 pn = (p.get("part_number") or "").strip()
-                if want_pn and want_pn not in pn.lower():
-                    continue
                 desc = (p.get("description") or "").strip()
                 concern = (w.concern or "").strip()
                 brand = (p.get("brand") or "").strip()
                 oem = (p.get("oem_part_number") or "").strip()
                 supplier = (p.get("supplier") or "").strip()
-                if want_q and want_q not in f"{desc} {pn} {mfr} {brand} {oem} {supplier} {concern}".lower():
+                superseded_by = (p.get("superseded_by") or "").strip()
+                supersedes = (p.get("supersedes") or "").strip()
+                if want_q and want_q not in f"{desc} {pn} {mfr} {brand} {oem} {supplier} {concern} {superseded_by} {supersedes}".lower():
+                    continue
+                if want_pn and want_pn not in f"{pn} {superseded_by} {supersedes}".lower():
                     continue
                 rows.append(
                     {
@@ -1373,6 +1445,8 @@ def collect_parts_sheet(
                         "manufacturer": mfr,
                         "brand": brand,
                         "supplier": supplier,
+                        "superseded_by": superseded_by,
+                        "supersedes": supersedes,
                         "status": pst,
                         "requested_at": p.get("requested_at") or "",
                         "ordered_at": p.get("ordered_at") or "",

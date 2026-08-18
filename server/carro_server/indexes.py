@@ -351,6 +351,7 @@ def search_ro_ids(
                 "status",
                 "complaint",
                 "tech_notes",
+                "intake_notes",
             )
         ).lower()
         for it in o.get("work_items") or []:

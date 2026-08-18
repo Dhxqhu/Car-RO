@@ -50,7 +50,19 @@ export function OrdersPage() {
                 <p className="text-sm text-muted">{vehicleLabel(o)}</p>
                 <p className="mt-1 text-xs text-muted">
                   {o.id} · {formatStatus(o.status)}
+                  {o.waiter ? " · Waiter" : ""}
+                  {o.urgent ? " · Urgent" : ""}
                 </p>
+                {(o.work_items || []).length ? (
+                  <ul className="mt-2 ml-1 space-y-0.5 border-l-2 border-border pl-3 text-xs text-muted">
+                    {(o.work_items || []).map((w) => (
+                      <li key={w.id}>
+                        {w.concern || w.id}
+                        {w.status ? ` · ${formatStatus(w.status)}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
               </Link>
             </li>
           ))}

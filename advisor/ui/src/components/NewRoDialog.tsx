@@ -5,7 +5,6 @@ import { api, type RepairOrder } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { formatStatus } from "@/lib/utils";
 
 /**
  * New RO: blank, or prefill customer + vehicle from a prior job.
@@ -68,7 +67,7 @@ export function NewRoDialog({
     setErr("");
     setNote("");
     try {
-      const r = await api.history(vin, name);
+      const r = await api.history(vin, name, undefined, true);
       setHits(r.orders || []);
       setMatchedBy(r.matched_by || "");
       setSearched(true);
@@ -116,8 +115,8 @@ export function NewRoDialog({
         <div>
           <h2 className="text-lg font-semibold tracking-tight">New repair order</h2>
           <p className="mt-1 text-sm text-muted">
-            Start blank, or pull customer name, phone, and vehicle from a prior job.
-            Works offline from this desk’s cache if the shop server is out of reach.
+            Start blank, or pull the latest customer and vehicle info for a car.
+            Same vehicle shows once even if it has many old repair orders.
           </p>
         </div>
 
@@ -166,7 +165,7 @@ export function NewRoDialog({
             onClick={() => void lookup()}
           >
             <Search className="h-4 w-4" />
-            Find prior jobs
+            Find car
           </Button>
 
           {matchedBy ? (
@@ -194,8 +193,8 @@ export function NewRoDialog({
                       {[o.year, o.make, o.model].filter(Boolean).join(" ") || "—"}
                       {o.vin ? ` · ${o.vin}` : ""}
                       {o.plate ? ` · ${o.plate}` : ""}
-                      {" · "}
-                      {formatStatus(o.status)} · {o.id}
+                      {" · last visit "}
+                      {o.id}
                     </div>
                   </div>
                   <Button

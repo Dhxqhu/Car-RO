@@ -8,6 +8,9 @@ build/
 *.pdf
 .DS_Store
 node_modules/
+gui/ui/dist/
+advisor/ui/dist/
+mobile/dist/
 gui/src-tauri/target/
 # Never commit local operator config or data
 config.local.toml

@@ -10,6 +10,8 @@ type PartRow = {
   part_number?: string;
   status?: string;
   manufacturer?: string;
+  superseded_by?: string;
+  supersedes?: string;
 };
 
 export function PartsPage() {
@@ -40,6 +42,8 @@ export function PartsPage() {
               <p className="font-medium">{p.description || p.part_number || "Part"}</p>
               <p className="text-xs text-muted">
                 {[p.part_number, p.manufacturer, formatStatus(p.status)].filter(Boolean).join(" · ")}
+                {p.superseded_by ? ` · superseded → ${p.superseded_by}` : ""}
+                {p.supersedes && !p.superseded_by ? ` · replaces ${p.supersedes}` : ""}
               </p>
               {p.ro_id ? (
                 <Link to={`/ro/${p.ro_id}`} className="mt-1 inline-block text-xs text-accent">

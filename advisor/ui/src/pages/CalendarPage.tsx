@@ -24,6 +24,30 @@ const TAGS = [
   { value: "other", label: "Other" },
 ] as const;
 const PA_TAG_VALUES = new Set(["si_im", "si_only"]);
+const INSPECTION_CONCERN_TEXT: Record<string, string> = {
+  si_im: "State Inspection and Emissions Testing",
+  si_only: "State Inspection Only",
+};
+
+function concernForTag(tag: string): string {
+  return INSPECTION_CONCERN_TEXT[tag] || "";
+}
+
+function applyTagToAppointmentDraft(d: Appointment, tag: string): Appointment {
+  const autoConcern = concernForTag(tag);
+  const cur = (d.notes || "").trim();
+  const prevAuto = concernForTag(d.tag || "");
+  const next: Appointment = {
+    ...d,
+    tag,
+    service_plan_enroll:
+      tag === "si_im" || tag === "si_only" ? d.service_plan_enroll || "" : "",
+  };
+  if (autoConcern && (!cur || (prevAuto && cur === prevAuto))) {
+    next.notes = autoConcern;
+  }
+  return next;
+}
 
 function visibleTags(paEnabled: boolean) {
   return TAGS.filter((t) => paEnabled || !PA_TAG_VALUES.has(t.value));
@@ -1052,7 +1076,7 @@ function AppointmentDialog({
     setErr("");
     setHistNote("");
     try {
-      const r = await api.history(histVin, histName);
+      const r = await api.history(histVin, histName, undefined, true);
       setHits(r.orders || []);
       setHistNote(r.note || (r.orders?.length ? "" : "No prior jobs found"));
     } catch (e) {
@@ -1078,7 +1102,7 @@ function AppointmentDialog({
         </p>
 
         <div className="mt-4 rounded-xl border border-border p-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted">From prior record</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">From prior car</p>
           <div className="mt-2 flex flex-wrap gap-2">
             <Input
               placeholder="VIN"
@@ -1114,7 +1138,10 @@ function AppointmentDialog({
                     </span>
                     <span className="text-muted">
                       {" "}
-                      · {[o.year, o.make, o.model].filter(Boolean).join(" ")} · {o.id}
+                      · {[o.year, o.make, o.model].filter(Boolean).join(" ")}
+                      {o.vin ? ` · ${o.vin}` : ""}
+                      {" · last visit "}
+                      {o.id}
                     </span>
                   </button>
                 </li>
@@ -1231,16 +1258,7 @@ function AppointmentDialog({
                       ? "border-accent bg-accent text-accent-fg"
                       : "border-border text-muted hover:text-fg",
                   )}
-                  onClick={() =>
-                    setDraft((d) => ({
-                      ...d,
-                      tag: t.value,
-                      service_plan_enroll:
-                        t.value === "si_im" || t.value === "si_only"
-                          ? d.service_plan_enroll || ""
-                          : "",
-                    }))
-                  }
+                  onClick={() => setDraft((d) => applyTagToAppointmentDraft(d, t.value))}
                 >
                   {t.label}
                 </button>

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 from pathlib import Path
 from typing import Any
 
@@ -242,6 +243,63 @@ class RemoteClient:
                 headers=self._headers(),
                 json=roster,
             )
+            r.raise_for_status()
+            return r.json()
+
+    def get_part_supersessions(self) -> dict[str, Any]:
+        with httpx.Client(timeout=15.0) as client:
+            r = client.get(f"{self.base}/part-supersessions", headers=self._headers())
+            r.raise_for_status()
+            return r.json()
+
+    def put_part_supersessions(self, roster: dict[str, Any]) -> dict[str, Any]:
+        with httpx.Client(timeout=15.0) as client:
+            r = client.put(
+                f"{self.base}/part-supersessions",
+                headers=self._headers(),
+                json=roster,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    def get_shop_branding(self) -> dict[str, Any]:
+        with httpx.Client(timeout=15.0) as client:
+            r = client.get(f"{self.base}/shop-branding", headers=self._headers())
+            r.raise_for_status()
+            return r.json()
+
+    def put_shop_branding(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with httpx.Client(timeout=15.0) as client:
+            r = client.put(
+                f"{self.base}/shop-branding",
+                headers=self._headers(),
+                json=payload,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    def download_shop_logo(self) -> bytes:
+        with httpx.Client(timeout=30.0) as client:
+            r = client.get(f"{self.base}/shop-branding/logo", headers=self._headers())
+            r.raise_for_status()
+            return r.content
+
+    def upload_shop_logo(self, path: Path) -> dict[str, Any]:
+        path = path.expanduser()
+        mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        with httpx.Client(timeout=30.0) as client:
+            with path.open("rb") as fh:
+                r = client.post(
+                    f"{self.base}/shop-branding/logo",
+                    headers=self._headers(),
+                    files={"file": (path.name, fh, mime)},
+                )
+            r.raise_for_status()
+            return r.json()
+
+    def delete_shop_logo(self) -> dict[str, Any]:
+        with httpx.Client(timeout=15.0) as client:
+            r = client.delete(f"{self.base}/shop-branding/logo", headers=self._headers())
             r.raise_for_status()
             return r.json()
 

@@ -72,6 +72,17 @@ async def _lifespan(_app: FastAPI):
         import logging
 
         logging.getLogger("carro.engine").warning("Shop server compat check: %s", exc)
+    try:
+        import logging
+        from carro.core.tech_ui import sync_roster_with_server
+
+        if RemoteClient().enabled:
+            status = sync_roster_with_server()
+            logging.getLogger("carro.engine").info("Roster sync on engine start: %s", status)
+    except Exception as exc:
+        import logging
+
+        logging.getLogger("carro.engine").warning("Roster sync on engine start: %s", exc)
     start_autosync(store)
     try:
         from carro.core.day_plans import set_day_plan_notify
@@ -1117,8 +1128,28 @@ def set_technician_queue_route(tech_id: str, body: TechQueueBody) -> dict[str, A
     }
 
 
+def _maybe_sync_rosters() -> None:
+    """Refresh local tech/advisor rosters from the shop server (throttled)."""
+    import time
+
+    now = time.monotonic()
+    last = getattr(_maybe_sync_rosters, "_at", 0.0)
+    if now - last < 15:
+        return
+    _maybe_sync_rosters._at = now  # type: ignore[attr-defined]
+    try:
+        from carro.core.tech_ui import sync_roster_with_server
+        from carro.storage.remote import RemoteClient
+
+        if RemoteClient().enabled:
+            sync_roster_with_server()
+    except Exception:
+        pass
+
+
 @app.get("/technicians")
 def list_technicians() -> dict[str, Any]:
+    _maybe_sync_rosters()
     techs = [{"id": t.id, "name": t.name} for t in techmod.list_technicians()]
     return {"technicians": techs}
 
@@ -1146,7 +1177,9 @@ def _push_technicians() -> None:
     try:
         remote = RemoteClient()
         if remote.enabled:
-            remote.put_technicians(techmod.roster_for_sync())
+            payload = techmod.roster_for_sync()
+            payload["replace"] = True
+            remote.put_technicians(payload)
     except Exception:
         pass
 
@@ -1155,7 +1188,9 @@ def _push_advisors() -> None:
     try:
         remote = RemoteClient()
         if remote.enabled:
-            remote.put_advisors(advmod.roster_for_sync())
+            payload = advmod.roster_for_sync()
+            payload["replace"] = True
+            remote.put_advisors(payload)
     except Exception:
         pass
 
@@ -1167,6 +1202,17 @@ def _push_suppliers() -> None:
         remote = RemoteClient()
         if remote.enabled:
             remote.put_suppliers(suppliersmod.roster_for_sync())
+    except Exception:
+        pass
+
+
+def _push_part_supersessions() -> None:
+    try:
+        from carro.core import part_supersessions as ssmod
+
+        remote = RemoteClient()
+        if remote.enabled:
+            remote.put_part_supersessions(ssmod.roster_for_sync())
     except Exception:
         pass
 
@@ -1215,6 +1261,60 @@ def delete_supplier_route(supplier_id: str) -> dict[str, Any]:
         raise HTTPException(404, "Supplier not found")
     _push_suppliers()
     return {"ok": True, "id": supplier_id}
+
+
+class PartSupersessionBody(BaseModel):
+    old_number: str = ""
+    new_number: str = ""
+    manufacturer: str = ""
+    note: str = ""
+
+
+@app.get("/part-supersessions")
+def list_part_supersessions_route() -> dict[str, Any]:
+    from carro.core import part_supersessions as ssmod
+
+    roster = ssmod.load_roster()
+    return {
+        "links": roster.get("links") or [],
+        "updated": roster.get("updated") or "",
+        "count": len(roster.get("links") or []),
+    }
+
+
+@app.post("/part-supersessions")
+def add_part_supersession_route(body: PartSupersessionBody) -> dict[str, Any]:
+    from carro.core import part_supersessions as ssmod
+
+    tech = techmod.current_technician()
+    advisor = advmod.current_advisor()
+    if not tech and not advisor:
+        raise HTTPException(401, "Log in as a technician or advisor to mark superseded parts")
+    try:
+        entry = ssmod.upsert_link(
+            body.old_number,
+            body.new_number,
+            manufacturer=body.manufacturer or "",
+            note=body.note or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    _push_part_supersessions()
+    return entry
+
+
+@app.delete("/part-supersessions/{link_id}")
+def delete_part_supersession_route(link_id: str) -> dict[str, Any]:
+    from carro.core import part_supersessions as ssmod
+
+    tech = techmod.current_technician()
+    advisor = advmod.current_advisor()
+    if not tech and not advisor:
+        raise HTTPException(401, "Log in as a technician or advisor to manage superseded parts")
+    if not ssmod.remove_link(link_id):
+        raise HTTPException(404, "Supersession not found")
+    _push_part_supersessions()
+    return {"ok": True, "id": link_id}
 
 
 class BugReportBody(BaseModel):
@@ -1329,6 +1429,7 @@ def bootstrap_technician(body: BootstrapBody) -> dict[str, Any]:
 
 @app.get("/advisors")
 def list_advisors_route() -> dict[str, Any]:
+    _maybe_sync_rosters()
     advisors = [
         {
             "id": a.id,
@@ -2181,6 +2282,8 @@ class PartBody(BaseModel):
     manufacturer: str | None = None
     brand: str = ""
     supplier: str = ""
+    superseded_by: str = ""
+    supersedes: str = ""
 
 
 class PartPatchBody(BaseModel):
@@ -2190,6 +2293,8 @@ class PartPatchBody(BaseModel):
     manufacturer: str | None = None
     brand: str | None = None
     supplier: str | None = None
+    superseded_by: str | None = None
+    supersedes: str | None = None
     status: str | None = None
     wrong_note: str = ""
 
@@ -3578,13 +3683,48 @@ def parts_usage_route(
         raise HTTPException(502, f"Server parts usage failed: {exc}") from exc
 
 
+def _annotate_part_suggestions(payload: dict[str, Any], q: str = "") -> dict[str, Any]:
+    from carro.core import part_supersessions as ssmod
+
+    suggestions = [ssmod.annotate_suggestion(s) for s in (payload.get("suggestions") or [])]
+    qn = ssmod.normalize_pn(q)
+    if qn:
+        hit = ssmod.lookup(qn)
+        if hit:
+            current = str(hit.get("current_number") or hit.get("new_number") or "")
+            old = str(hit.get("old_number") or "")
+            already = {
+                ssmod.normalize_pn(s.get("part_number"))
+                for s in suggestions
+            }
+            if current and current not in already:
+                suggestions.insert(
+                    0,
+                    {
+                        "part_number": current,
+                        "manufacturer": hit.get("manufacturer") or "",
+                        "brand": "",
+                        "description": f"Current number (replaces {old})",
+                        "use_count": 0,
+                        "superseded_by": "",
+                        "supersedes": old,
+                    },
+                )
+            for s in suggestions:
+                if ssmod.normalize_pn(s.get("part_number")) == old and current:
+                    s["superseded_by"] = current
+    payload["suggestions"] = suggestions
+    payload["count"] = len(suggestions)
+    return payload
+
+
 @app.get("/parts/suggest")
 def parts_suggest_route(q: str = "", limit: int = 25) -> dict[str, Any]:
     """Catalog suggestions for add-part lookup (server archive when available)."""
     remote = RemoteClient()
     if remote.enabled:
         try:
-            return remote.parts_suggest(q=q, limit=limit)
+            return _annotate_part_suggestions(remote.parts_suggest(q=q, limit=limit), q)
         except Exception:
             pass
     # Local fallback: distinct from local sheet
@@ -3598,7 +3738,7 @@ def parts_suggest_route(q: str = "", limit: int = 25) -> dict[str, Any]:
         mfr = (r.get("manufacturer") or "").strip().upper()
         brand = (r.get("brand") or "").strip().upper()
         desc = (r.get("description") or "").strip()
-        if qn and qn not in f"{desc} {pn} {mfr} {brand}".lower():
+        if qn and qn not in f"{desc} {pn} {mfr} {brand} {r.get('superseded_by') or ''} {r.get('supersedes') or ''}".lower():
             continue
         key = f"{pn}|{mfr}|{brand}|{desc.upper()}"
         cur = buckets.get(key) or {
@@ -3613,7 +3753,10 @@ def parts_suggest_route(q: str = "", limit: int = 25) -> dict[str, Any]:
     suggestions = sorted(
         buckets.values(), key=lambda x: (-int(x["use_count"]), x.get("description") or "")
     )[: max(1, min(int(limit), 100))]
-    return {"suggestions": suggestions, "count": len(suggestions), "source": "local"}
+    return _annotate_part_suggestions(
+        {"suggestions": suggestions, "count": len(suggestions), "source": "local"},
+        q,
+    )
 
 
 @app.get("/notifications/idle")
@@ -3661,11 +3804,14 @@ def add_part_route(ro_id: str, item_id: str, body: PartBody) -> dict[str, Any]:
             manufacturer=body.manufacturer,
             brand=body.brand or "",
             supplier=body.supplier or "",
+            superseded_by=body.superseded_by or "",
+            supersedes=body.supersedes or "",
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     store.save(order)
     _push_ro(order)
+    _push_part_supersessions()
     return order.to_dict()
 
 
@@ -3690,6 +3836,8 @@ def patch_part_route(
             or body.manufacturer is not None
             or body.brand is not None
             or body.supplier is not None
+            or body.superseded_by is not None
+            or body.supersedes is not None
         ):
             update_part(
                 order,
@@ -3701,6 +3849,8 @@ def patch_part_route(
                 manufacturer=body.manufacturer,
                 brand=body.brand,
                 supplier=body.supplier,
+                superseded_by=body.superseded_by,
+                supersedes=body.supersedes,
             )
         if body.status is not None:
             set_part_status(
@@ -3716,6 +3866,7 @@ def patch_part_route(
         raise HTTPException(400, str(exc)) from exc
     store.save(order)
     _push_ro(order)
+    _push_part_supersessions()
     return order.to_dict()
 
 
@@ -4225,8 +4376,13 @@ def get_history(
     vin: str = "",
     name: str = "",
     exclude_id: str | None = None,
+    unique_cars: bool = False,
 ) -> dict[str, Any]:
-    """VIN-first vehicle history (local + server when configured). Offline → local only."""
+    """VIN-first vehicle history (local + server when configured). Offline → local only.
+
+    unique_cars=true collapses many ROs for the same vehicle down to the latest
+    visit — used when prefilling a new RO or appointment.
+    """
     if not (vin or "").strip() and not (name or "").strip():
         raise HTTPException(400, "Provide vin and/or name")
     result = vehicle_history(
@@ -4234,6 +4390,7 @@ def get_history(
         vin=vin,
         name=name,
         exclude_id=exclude_id or None,
+        unique_cars=unique_cars,
     )
     remote = RemoteClient()
     return {
@@ -4508,6 +4665,15 @@ def put_config(body: ConfigBody) -> dict[str, Any]:
         photos["provider"] = body.photos_provider.strip() or "local"
     save_config(cfg)
     ensure_dirs(cfg)
+    if body.shop_name is not None or body.logo_path is not None:
+        from carro.core import shop_branding as brandmod
+        from carro.core.models import now_iso
+
+        brandmod.save_meta({"updated": now_iso(), "source": "local"})
+        try:
+            brandmod.push_to_server()
+        except Exception:
+            pass
     return {"ok": True, **_config_public(cfg)}
 
 
@@ -4530,6 +4696,14 @@ async def upload_shop_logo(file: UploadFile = File(...)) -> dict[str, Any]:
         raise HTTPException(400, str(exc)) from exc
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+    try:
+        from carro.core import shop_branding as brandmod
+        from carro.core.models import now_iso
+
+        brandmod.save_meta({"updated": now_iso(), "source": "local"})
+        brandmod.push_to_server()
+    except Exception:
+        pass
     return {"ok": True, "logo_path": str(dest), **_config_public()}
 
 
@@ -4537,6 +4711,14 @@ async def upload_shop_logo(file: UploadFile = File(...)) -> dict[str, Any]:
 def delete_shop_logo() -> dict[str, Any]:
     """Clear the shop PDF logo (shop name only on exports)."""
     clear_logo()
+    try:
+        from carro.core import shop_branding as brandmod
+        from carro.core.models import now_iso
+
+        brandmod.save_meta({"updated": now_iso(), "source": "local"})
+        brandmod.push_to_server()
+    except Exception:
+        pass
     return {"ok": True, **_config_public()}
 
 

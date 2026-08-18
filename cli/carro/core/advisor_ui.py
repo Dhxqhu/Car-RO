@@ -807,7 +807,7 @@ def _try_push_advisor_roster() -> bool:
         remote = RemoteClient()
         if not remote.enabled:
             return False
-        remote.put_advisors(advmod.roster_for_sync())
+        remote.put_advisors({**advmod.roster_for_sync(), "replace": True})
         return True
     except Exception:
         return False

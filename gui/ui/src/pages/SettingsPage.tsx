@@ -283,7 +283,7 @@ export function SettingsPage() {
         </Field>
         <Field label="Server URL (empty = local only)">
           <Input
-            placeholder="http://homebaseserver:8787"
+            placeholder="http://shop-server:8787"
             value={serverUrl}
             onChange={(e) => setServerUrl(e.target.value)}
           />

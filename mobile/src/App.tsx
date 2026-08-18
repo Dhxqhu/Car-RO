@@ -64,7 +64,7 @@ export default function App() {
             <Route element={<AppShell name={name} id={id} role={role} onExit={exit} />}>
               <Route index element={<HomePage id={id} name={name} role={role} />} />
               <Route path="orders" element={<OrdersPage />} />
-              <Route path="ro/:id" element={<RoPage />} />
+              <Route path="ro/:id" element={<RoPage id={id} name={name} role={role} />} />
               <Route path="messages" element={<MessagesPage id={id} name={name} role={role} />} />
               <Route path="parts" element={<PartsPage />} />
               {role === "advisor" ? <Route path="new" element={<NewRoPage />} /> : null}

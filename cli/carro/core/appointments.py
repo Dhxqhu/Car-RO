@@ -286,10 +286,16 @@ def convert_appointment_to_ro(
         if val:
             fields[key] = val
     order = store.create(**fields)
-    from carro.core.work_items import apply_rollups, ensure_work_items_on_order, upsert_work_item
+    from carro.core.work_items import (
+        apply_rollups,
+        default_concern_for_item_type,
+        ensure_work_items_on_order,
+        upsert_work_item,
+    )
 
     tag = normalize_item_type(appt.get("tag"), default="other")
-    concern = str(appt.get("notes") or "").strip() or f"{tag} appointment"
+    notes = str(appt.get("notes") or "").strip()
+    concern = notes or default_concern_for_item_type(tag) or f"{tag} appointment"
     tech_id = str(appt.get("requested_tech_id") or "").strip()
     tech_name = str(appt.get("requested_tech_name") or "").strip()
     item = upsert_work_item(

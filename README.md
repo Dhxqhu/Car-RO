@@ -23,6 +23,19 @@ Built for mechanics and techs who:
 
 **Start here:** use a **[Release](https://github.com/Dhxqhu/Car-RO/releases/latest)** (download the zip). That is the supported path for first-time installs. Optional home-lab server / Tailscale comes later — local-only works fine on day one.
 
+### What's new in 0.4.0
+
+| Area | Highlights |
+| --- | --- |
+| **RO editor** | **Auto-save** (tech + advisor) — customer/vehicle, bay notes, and open work-item edits save after a short pause; unsaved-changes hint + tab-close warning |
+| **Advisor intake** | **Intake notes** at the top of new ROs — quick arrival notes before itemizing; stays on the RO as internal reference for the shop (not on customer PDF) |
+| **Inspection types** | **SI/IM** and **SI only** auto-fill the standard customer concern text |
+| **Parts** | **Superseded part numbers** — shop catalog, lookup badges, sync to server, fields on part lines |
+| **PDF** | **Declined service** section for declined findings/work (with disclaimer); **shop name/logo** can sync from server for consistent PDF headers |
+| **Docs** | [Requirements](docs/REQUIREMENTS.md) · [Changelog](CHANGELOG.md) |
+
+Full release notes: [CHANGELOG.md](CHANGELOG.md). Upgrade path: [docs/UPDATING.md](docs/UPDATING.md).
+
 ### Companion tools & hardware
 
 | | Link |
@@ -51,10 +64,13 @@ Car-RO is the habit-forming middle step: open a job, dump complaint + notes + OB
 | Piece | What it does |
 | --- | --- |
 | **CLI (`carro`)** | Interactive menu + full-screen forms for new / edit / search |
-| **Desktop GUI** | Orders workspace + Scanner (obdscan) — Windows & Linux |
+| **Desktop GUI** | Tech Orders + Scanner; Advisor desk (pool, parts, calendar, reports) — Windows & Linux |
+| **Auto-save RO editor** | Debounced save on tech/advisor RO screens so bay notes and customer data are not lost |
+| **Intake notes** | Advisor quick arrival notes on new ROs; internal reference for the whole shop |
+| **Part supersessions** | Old PN → current PN catalog, lookup hints, server sync |
 | **Local SQLite** | Fast cache of recent ROs on the laptop |
-| **Customer PDF** | Shop header/logo, boxed complaint & tech notes, OBD block, photos + captions |
-| **Optional server** | Bulk storage on *your* disk(s), multi-volume aware |
+| **Customer PDF** | Shop header/logo (syncable), complaint & tech notes, declined-service block, OBD, photos + captions |
+| **Optional server** | Bulk storage on *your* disk(s), multi-volume aware, branding + catalog sync |
 | **Phone PWA** | Lighter orders / messages / photos app from the shop server (Wi‑Fi or Tailscale) |
 | **Photo ingress** | Modular: local files, inbox drop, Tailscale QR upload from phone |
 
@@ -100,12 +116,16 @@ Local-only works fine. The server is for people who want history that outlives a
 
 ## Quick install (workstation)
 
-You need: **Linux** or **Windows** and **Python 3.10+**. One install script does the rest.
+You need: **Linux** or **Windows**, **Python 3.10+**, and **Node.js 20+** if you want the desktop GUI. One install script sets up the Python side.
+
+**Full requirement list:** [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) (Python packages, Node, Rust/Tauri optional, ports, disk paths).
 
 | OS | Install |
 | --- | --- |
 | **Linux** | `./scripts/install.sh` (below) |
 | **Windows** | Double-click **`Install-Car-RO.bat`** — full guide: [docs/WINDOWS.md](docs/WINDOWS.md) |
+
+**GUI extra:** Node.js 20+ (LTS) for the Tech / Advisor web UI. Rust is only needed for the optional Tauri desktop window. See [docs/WINDOWS.md](docs/WINDOWS.md#dependencies) and [docs/GUI.md](docs/GUI.md#prerequisites).
 
 ### Easiest: download a Release (recommended)
 
@@ -422,7 +442,15 @@ Techs (and working advisors) save **draft** found-issue requests on the RO, **ed
 carro photo add path.jpg --id RO-… --found-issue FI-001
 ```
 
-CLI desk: `carroadviser pool` (approve / decline / undo / bill-out / assign). **Declined** findings stay on the customer PDF (text + photos) as a record; **pending/draft** found-issue pics stay off the PDF until approved or declined.
+CLI desk: `carroadviser pool` (approve / decline / undo / bill-out / assign). **Declined** findings appear on the customer PDF under **Declined Service** (text + photos) with a liability disclaimer — not as billable line items. **Pending/draft** found-issue photos stay off the PDF until approved or declined.
+
+### Advisor intake notes (new ROs)
+
+Before the first work item exists, the advisor RO editor shows an **Intake notes** block at the top for quick arrival notes (noise, leaks, “customer waiting,” etc.). Notes auto-save and remain on the RO as a read-only **arrival reference** after you itemize — techs see them; they are **not** printed on the customer PDF.
+
+### Part supersessions
+
+Mark obsolete part numbers and link them to the current PN in a shop catalog (**Parts → Supersessions** on advisor, or engine routes). Lookup and part lines show supersession badges; catalog syncs with **carro-server** when configured.
 
 ### Found-issue photos
 
@@ -485,8 +513,10 @@ Run-Advisor-GUI.bat
 Run-Tech-GUI-Tauri.bat
 docs/SERVER_SETUP.md    # multi-PC server guide
 docs/UPDATING.md        # manual opt-in updates (no auto-nag)
+docs/REQUIREMENTS.md    # Python, Node, OS, ports, disk paths
 docs/WINDOWS.md         # Windows bay PC guide
 docs/GUI.md             # desktop GUI build / run
+CHANGELOG.md            # release notes
 config.example.toml     # copy to ~/.config/carro/config.toml
 ```
 

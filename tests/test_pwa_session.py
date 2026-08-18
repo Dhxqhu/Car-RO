@@ -175,3 +175,68 @@ def test_push_subscribe_after_pin_login(server):
     off = client.post("/push/unsubscribe", json={})
     assert off.status_code == 200
     assert client.get("/push/vapid").json()["subscribed"] is False
+
+
+def test_put_technicians_merges_instead_of_clobbering(server):
+    client, _m = server
+    headers = {"Authorization": "Bearer shop-secret"}
+    r = client.put(
+        "/technicians",
+        headers=headers,
+        json={
+            "updated": "2026-08-17T00:00:00",
+            "technicians": [{"id": "max", "name": "Max", "pin_hash": "x"}],
+        },
+    )
+    assert r.status_code == 200, r.text
+    ids = {t["id"] for t in r.json()["technicians"]}
+    assert ids == {"tech-1", "max"}
+
+
+def test_put_technicians_replace_flag_can_remove(server):
+    client, _m = server
+    headers = {"Authorization": "Bearer shop-secret"}
+    r = client.put(
+        "/technicians",
+        headers=headers,
+        json={
+            "replace": True,
+            "updated": "2026-08-17T00:00:00",
+            "technicians": [{"id": "max", "name": "Max", "pin_hash": "x"}],
+        },
+    )
+    assert r.status_code == 200, r.text
+    ids = {t["id"] for t in r.json()["technicians"]}
+    assert ids == {"max"}
+
+
+def test_clock_onto_work_item_from_pwa_session(server):
+    client, _m = server
+    client.post("/session/login", json={"id": "tech-1", "pin": "1234"})
+    created = client.post(
+        "/ros",
+        json={
+            "first_name": "Pat",
+            "last_name": "Lee",
+            "year": "2014",
+            "make": "Ford",
+            "model": "Focus",
+            "complaint": "No crank",
+        },
+    )
+    assert created.status_code == 200, created.text
+    order = created.json()
+    item_id = order["work_items"][0]["id"]
+    on = client.post(f"/ros/{order['id']}/current", json={"active": True, "item_id": item_id})
+    assert on.status_code == 200, on.text
+    body = on.json()
+    assert body["current_tech_id"] == "tech-1"
+    assert body["current_item_id"] == item_id
+    item = next(it for it in body["work_items"] if it["id"] == item_id)
+    assert item["timer_tech_id"] == "tech-1"
+    assert item["timer_started_at"]
+    off = client.post(f"/ros/{order['id']}/current", json={"active": False, "item_id": item_id})
+    assert off.status_code == 200, off.text
+    assert not off.json()["current_tech_id"]
+    item = next(it for it in off.json()["work_items"] if it["id"] == item_id)
+    assert not item.get("timer_started_at")

@@ -140,13 +140,13 @@ function Resolve-CarroEnginePort {
   }
 
   if ($saved -and "$chosen" -ne "$saved") {
-    Write-Host "==> Engine port $saved → $chosen (joining existing or reclaiming default)"
+    Write-Host "==> Engine port $saved -> $chosen (joining existing or reclaiming default)"
   } elseif ($chosen -ne 8788) {
-    Write-Host "==> Port 8788 busy — using engine port $chosen"
+    Write-Host "==> Port 8788 busy - using engine port $chosen"
   }
   if ($chosen -gt 8808) {
-    Write-Host "==> WARNING: engine on ephemeral port $chosen — tech + advisor must both use this port"
-    Write-Host "    (set CARRO_ENGINE_PORT=$chosen or free ports 8788–8808 and relaunch)"
+    Write-Host "==> WARNING: engine on ephemeral port $chosen - tech + advisor must both use this port"
+    Write-Host "    (set CARRO_ENGINE_PORT=$chosen or free ports 8788-8808 and relaunch)"
   }
 
   Set-CarroEnvVar -Path $envFile -Key "CARRO_ENGINE_PORT" -Value "$chosen"

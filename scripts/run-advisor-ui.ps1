@@ -4,6 +4,7 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
 
+. (Join-Path $PSScriptRoot "lib\Ensure-Node.ps1")
 . (Join-Path $PSScriptRoot "lib\Pick-Port.ps1")
 
 $env:PYTHONPATH = (@(
@@ -43,7 +44,7 @@ if ($healthOk) {
 try {
   Set-Location (Join-Path $Root "advisor\ui")
   if (-not (Test-Path "node_modules")) { npm install }
-  Write-Host "==> Advisor UI on http://127.0.0.1:1422 (proxies /api → $($env:VITE_ENGINE_URL))"
+  Write-Host "==> Advisor UI on http://127.0.0.1:1422 (proxies /api -> $($env:VITE_ENGINE_URL))"
   npm run dev
 } finally {
   if ($engine -and -not $engine.HasExited) {

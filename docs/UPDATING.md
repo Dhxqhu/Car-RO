@@ -1,5 +1,7 @@
 # Updating a live Car-RO shop (manual, opt-in)
 
+**Current release:** see repo [`VERSION`](../VERSION) and [`CHANGELOG.md`](../CHANGELOG.md) (e.g. **0.4.0** — auto-save, intake notes, part supersessions, PDF declined-service block, branding sync).
+
 **You do not have to update.** If the shop is working, leave it on that build. Updates are only for when you want newer features or fixes.
 
 There is **no** auto-update and **no** “new version available” nag on bay or advisor PCs.

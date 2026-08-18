@@ -27,12 +27,16 @@ echo "Do not generate a new token on this laptop unless you also"
 echo "changed CARRO_TOKEN on the server (see docs/SERVER_SETUP.md)."
 echo
 
-read -r -p "Server URL (e.g. http://homebaseserver:8787): " URL
+read -r -p "Server URL (e.g. http://shop-server:8787): " URL
 URL="${URL// /}"
 URL="${URL%/}"
 if [[ -z "$URL" ]]; then
   echo "error: URL required" >&2
   exit 1
+fi
+if [[ "$URL" != http://* && "$URL" != https://* ]]; then
+  URL="http://$URL"
+  echo "==> Using $URL"
 fi
 
 read -r -p "API token: " TOKEN
@@ -54,6 +58,9 @@ h = r.health()
 print("OK", h)
 PY
 then
+  echo
+  echo "==> Pulling shop roster (will not push leftover local testers)…"
+  "$PY" -c "from carro.core.tech_ui import pull_rosters_from_server; print(pull_rosters_from_server())"
   echo
   echo "Joined. Next:"
   echo "  carro sync"

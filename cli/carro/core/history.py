@@ -36,6 +36,7 @@ def vehicle_history(
     name: str = "",
     exclude_id: str | None = None,
     remote: bool | None = None,
+    unique_cars: bool = False,
 ) -> HistoryResult:
     """
     Prior ROs for a vehicle (VIN) or, if none, by customer name/phone.
@@ -64,8 +65,11 @@ def vehicle_history(
                     "Shop server unreachable and no matching jobs on this bay. "
                     "Blank RO still works; sync when you're back online for full archive."
                 )
+        ranked = _sort(orders)
+        if unique_cars:
+            ranked = latest_orders_per_car(ranked)
         return HistoryResult(
-            orders=_sort(orders),
+            orders=ranked,
             matched_by=matched_by,
             vin_query=vin_n,
             name_query=name_q,
@@ -126,6 +130,41 @@ def _sort(orders: list[RepairOrder]) -> list[RepairOrder]:
         key=lambda o: (o.updated or o.created or "", o.id),
         reverse=True,
     )
+
+
+def _normalize_plate(plate: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", (plate or "").strip().upper())
+
+
+def car_identity_key(order: RepairOrder) -> str:
+    """Stable key for one physical car. VIN first, then plate, then vehicle + customer."""
+    vin = normalize_vin(getattr(order, "vin", "") or "")
+    if vin:
+        return f"vin:{vin}"
+    plate = _normalize_plate(getattr(order, "plate", "") or "")
+    if plate:
+        return f"plate:{plate}"
+    year = str(getattr(order, "year", "") or "").strip().lower()
+    make = str(getattr(order, "make", "") or "").strip().lower()
+    model = str(getattr(order, "model", "") or "").strip().lower()
+    if year or make or model:
+        last = str(getattr(order, "last_name", "") or "").strip().lower()
+        first = str(getattr(order, "first_name", "") or "").strip().lower()
+        return f"veh:{year}|{make}|{model}|{last}|{first}"
+    return f"ro:{getattr(order, 'id', '')}"
+
+
+def latest_orders_per_car(orders: list[RepairOrder]) -> list[RepairOrder]:
+    """Keep the newest RO for each car so lookup lists stay readable."""
+    seen: dict[str, RepairOrder] = {}
+    out: list[RepairOrder] = []
+    for order in _sort(orders):
+        key = car_identity_key(order)
+        if key in seen:
+            continue
+        seen[key] = order
+        out.append(order)
+    return out
 
 
 # Short timeouts — bay laptops often hit Wi-Fi gaps on road tests

@@ -18,6 +18,14 @@ const STATUS_LABELS: Record<string, string> = {
   declined: "Declined",
 };
 
+export function formatWorkedMinutes(minutes: number | undefined | null): string {
+  const n = Math.max(0, Math.round(Number(minutes) || 0));
+  if (n < 60) return `${n}m`;
+  const h = Math.floor(n / 60);
+  const m = n % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
 export function formatStatus(status: string | undefined | null): string {
   const raw = (status || "").trim();
   if (!raw) return "—";

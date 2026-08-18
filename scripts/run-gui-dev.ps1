@@ -10,6 +10,7 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
 
+. (Join-Path $PSScriptRoot "lib\Ensure-Node.ps1")
 . (Join-Path $PSScriptRoot "lib\Pick-Port.ps1")
 
 $env:PYTHONPATH = (@(
@@ -48,7 +49,7 @@ try {
     Write-Host "==> UI (scanner-only) on http://127.0.0.1:1420/?mode=scanner"
   } else {
     Remove-Item Env:VITE_CARRO_MODE -ErrorAction SilentlyContinue
-    Write-Host "==> UI on http://127.0.0.1:1420 (proxies /api → $($env:VITE_ENGINE_URL))"
+    Write-Host "==> UI on http://127.0.0.1:1420 (proxies /api -> $($env:VITE_ENGINE_URL))"
   }
   npm run dev
 } finally {

@@ -83,11 +83,14 @@ def load_roster() -> dict[str, Any]:
     }
 
 
-def save_roster(roster: dict[str, Any]) -> Path:
+def save_roster(roster: dict[str, Any], *, touch_updated: bool = True) -> Path:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     roster = deepcopy(roster)
     roster["version"] = 1
-    roster["updated"] = now_iso()
+    if touch_updated:
+        roster["updated"] = now_iso()
+    else:
+        roster["updated"] = str(roster.get("updated") or now_iso())
     payload = {
         "version": 1,
         "updated": roster["updated"],
@@ -396,7 +399,7 @@ def roster_for_sync(roster: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
-def apply_remote_roster(remote: dict[str, Any]) -> bool:
+def apply_remote_roster(remote: dict[str, Any], *, force: bool = False) -> bool:
     if not isinstance(remote, dict):
         return False
     remote_advisors = remote.get("advisors")
@@ -405,12 +408,12 @@ def apply_remote_roster(remote: dict[str, Any]) -> bool:
     local = load_roster()
     remote_updated = str(remote.get("updated") or "")
     local_updated = str(local.get("updated") or "")
-    if local.get("advisors") and remote_updated and local_updated:
+    if not force and local.get("advisors") and remote_updated and local_updated:
         if remote_updated <= local_updated:
             return False
     local["advisors"] = [a for a in remote_advisors if isinstance(a, dict)]
     local["updated"] = remote_updated or now_iso()
-    save_roster(local)
+    save_roster(local, touch_updated=False)
     advisor = current_advisor()
     if advisor and not get_advisor(advisor.id):
         clear_session()

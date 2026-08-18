@@ -1,5 +1,5 @@
 /* ADVISOR_NO_PRIVATE */
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { RO_CHANGED_EVENT } from "@/lib/notifications";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
@@ -24,6 +24,7 @@ import {
   type Technician,
   type WorkItem,
   type WorkItemPart,
+  type PartSuggestion,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,6 +32,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { MessageComposeDialog } from "@/components/MessageComposeDialog";
 import { formatDurationMinutes, formatPhotoTag, formatShopTime, formatStatus, formatUploadMode, formatWorkedHours, formatWorkedMinutes, turnOrdinal } from "@/lib/utils";
+import { formatAutoSaveTime, useRoAutoSave } from "@/lib/useRoAutoSave";
 
 const empty: RepairOrder = {
   id: "",
@@ -45,6 +47,7 @@ const empty: RepairOrder = {
   plate: "",
   complaint: "",
   tech_notes: "",
+  intake_notes: "",
   technician_name: "",
   technician_id: "",
   assigned_to_id: "",
@@ -83,6 +86,30 @@ const ITEM_TYPES = [
   { value: "other", label: "Other" },
 ] as const;
 const PA_ITEM_TYPE_VALUES = new Set(["si_im", "si_only"]);
+const INSPECTION_CONCERN_TEXT: Record<string, string> = {
+  si_im: "State Inspection and Emissions Testing",
+  si_only: "State Inspection Only",
+};
+
+function concernForItemType(itemType: string): string {
+  return INSPECTION_CONCERN_TEXT[itemType] || "";
+}
+
+function applyItemTypeToDraft(d: WorkItem, itemType: string): WorkItem {
+  const autoConcern = concernForItemType(itemType);
+  const cur = (d.concern || "").trim();
+  const prevAuto = concernForItemType(d.item_type || "");
+  const next: WorkItem = {
+    ...d,
+    item_type: itemType,
+    service_plan_enroll:
+      itemType === "si_im" || itemType === "si_only" ? d.service_plan_enroll || "" : "",
+  };
+  if (autoConcern && (!cur || (prevAuto && cur === prevAuto))) {
+    next.concern = autoConcern;
+  }
+  return next;
+}
 
 function visibleItemTypes(paEnabled: boolean) {
   return ITEM_TYPES.filter((t) => paEnabled || !PA_ITEM_TYPE_VALUES.has(t.value));
@@ -137,7 +164,57 @@ const emptyPartDraft = (make = ""): WorkItemPart => ({
   brand: "",
   supplier: "",
   status: "new_request",
+  superseded_by: "",
+  supersedes: "",
 });
+
+function fillPartFromSuggestion(s: PartSuggestion, make = ""): WorkItemPart {
+  const replacement = (s.superseded_by || "").trim();
+  if (replacement) {
+    return {
+      id: "",
+      description: s.description || "",
+      part_number: replacement,
+      oem_part_number: "",
+      manufacturer: s.manufacturer || make,
+      brand: s.brand || "",
+      supplier: "",
+      status: "new_request",
+      supersedes: s.part_number || "",
+      superseded_by: "",
+    };
+  }
+  return {
+    id: "",
+    description: s.description || "",
+    part_number: s.part_number || "",
+    oem_part_number: "",
+    manufacturer: s.manufacturer || make,
+    brand: s.brand || "",
+    supplier: "",
+    status: "new_request",
+    supersedes: s.supersedes || "",
+    superseded_by: s.superseded_by || "",
+  };
+}
+
+function partSupersessionNote(p: WorkItemPart): string {
+  if (p.superseded_by) return `Superseded → ${p.superseded_by}`;
+  if (p.supersedes) return `Replaces ${p.supersedes}`;
+  return "";
+}
+
+function suggestionPnNote(s: PartSuggestion): string {
+  if (s.superseded_by) {
+    return s.part_number
+      ? ` · PN ${s.part_number} → ${s.superseded_by}`
+      : ` · superseded → ${s.superseded_by}`;
+  }
+  if (s.supersedes && s.part_number) {
+    return ` · PN ${s.part_number} (replaces ${s.supersedes})`;
+  }
+  return s.part_number ? ` · PN ${s.part_number}` : "";
+}
 
 function itemTypeLabel(t?: string): string {
   const hit = ITEM_TYPES.find((x) => x.value === t);
@@ -193,6 +270,8 @@ function formatPartLine(p: WorkItemPart, fallbackMake = ""): string {
   if (p.brand) bits.push(p.brand);
   if (p.manufacturer) bits.push(p.manufacturer);
   else if (fallbackMake) bits.push(fallbackMake);
+  const ss = partSupersessionNote(p);
+  if (ss) bits.push(ss);
   return bits.join(" · ");
 }
 
@@ -280,6 +359,61 @@ function orderStageTotals(o: RepairOrder): {
   return { parts, customer, ageMinutes };
 }
 
+function workItemFieldsDirty(draft: WorkItem, server: WorkItem): boolean {
+  return (
+    (draft.concern || "") !== (server.concern || "") ||
+    (draft.notes || "") !== (server.notes || "") ||
+    (draft.private_notes || "") !== (server.private_notes || "") ||
+    (draft.status || "open") !== (server.status || "open") ||
+    (draft.item_type || "") !== (server.item_type || "") ||
+    (draft.service_plan_enroll || "") !== (server.service_plan_enroll || "")
+  );
+}
+
+function roAutoSaveWatchKey(
+  o: RepairOrder,
+  bayNotes: string,
+  bayPrivateNotes: string,
+  itemEditorOpen: boolean,
+  draftItem: WorkItem,
+): string {
+  return JSON.stringify({
+    ro: {
+      first_name: o.first_name,
+      last_name: o.last_name,
+      phone: o.phone,
+      year: o.year,
+      make: o.make,
+      model: o.model,
+      vin: o.vin,
+      mileage: o.mileage,
+      plate: o.plate,
+      complaint: o.complaint,
+      tech_notes: o.tech_notes,
+      intake_notes: o.intake_notes,
+      status: o.status,
+      assigned_to_id: o.assigned_to_id,
+      assigned_to_name: o.assigned_to_name,
+      technician_id: o.technician_id,
+      obd_snapshot: o.obd_snapshot,
+    },
+    bayNotes,
+    bayPrivateNotes,
+    draft:
+      itemEditorOpen && draftItem.id
+        ? {
+            id: draftItem.id,
+            concern: draftItem.concern,
+            notes: draftItem.notes,
+            private_notes: draftItem.private_notes,
+            status: draftItem.status,
+            item_type: draftItem.item_type,
+            service_plan_enroll: draftItem.service_plan_enroll,
+          }
+        : null,
+  });
+}
+
 export function RoEditorPage() {
   const { id } = useParams();
   const nav = useNavigate();
@@ -327,15 +461,7 @@ export function RoEditorPage() {
   const [bayPrivateNotes, setBayPrivateNotes] = useState("");
   const [bayPart, setBayPart] = useState<WorkItemPart>(emptyPartDraft());
   const [partLookup, setPartLookup] = useState("");
-  const [partSuggestions, setPartSuggestions] = useState<
-    Array<{
-      part_number: string;
-      manufacturer: string;
-      brand?: string;
-      description: string;
-      use_count?: number;
-    }>
-  >([]);
+  const [partSuggestions, setPartSuggestions] = useState<PartSuggestion[]>([]);
   const [addMinutes, setAddMinutes] = useState("30");
   const [lastPdf, setLastPdf] = useState<{
     path: string;
@@ -355,6 +481,89 @@ export function RoEditorPage() {
   const [editTimeOpen, setEditTimeOpen] = useState(false);
   const [editTimeMinutes, setEditTimeMinutes] = useState("");
   const [editTimeNote, setEditTimeNote] = useState("");
+
+  const busyRef = useRef(false);
+  busyRef.current = saving || itemBusy;
+
+  const persistCtxRef = useRef({
+    order,
+    bayItemId,
+    bayNotes,
+    bayPrivateNotes,
+    itemEditorOpen,
+    draftItem,
+  });
+  persistCtxRef.current = {
+    order,
+    bayItemId,
+    bayNotes,
+    bayPrivateNotes,
+    itemEditorOpen,
+    draftItem,
+  };
+
+  const persistPendingChanges = useCallback(async () => {
+    const ctx = persistCtxRef.current;
+    if (!ctx.order.id) return;
+    let next = await api.saveRo(ctx.order);
+
+    if (ctx.bayItemId) {
+      const bayItem = (next.work_items || []).find((w) => w.id === ctx.bayItemId);
+      if (
+        bayItem &&
+        (ctx.bayNotes !== (bayItem.notes || "") ||
+          ctx.bayPrivateNotes !== (bayItem.private_notes || ""))
+      ) {
+        next = await api.upsertWorkItem(next.id, {
+          id: bayItem.id,
+          concern: bayItem.concern,
+          notes: ctx.bayNotes,
+          private_notes: ctx.bayPrivateNotes,
+          item_type: bayItem.item_type,
+          status: bayItem.status,
+        });
+      }
+    }
+
+    if (ctx.itemEditorOpen && ctx.draftItem.id) {
+      const server = (next.work_items || []).find((w) => w.id === ctx.draftItem.id);
+      if (server && workItemFieldsDirty(ctx.draftItem, server)) {
+        next = await api.upsertWorkItem(next.id, {
+          id: ctx.draftItem.id,
+          concern: ctx.draftItem.concern,
+          notes: ctx.draftItem.notes,
+          private_notes: ctx.draftItem.private_notes,
+          item_type: ctx.draftItem.item_type,
+          status: ctx.draftItem.status,
+          service_plan_enroll: ctx.draftItem.service_plan_enroll || "",
+        });
+      }
+    }
+
+    dirtyRef.current = false;
+    setOrder(next);
+    if (ctx.itemEditorOpen && ctx.draftItem.id) {
+      const updated = (next.work_items || []).find((w) => w.id === ctx.draftItem.id);
+      if (updated) setDraftItem({ ...updated });
+    }
+  }, []);
+
+  const autoSaveWatchKey = roAutoSaveWatchKey(
+    order,
+    bayNotes,
+    bayPrivateNotes,
+    itemEditorOpen,
+    draftItem,
+  );
+
+  const { status: autoSaveStatus, autoSaving, lastSavedAt } = useRoAutoSave({
+    roId: id,
+    dirtyRef,
+    busyRef,
+    watchKey: autoSaveWatchKey,
+    onSave: persistPendingChanges,
+    onError: (message) => setErr(message),
+  });
 
   useEffect(() => {
     void api
@@ -624,7 +833,7 @@ export function RoEditorPage() {
     if (!id) return;
     const onChanged = (ev: Event) => {
       const ids = (ev as CustomEvent<{ roIds?: string[] }>).detail?.roIds || [];
-      if (!ids.includes(id) || dirtyRef.current || saving) return;
+      if (!ids.includes(id) || dirtyRef.current || saving || autoSaving) return;
       api
         .getRo(id)
         .then((o) => {
@@ -635,7 +844,7 @@ export function RoEditorPage() {
     };
     window.addEventListener(RO_CHANGED_EVENT, onChanged);
     return () => window.removeEventListener(RO_CHANGED_EVENT, onChanged);
-  }, [id, saving]);
+  }, [id, saving, autoSaving]);
 
   async function startFoundIssueFromBay() {
     if (!order.id || !canDocumentFoundIssues) return;
@@ -740,8 +949,7 @@ export function RoEditorPage() {
     setErr("");
     setMsg("");
     try {
-      await api.saveRo(order);
-      dirtyRef.current = false;
+      await persistPendingChanges();
       nav("/");
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Save failed");
@@ -1159,9 +1367,18 @@ export function RoEditorPage() {
             <Trash2 className="h-4 w-4" />
             Delete
           </Button>
-          <Button onClick={() => void save()} disabled={saving}>
+          <Button onClick={() => void save()} disabled={saving || autoSaving}>
             {saving ? "Saving…" : "Save"}
           </Button>
+          {autoSaving || autoSaveStatus === "saving" ? (
+            <span className="self-center text-xs text-muted">Auto-saving…</span>
+          ) : autoSaveStatus === "pending" ? (
+            <span className="self-center text-xs text-muted">Unsaved changes…</span>
+          ) : lastSavedAt ? (
+            <span className="self-center text-xs text-muted">
+              Auto-saved {formatAutoSaveTime(lastSavedAt)}
+            </span>
+          ) : null}
         </div>
       </div>
 
@@ -1176,6 +1393,37 @@ export function RoEditorPage() {
         </div>
       ) : null}
       {err ? <p className="text-sm text-danger">{err}</p> : null}
+
+      {order.id && (order.work_items || []).length === 0 ? (
+        <section className="space-y-3 rounded-2xl border border-accent/40 bg-accent/5 p-5">
+          <div>
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-accent">
+              Intake notes
+            </h2>
+            <p className="mt-1 text-sm text-muted">
+              Quick notes at arrival — itemize into work items when ready. Auto-saved and kept on
+              this RO as a reference for the shop (not on the customer PDF).
+            </p>
+          </div>
+          <Field label="Arrival notes">
+            <Textarea
+              value={order.intake_notes || ""}
+              onChange={(e) => set("intake_notes", e.target.value)}
+              placeholder="Customer mentions brake noise, check tires, oil change due, etc."
+              rows={5}
+            />
+          </Field>
+        </section>
+      ) : null}
+
+      {order.intake_notes?.trim() && (order.work_items || []).length > 0 ? (
+        <section className="space-y-2 rounded-2xl border border-border bg-surface/60 p-4">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">
+            Intake notes (arrival reference)
+          </h2>
+          <p className="whitespace-pre-wrap text-sm">{order.intake_notes}</p>
+        </section>
+      ) : null}
 
       <section className="grid gap-6 md:grid-cols-2">
         <fieldset className="space-y-3 rounded-2xl border border-border bg-surface p-5">
@@ -1192,8 +1440,7 @@ export function RoEditorPage() {
                 if (roDetailsEditing) {
                   void (async () => {
                     try {
-                      const saved = await api.saveRo(order);
-                      setOrder(saved);
+                      await persistPendingChanges();
                       setRoDetailsEditing(false);
                       setMsg("Customer / vehicle saved");
                     } catch (e) {
@@ -2222,24 +2469,21 @@ export function RoEditorPage() {
                                     type="button"
                                     className="w-full rounded-lg border border-border bg-surface px-2 py-1.5 text-left hover:bg-border/40"
                                     onClick={() => {
-                                      setBayPart({
-                                        id: "",
-                                        description: s.description || "",
-                                        part_number: s.part_number || "",
-                                        manufacturer: s.manufacturer || order.make || "",
-                                        brand: s.brand || "",
-                                        status: "new_request",
-                                      });
+                                      setBayPart(fillPartFromSuggestion(s, order.make));
                                       setPartSuggestions([]);
                                       setPartLookup("");
-                                      setMsg("Part fields filled from archive — add to confirm");
+                                      setMsg(
+                                        s.superseded_by
+                                          ? `Filled with current PN ${s.superseded_by} (replaces ${s.part_number})`
+                                          : "Part fields filled from archive — add to confirm",
+                                      );
                                     }}
                                   >
                                     <span className="font-medium">{s.description || "—"}</span>
                                     <span className="text-muted">
                                       {s.brand ? ` · ${s.brand}` : ""}
                                       {s.manufacturer ? ` · ${s.manufacturer}` : ""}
-                                      {s.part_number ? ` · PN ${s.part_number}` : ""}
+                                      {suggestionPnNote(s)}
                                       {s.use_count ? ` · used ${s.use_count}×` : ""}
                                     </span>
                                   </button>
@@ -2338,6 +2582,24 @@ export function RoEditorPage() {
                             placeholder={order.make || "OEM / make"}
                           />
                         </Field>
+                        <Field label="Superseded by">
+                          <Input
+                            value={bayPart.superseded_by || ""}
+                            onChange={(e) =>
+                              setBayPart((d) => ({ ...d, superseded_by: e.target.value }))
+                            }
+                            placeholder="Current PN if this number is old"
+                          />
+                        </Field>
+                        <Field label="This replaces">
+                          <Input
+                            value={bayPart.supersedes || ""}
+                            onChange={(e) =>
+                              setBayPart((d) => ({ ...d, supersedes: e.target.value }))
+                            }
+                            placeholder="Old PN this line replaces"
+                          />
+                        </Field>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <Button
@@ -2357,6 +2619,8 @@ export function RoEditorPage() {
                                     manufacturer: bayPart.manufacturer || order.make || "",
                                     brand: bayPart.brand || "",
                                     supplier: bayPart.supplier || "",
+                                    superseded_by: bayPart.superseded_by || "",
+                                    supersedes: bayPart.supersedes || "",
                                   });
                                   setMsg(`Updated ${bayPart.id}`);
                                 } else {
@@ -2367,6 +2631,8 @@ export function RoEditorPage() {
                                     manufacturer: bayPart.manufacturer || order.make || "",
                                     brand: bayPart.brand || "",
                                     supplier: bayPart.supplier || "",
+                                    superseded_by: bayPart.superseded_by || "",
+                                    supersedes: bayPart.supersedes || "",
                                   });
                                   setMsg(`Part added to ${bayItem.id}`);
                                 }
@@ -2432,16 +2698,10 @@ export function RoEditorPage() {
             <select
               className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
               value={draftItem.item_type || ""}
-              onChange={(e) =>
-                setDraftItem((d) => ({
-                  ...d,
-                  item_type: e.target.value,
-                  service_plan_enroll:
-                    e.target.value === "si_im" || e.target.value === "si_only"
-                      ? d.service_plan_enroll || ""
-                      : "",
-                }))
-              }
+              onChange={(e) => {
+                dirtyRef.current = true;
+                setDraftItem((d) => applyItemTypeToDraft(d, e.target.value));
+              }}
             >
               <option value="">Choose type…</option>
               {visibleItemTypes(paInspectionTypes).map((t) => (
@@ -2464,7 +2724,10 @@ export function RoEditorPage() {
                   type="button"
                   size="sm"
                   variant={draftItem.service_plan_enroll === "yes" ? "default" : "secondary"}
-                  onClick={() => setDraftItem((d) => ({ ...d, service_plan_enroll: "yes" }))}
+                  onClick={() => {
+                    dirtyRef.current = true;
+                    setDraftItem((d) => ({ ...d, service_plan_enroll: "yes" }));
+                  }}
                 >
                   Enroll
                 </Button>
@@ -2472,7 +2735,10 @@ export function RoEditorPage() {
                   type="button"
                   size="sm"
                   variant={draftItem.service_plan_enroll === "no" ? "default" : "secondary"}
-                  onClick={() => setDraftItem((d) => ({ ...d, service_plan_enroll: "no" }))}
+                  onClick={() => {
+                    dirtyRef.current = true;
+                    setDraftItem((d) => ({ ...d, service_plan_enroll: "no" }));
+                  }}
                 >
                   Not now
                 </Button>
@@ -2501,7 +2767,10 @@ export function RoEditorPage() {
           <Field label="Customer concern / request">
             <Textarea
               value={draftItem.concern}
-              onChange={(e) => setDraftItem((d) => ({ ...d, concern: e.target.value }))}
+              onChange={(e) => {
+                dirtyRef.current = true;
+                setDraftItem((d) => ({ ...d, concern: e.target.value }));
+              }}
               placeholder="e.g. Brake noise when cold"
             />
           </Field>
@@ -2510,7 +2779,10 @@ export function RoEditorPage() {
               <Field label="Diagnosis / technician notes (customer PDF)">
                 <Textarea
                   value={draftItem.notes}
-                  onChange={(e) => setDraftItem((d) => ({ ...d, notes: e.target.value }))}
+                  onChange={(e) => {
+                    dirtyRef.current = true;
+                    setDraftItem((d) => ({ ...d, notes: e.target.value }));
+                  }}
                   placeholder="Findings for this item"
                 />
               </Field>
@@ -2518,9 +2790,10 @@ export function RoEditorPage() {
                 <Field label="Private shop notes (techs only — never on customer PDF)">
                   <Textarea
                     value={draftItem.private_notes || ""}
-                    onChange={(e) =>
-                      setDraftItem((d) => ({ ...d, private_notes: e.target.value }))
-                    }
+                    onChange={(e) => {
+                    dirtyRef.current = true;
+                    setDraftItem((d) => ({ ...d, private_notes: e.target.value }));
+                  }}
                     placeholder="Internal notes, tips, gotchas…"
                   />
                 </Field>
@@ -2531,7 +2804,10 @@ export function RoEditorPage() {
             <select
               className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
               value={draftItem.status || "open"}
-              onChange={(e) => setDraftItem((d) => ({ ...d, status: e.target.value }))}
+              onChange={(e) => {
+                dirtyRef.current = true;
+                setDraftItem((d) => ({ ...d, status: e.target.value }));
+              }}
             >
               {ITEM_STATUSES.map((s) => (
                 <option key={s} value={s}>
@@ -2724,6 +3000,7 @@ export function RoEditorPage() {
                           {p.supplier ? ` · ${p.supplier}` : ""}
                           {p.brand ? ` · ${p.brand}` : ""}
                           {` · ${p.manufacturer || order.make || "—"}`}
+                          {partSupersessionNote(p) ? ` · ${partSupersessionNote(p)}` : ""}
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-1">
@@ -2820,24 +3097,21 @@ export function RoEditorPage() {
                             type="button"
                             className="w-full rounded-lg border border-border bg-surface px-2 py-1.5 text-left hover:bg-border/40"
                             onClick={() => {
-                              setDraftPart({
-                                id: "",
-                                description: s.description || "",
-                                part_number: s.part_number || "",
-                                manufacturer: s.manufacturer || order.make || "",
-                                brand: s.brand || "",
-                                status: "new_request",
-                              });
+                              setDraftPart(fillPartFromSuggestion(s, order.make));
                               setPartSuggestions([]);
                               setPartLookup("");
-                              setMsg("Part fields filled from archive — add to confirm");
+                              setMsg(
+                                s.superseded_by
+                                  ? `Filled with current PN ${s.superseded_by} (replaces ${s.part_number})`
+                                  : "Part fields filled from archive — add to confirm",
+                              );
                             }}
                           >
                             <span className="font-medium">{s.description || "—"}</span>
                             <span className="text-muted">
                               {s.brand ? ` · ${s.brand}` : ""}
                               {s.manufacturer ? ` · ${s.manufacturer}` : ""}
-                              {s.part_number ? ` · PN ${s.part_number}` : ""}
+                              {suggestionPnNote(s)}
                               {s.use_count ? ` · used ${s.use_count}×` : ""}
                             </span>
                           </button>
@@ -2934,6 +3208,24 @@ export function RoEditorPage() {
                     placeholder={order.make || "OEM / make"}
                   />
                 </Field>
+                <Field label="Superseded by">
+                  <Input
+                    value={draftPart.superseded_by || ""}
+                    onChange={(e) =>
+                      setDraftPart((d) => ({ ...d, superseded_by: e.target.value }))
+                    }
+                    placeholder="Current PN if this number is old"
+                  />
+                </Field>
+                <Field label="This replaces">
+                  <Input
+                    value={draftPart.supersedes || ""}
+                    onChange={(e) =>
+                      setDraftPart((d) => ({ ...d, supersedes: e.target.value }))
+                    }
+                    placeholder="Old PN this line replaces"
+                  />
+                </Field>
               </div>
               <Field label="Status">
                 <select
@@ -2969,6 +3261,8 @@ export function RoEditorPage() {
                             manufacturer: draftPart.manufacturer || order.make || "",
                             brand: draftPart.brand || "",
                             supplier: draftPart.supplier || "",
+                            superseded_by: draftPart.superseded_by || "",
+                            supersedes: draftPart.supersedes || "",
                           });
                           const added = (next.work_items || [])
                             .find((w) => w.id === draftItem.id)
@@ -2997,6 +3291,8 @@ export function RoEditorPage() {
                               manufacturer: draftPart.manufacturer || order.make || "",
                               brand: draftPart.brand || "",
                               supplier: draftPart.supplier || "",
+                              superseded_by: draftPart.superseded_by || "",
+                              supersedes: draftPart.supersedes || "",
                               status: draftPart.status,
                               wrong_note:
                                 draftPart.status === "received_wrong"

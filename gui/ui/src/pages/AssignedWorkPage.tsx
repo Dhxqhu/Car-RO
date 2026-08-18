@@ -181,29 +181,21 @@ function OrderWorkedBreakdown({
 function JobCard({
   j,
   actions,
+  nested = false,
 }: {
   j: AssignedJobSummary;
   actions?: ReactNode;
+  nested?: boolean;
 }) {
   const timing = jobTiming(j);
   const waitAge = jobWaitAge(j);
   const worked = Number(j.worked_minutes) || 0;
   const req = j.next_day_request;
   return (
-    <li className="rounded-xl border border-border bg-surface px-4 py-3">
+    <li className={nested ? "px-0 py-2" : "rounded-xl border border-border bg-surface px-4 py-3"}>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="mb-1 flex flex-wrap gap-1.5">
-            {j.waiter ? (
-              <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
-                Waiter
-              </span>
-            ) : null}
-            {j.urgent ? (
-              <span className="rounded bg-danger/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-danger">
-                Urgent
-              </span>
-            ) : null}
             {j.due_eod ? (
               <span className="rounded bg-danger/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-danger">
                 EOD
@@ -240,12 +232,14 @@ function JobCard({
             className="font-medium text-accent hover:underline"
           >
             {j.item_id}
-            <span className="font-normal text-muted"> · {j.ro_id}</span>
+            {nested ? null : <span className="font-normal text-muted"> · {j.ro_id}</span>}
           </Link>
           <div className="mt-0.5 text-sm">{j.concern || "(no concern)"}</div>
-          <div className="text-sm text-muted">
-            {j.vehicle} · {j.customer}
-          </div>
+          {nested ? null : (
+            <div className="text-sm text-muted">
+              {j.vehicle} · {j.customer}
+            </div>
+          )}
           <div className="mt-1 text-sm font-medium tabular-nums">
             Worked {formatWorkedMinutes(worked)}
           </div>
@@ -509,7 +503,7 @@ export function AssignedWorkPage() {
     actionFor?: (j: AssignedJobSummary) => ReactNode,
     accent = true,
   ) {
-    const list = items || [];
+    const groups = groupJobsByCar(items);
     return (
       <section className="space-y-3">
         <h2
@@ -518,14 +512,45 @@ export function AssignedWorkPage() {
           }`}
         >
           {title}
-          {list.length ? ` · ${list.length}` : ""}
+          {groups.length ? ` · ${groups.length}` : ""}
         </h2>
-        {list.length === 0 ? (
+        {groups.length === 0 ? (
           <p className="text-sm text-muted">{empty}</p>
         ) : (
           <ul className="space-y-3">
-            {list.map((j) => (
-              <JobCard key={j.id} j={j} actions={actionFor?.(j)} />
+            {groups.map((g) => (
+              <li
+                key={g.ro_id}
+                className="rounded-xl border border-border bg-surface px-4 py-3"
+              >
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                  <Link
+                    to={`/ro/${g.ro_id}`}
+                    className="font-medium text-accent hover:underline"
+                  >
+                    {g.ro_id}
+                  </Link>
+                  <span className="text-sm">
+                    {g.vehicle}
+                    {g.customer ? ` · ${g.customer}` : ""}
+                  </span>
+                  {g.waiter ? (
+                    <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
+                      Waiter
+                    </span>
+                  ) : null}
+                  {g.urgent ? (
+                    <span className="rounded bg-danger/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-danger">
+                      Urgent
+                    </span>
+                  ) : null}
+                </div>
+                <ul className="mt-2 ml-1 space-y-1 border-l-2 border-border pl-3">
+                  {g.jobs.map((j) => (
+                    <JobCard key={j.id} j={j} nested actions={actionFor?.(j)} />
+                  ))}
+                </ul>
+              </li>
             ))}
           </ul>
         )}
@@ -580,9 +605,9 @@ export function AssignedWorkPage() {
                       </span>
                     ) : null}
                   </div>
-                  <ul className="mt-2 space-y-2">
+                  <ul className="mt-2 ml-1 space-y-2 border-l-2 border-border pl-3">
                     {g.jobs.map((j) => (
-                      <li key={j.id} className="border-t border-border/60 pt-2">
+                      <li key={j.id} className="pt-0.5">
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div className="min-w-0">
                             <div className="text-sm font-medium">
@@ -855,13 +880,14 @@ export function AssignedWorkPage() {
           <p className="text-sm text-muted">No work items assigned to other technicians.</p>
         ) : (
           (board?.by_tech || []).map((bucket) => (
-            <div key={bucket.id || bucket.name} className="space-y-2">
-              <h3 className="text-sm font-medium">{bucket.name}</h3>
-              <ul className="space-y-3">
-                {(bucket.jobs || []).map((j) => (
-                  <JobCard key={`${bucket.name}-${j.id}`} j={j} />
-                ))}
-              </ul>
+            <div key={bucket.id || bucket.name}>
+              {jobSection(
+                bucket.name,
+                bucket.jobs,
+                "No work items on this queue.",
+                undefined,
+                false,
+              )}
             </div>
           ))
         )}

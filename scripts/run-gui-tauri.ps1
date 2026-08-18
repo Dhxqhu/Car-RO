@@ -8,6 +8,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
+. (Join-Path $PSScriptRoot "lib\Ensure-Node.ps1")
 $env:CARRO_ROOT = "$Root"
 $env:PYTHONPATH = (@(
   (Join-Path $Root "cli"),

@@ -54,6 +54,8 @@ class RepairOrder:
     # Legacy rollups — kept in sync from work_items for search / old clients
     complaint: str = ""
     tech_notes: str = ""
+    # Advisor desk: quick arrival notes before work items exist (internal reference).
+    intake_notes: str = ""
     technician_name: str = ""
     technician_id: str = ""
     # Who the job is assigned to (advisor desk / Assigned Work board).

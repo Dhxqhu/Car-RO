@@ -21,7 +21,7 @@ from typing import Any
 
 META_KEYS = ("_actor", "_actor_id", "_base_updated")
 
-TEXT_AMEND_RO = ("complaint", "tech_notes", "obd_snapshot")
+TEXT_AMEND_RO = ("complaint", "tech_notes", "intake_notes", "obd_snapshot")
 IDENTITY_RO = (
     "first_name",
     "last_name",
@@ -63,7 +63,7 @@ PERSON_KEEP = (
 TEXT_AMEND_ITEM = ("concern", "notes", "private_notes")
 TEXT_AMEND_FI = ("description", "notes")
 TEXT_AMEND_PHOTO = ("notes",)
-TEXT_AMEND_PART = ("description", "part_number", "oem_part_number", "wrong_note")
+TEXT_AMEND_PART = ("description", "part_number", "oem_part_number", "wrong_note", "superseded_by", "supersedes")
 
 RO_STATUS_RANK = {
     "open": 0,

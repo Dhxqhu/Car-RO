@@ -116,6 +116,16 @@ function floorSortJobs(a: AssignedJobSummary, b: AssignedJobSummary): number {
   if (ua !== ub) return ua - ub;
   return String(b.updated || "").localeCompare(String(a.updated || ""));
 }
+
+function floorSortGroups(a: QueueCarGroup, b: QueueCarGroup): number {
+  const wa = a.waiter ? 0 : 1;
+  const wb = b.waiter ? 0 : 1;
+  if (wa !== wb) return wa - wb;
+  const ua = a.urgent ? 0 : 1;
+  const ub = b.urgent ? 0 : 1;
+  if (ua !== ub) return ua - ub;
+  return a.ro_id.localeCompare(b.ro_id);
+}
 function todayLocalIso(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -273,11 +283,13 @@ function JobCard({
   actions,
   density = "comfortable",
   onCarTurn,
+  nested = false,
 }: {
   j: AssignedJobSummary;
   actions?: ReactNode;
   density?: DeskDensity;
   onCarTurn?: (turn: number) => void;
+  nested?: boolean;
 }) {
   const compact = density === "compact";
   const timing = jobTiming(j);
@@ -305,16 +317,18 @@ function JobCard({
   return (
     <li
       className={cn(
-        "border border-border bg-surface",
-        compact ? "rounded-md px-2 py-1" : "rounded-xl px-4 py-3",
+        nested
+          ? "border-0 bg-transparent px-0 py-1"
+          : cn(
+              "border border-border bg-surface",
+              compact ? "rounded-md px-2 py-1" : "rounded-xl px-4 py-3",
+            ),
       )}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           {compact ? (
             <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs leading-snug">
-              {j.waiter ? chip("Waiter", "accent") : null}
-              {j.urgent ? chip("Urgent", "danger") : null}
               {j.due_eod ? chip("EOD", "danger") : null}
               {j.waiting_on_car
                 ? chip(
@@ -328,23 +342,30 @@ function JobCard({
               {showNextDayReq ? chip(req?.read_at ? "Next-day" : "Next-day · unread", "accent") : null}
               <Link to={`/ro/${j.ro_id}`} className="font-medium text-accent hover:underline">
                 {j.item_id}
-                <span className="font-normal text-muted"> · {j.ro_id}</span>
+                {nested ? null : <span className="font-normal text-muted"> · {j.ro_id}</span>}
               </Link>
               <span className="min-w-0 truncate text-fg/90">{j.concern || "(no concern)"}</span>
               <span className="min-w-0 truncate text-muted">
-                {[j.vehicle, j.customer].filter(Boolean).join(" · ")}
-                {j.assigned_to_name ? ` · ${j.assigned_to_name}` : ""}
-                {` · ${formatStatus(j.item_status)}`}
-                {` · ${formatWorkedMinutes(worked)}`}
+                {nested
+                  ? [j.assigned_to_name ? j.assigned_to_name : "", formatStatus(j.item_status), formatWorkedMinutes(worked)]
+                      .filter(Boolean)
+                      .join(" · ")
+                  : [
+                      j.vehicle,
+                      j.customer,
+                      j.assigned_to_name ? j.assigned_to_name : "",
+                      formatStatus(j.item_status),
+                      formatWorkedMinutes(worked),
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
                 {j.is_current && j.current_tech_name ? ` · Now ${j.current_tech_name}` : ""}
               </span>
             </div>
           ) : (
             <>
-              {(j.waiter || j.urgent || j.due_eod || showLaneChip || showPendingLane || showNextDayReq) ? (
+              {(j.due_eod || j.waiting_on_car || (j.split_ro && j.car_turn) || showLaneChip || showPendingLane || showNextDayReq) ? (
                 <div className="mb-1 flex flex-wrap gap-1.5">
-                  {j.waiter ? chip("Waiter", "accent") : null}
-                  {j.urgent ? chip("Urgent", "danger") : null}
                   {j.due_eod ? chip("EOD", "danger") : null}
                   {j.waiting_on_car
                     ? chip(
@@ -373,12 +394,14 @@ function JobCard({
                 className="font-medium text-accent hover:underline"
               >
                 {j.item_id}
-                <span className="font-normal text-muted"> · {j.ro_id}</span>
+                {nested ? null : <span className="font-normal text-muted"> · {j.ro_id}</span>}
               </Link>
               <div className="mt-0.5 text-sm">{j.concern || "(no concern)"}</div>
-              <div className="text-sm text-muted">
-                {j.vehicle} · {j.customer}
-              </div>
+              {nested ? null : (
+                <div className="text-sm text-muted">
+                  {j.vehicle} · {j.customer}
+                </div>
+              )}
               <div className="mt-1 text-sm font-medium tabular-nums">
                 Worked {formatWorkedMinutes(worked)}
               </div>
@@ -825,6 +848,50 @@ export function AssignedWorkPage() {
     );
   }
 
+  function carFlagActions(g: QueueCarGroup) {
+    if (!advisorOn) return null;
+    return (
+      <>
+        {btn(
+          `${g.ro_id}-waiter`,
+          g.waiter ? "Clear waiter" : "Mark waiter",
+          () =>
+            void (async () => {
+              setActingId(`${g.ro_id}-waiter`);
+              setErr("");
+              try {
+                await api.setRoFlags(g.ro_id, { waiter: !g.waiter });
+                await refresh();
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : "Flag failed");
+              } finally {
+                setActingId(null);
+              }
+            })(),
+          "ghost",
+        )}
+        {btn(
+          `${g.ro_id}-urgent`,
+          g.urgent ? "Clear urgent" : "Mark urgent",
+          () =>
+            void (async () => {
+              setActingId(`${g.ro_id}-urgent`);
+              setErr("");
+              try {
+                await api.setRoFlags(g.ro_id, { urgent: !g.urgent });
+                await refresh();
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : "Flag failed");
+              } finally {
+                setActingId(null);
+              }
+            })(),
+          "ghost",
+        )}
+      </>
+    );
+  }
+
   function currentItemActions(roId: string, itemId: string) {
     return (
       <>
@@ -941,42 +1008,6 @@ export function AssignedWorkPage() {
                 })(),
               "ghost")
             : null}
-        {btn(
-          `${j.ro_id}-waiter`,
-          j.waiter ? "Clear waiter" : "Mark waiter",
-          () =>
-            void (async () => {
-              setActingId(`${j.ro_id}-waiter`);
-              setErr("");
-              try {
-                await api.setRoFlags(j.ro_id, { waiter: !j.waiter });
-                await refresh();
-              } catch (e) {
-                setErr(e instanceof Error ? e.message : "Flag failed");
-              } finally {
-                setActingId(null);
-              }
-            })(),
-          "ghost",
-        )}
-        {btn(
-          `${j.ro_id}-urgent`,
-          j.urgent ? "Clear urgent" : "Mark urgent",
-          () =>
-            void (async () => {
-              setActingId(`${j.ro_id}-urgent`);
-              setErr("");
-              try {
-                await api.setRoFlags(j.ro_id, { urgent: !j.urgent });
-                await refresh();
-              } catch (e) {
-                setErr(e instanceof Error ? e.message : "Flag failed");
-              } finally {
-                setActingId(null);
-              }
-            })(),
-          "ghost",
-        )}
       </>
     );
   }
@@ -1511,6 +1542,11 @@ export function AssignedWorkPage() {
     return [...map.values()].sort(floorSortJobs);
   }, [board]);
 
+  const waiterUrgentGroups = useMemo(
+    () => groupJobsByCar(waiterUrgentJobs).sort(floorSortGroups),
+    [waiterUrgentJobs],
+  );
+
   const attentionWaitingParts = useMemo(
     () =>
       (board?.waiting_parts || []).filter((j) => {
@@ -1575,7 +1611,7 @@ export function AssignedWorkPage() {
       assign: (board?.unassigned || []).length + otherJobs,
       punches: todayShifts.length,
       attention:
-        waiterUrgentJobs.length +
+        waiterUrgentGroups.length +
         (board?.found_issues_pending || []).length +
         (board?.ready_to_bill || []).length +
         (board?.waiting_other_items || []).length +
@@ -1590,7 +1626,7 @@ export function AssignedWorkPage() {
     board,
     activeShifts.length,
     todayShifts.length,
-    waiterUrgentJobs.length,
+    waiterUrgentGroups.length,
     attentionWaitingParts.length,
     attentionWaitingCustomer.length,
     attentionUnassigned.length,
@@ -2084,7 +2120,7 @@ export function AssignedWorkPage() {
                           </span>
                         ) : null}
                       </div>
-                      <ul className={cn("mt-1 text-sm", compact ? "space-y-0.5" : "space-y-1")}>
+                      <ul className={cn("mt-1 ml-1 border-l-2 border-border pl-3 text-sm", compact ? "space-y-0.5" : "space-y-1")}>
                         {g.jobs.map((j) => (
                           <li key={j.id} className="flex flex-wrap items-baseline gap-x-2">
                             <span className="font-medium">{j.item_id}</span>
@@ -2160,6 +2196,7 @@ export function AssignedWorkPage() {
                               "To today",
                               () => void moveCarLane(first, "daily"),
                             )}
+                        {carFlagActions(g)}
                       </div>
                     ) : null}
                   </div>
@@ -2194,34 +2231,75 @@ export function AssignedWorkPage() {
     accent = true,
     hideWhenEmpty = false,
   ) {
-    const list = items || [];
-    if (hideWhenEmpty && list.length === 0) return null;
+    const groups = groupJobsByCar(items);
+    if (hideWhenEmpty && groups.length === 0) return null;
+    const compact = density === "compact";
     return (
-      <section className={density === "compact" ? "space-y-1.5" : "space-y-3"}>
+      <section className={compact ? "space-y-1.5" : "space-y-3"}>
         <h2
           className={`text-xs font-semibold uppercase tracking-wide ${
             accent ? "text-accent" : "text-muted"
           }`}
         >
           {title}
-          {list.length ? ` · ${list.length}` : ""}
+          {groups.length ? ` · ${groups.length}` : ""}
         </h2>
-        {list.length === 0 ? (
+        {groups.length === 0 ? (
           <p className="text-sm text-muted">{empty}</p>
         ) : (
-          <ul className={density === "compact" ? "space-y-1" : "space-y-3"}>
-            {list.map((j) => (
-              <JobCard
-                key={j.id}
-                j={j}
-                density={density}
-                actions={actionFor?.(j)}
-                onCarTurn={
-                  advisorOn && j.split_ro
-                    ? (turn) => void runCarTurn(j, turn)
-                    : undefined
-                }
-              />
+          <ul className={compact ? "space-y-1" : "space-y-3"}>
+            {groups.map((g) => (
+              <li
+                key={g.ro_id}
+                className={cn(
+                  "border border-border bg-surface",
+                  compact ? "rounded-md px-2 py-1.5" : "rounded-xl px-4 py-3",
+                )}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                    <Link
+                      to={`/ro/${g.ro_id}`}
+                      className="font-medium text-accent hover:underline"
+                    >
+                      {g.ro_id}
+                    </Link>
+                    <span className={compact ? "text-xs text-fg/90" : "text-sm"}>
+                      {g.vehicle}
+                      {g.customer ? ` · ${g.customer}` : ""}
+                    </span>
+                    {g.waiter ? (
+                      <span className="rounded bg-accent/15 px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-accent">
+                        Waiter
+                      </span>
+                    ) : null}
+                    {g.urgent ? (
+                      <span className="rounded bg-danger/15 px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-danger">
+                        Urgent
+                      </span>
+                    ) : null}
+                  </div>
+                  {advisorOn ? (
+                    <div className="flex flex-wrap items-center gap-1">{carFlagActions(g)}</div>
+                  ) : null}
+                </div>
+                <ul className={cn("ml-1 border-l-2 border-border pl-3", compact ? "mt-1 space-y-0.5" : "mt-2 space-y-1")}>
+                  {g.jobs.map((j) => (
+                    <JobCard
+                      key={j.id}
+                      j={j}
+                      nested
+                      density={density}
+                      actions={actionFor?.(j)}
+                      onCarTurn={
+                        advisorOn && j.split_ro
+                          ? (turn) => void runCarTurn(j, turn)
+                          : undefined
+                      }
+                    />
+                  ))}
+                </ul>
+              </li>
             ))}
           </ul>
         )}
@@ -2350,24 +2428,69 @@ export function AssignedWorkPage() {
           <p className="text-sm text-muted">All caught up — nothing waiting on the desk.</p>
         ) : null}
 
-        {waiterUrgentJobs.length ? (
+        {waiterUrgentGroups.length ? (
           <section className={density === "compact" ? "space-y-1.5" : "space-y-3"}>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-danger">
-              Waiters &amp; urgent · {waiterUrgentJobs.length}
+              Waiters &amp; urgent · {waiterUrgentGroups.length}
             </h3>
             <ul className={density === "compact" ? "space-y-1" : "space-y-3"}>
-              {waiterUrgentJobs.map((j) => (
-                <JobCard
-                  key={`att-${j.item_id || j.id}`}
-                  j={j}
-                  density={density}
-                  actions={advisorOn ? deskJobActions(j) : undefined}
-                  onCarTurn={
-                    advisorOn && j.split_ro
-                      ? (turn) => void runCarTurn(j, turn)
-                      : undefined
-                  }
-                />
+              {waiterUrgentGroups.map((g) => (
+                <li
+                  key={`att-${g.ro_id}`}
+                  className={cn(
+                    "border border-border bg-surface",
+                    density === "compact" ? "rounded-md px-2 py-1.5" : "rounded-xl px-4 py-3",
+                  )}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                    <Link
+                      to={`/ro/${g.ro_id}`}
+                      className="font-medium text-accent hover:underline"
+                    >
+                      {g.ro_id}
+                    </Link>
+                    <span className={density === "compact" ? "text-xs text-fg/90" : "text-sm"}>
+                      {g.vehicle}
+                      {g.customer ? ` · ${g.customer}` : ""}
+                    </span>
+                    {g.waiter ? (
+                      <span className="rounded bg-accent/15 px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-accent">
+                        Waiter
+                      </span>
+                    ) : null}
+                    {g.urgent ? (
+                      <span className="rounded bg-danger/15 px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-danger">
+                        Urgent
+                      </span>
+                    ) : null}
+                    </div>
+                    {advisorOn ? (
+                      <div className="flex flex-wrap items-center gap-1">{carFlagActions(g)}</div>
+                    ) : null}
+                  </div>
+                  <ul
+                    className={cn(
+                      "ml-1 border-l-2 border-border pl-3",
+                      density === "compact" ? "mt-1 space-y-0.5" : "mt-2 space-y-1",
+                    )}
+                  >
+                    {g.jobs.map((j) => (
+                      <JobCard
+                        key={`att-${j.item_id || j.id}`}
+                        j={j}
+                        nested
+                        density={density}
+                        actions={advisorOn ? deskJobActions(j) : undefined}
+                        onCarTurn={
+                          advisorOn && j.split_ro
+                            ? (turn) => void runCarTurn(j, turn)
+                            : undefined
+                        }
+                      />
+                    ))}
+                  </ul>
+                </li>
               ))}
             </ul>
           </section>

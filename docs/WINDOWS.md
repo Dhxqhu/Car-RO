@@ -15,6 +15,21 @@ The **server stays on Linux**; this PC is only a client.
 3. [Windows Terminal](https://aka.ms/terminal) (recommended)  
 4. Car-RO zip from [Releases](https://github.com/Dhxqhu/Car-RO/releases/latest) — use the **latest** release (not an old tag)
 
+### Dependencies
+
+| Dependency | Needed for | Notes |
+| --- | --- | --- |
+| **Python 3.10+** | CLI + local engine | Installed into repo `.venv` by `Install-Car-RO.bat` |
+| **Node.js 20+** (LTS) | Tech GUI + Advisor GUI | [nodejs.org](https://nodejs.org) or `winget install OpenJS.NodeJS.LTS`. After install, open a **new** terminal (or use `Run-Tech-GUI.bat`, which finds Node even if PATH is stale). |
+| **WebView2** | Tauri window | Usually already present on Windows 10/11 |
+| **Rust + VS C++ Build Tools** | Tauri `.exe` window only | Not required to test the GUI in a browser |
+
+**Full requirement list:** [REQUIREMENTS.md](REQUIREMENTS.md).
+
+Python packages are listed in `requirements.txt` (workstation) and `server/requirements.txt` (Linux shop server). UI packages are in `gui/ui/package.json` and `advisor/ui/package.json` — the GUI `.bat` launchers run `npm install` on first start.
+
+**GUI launchers:** `Run-Tech-GUI.bat` (http://127.0.0.1:1420) and `Run-Advisor-GUI.bat` (http://127.0.0.1:1422). If a double-clicked `.bat` window closes immediately, the launcher now pauses on error so you can read it.
+
 ---
 
 ## Install (easiest: double-click the `.bat`)
@@ -103,6 +118,8 @@ grep CARRO_TOKEN ~/.config/carro-server.env
 ```
 
 Do **not** invent a new token on this PC during normal setup. “Generate new token” only changes this laptop; the server will reject it until you also update `CARRO_TOKEN` on the server and every other bay (see **Rotate the shop token** in [SERVER_SETUP.md](SERVER_SETUP.md)).
+
+Prefer **`Join-Server.bat`**: it pulls the live shop technician/advisor list first and does **not** push leftover testers from an old local install. Background sync will not delete shop people if this PC still has an old roster file. If a leftover tester already overwrote the shop list, run `carro sync` on a bay that still has the real roster (usually the Linux laptop), then restart the GUI here.
 
 ---
 

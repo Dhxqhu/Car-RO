@@ -2,20 +2,45 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Camera, Images } from "lucide-react";
 import { CameraSheet } from "@/components/CameraSheet";
-import { api, photoUrl, type RepairOrder } from "@/lib/api";
+import { api, photoUrl, type RepairOrder, type WorkItem } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { cn, customerLabel, formatStatus, vehicleLabel } from "@/lib/utils";
+import { cn, customerLabel, formatStatus, formatWorkedMinutes, vehicleLabel } from "@/lib/utils";
 
 const PHOTO_TAGS = ["intake", "diag", "other"] as const;
 
-export function RoPage() {
+function matchesMe(item: WorkItem, personId: string, personName: string): boolean {
+  const mid = personId.trim().toLowerCase();
+  const mname = personName.trim().toLowerCase();
+  const tid = (item.timer_tech_id || "").trim().toLowerCase();
+  const tname = (item.timer_tech_name || "").trim().toLowerCase();
+  if (mid && tid && mid === tid) return true;
+  if (mname && tname && mname === tname) return true;
+  return false;
+}
+
+function itemOpen(item: WorkItem): boolean {
+  const st = (item.status || "").toLowerCase();
+  return st !== "done" && st !== "declined" && st !== "canceled";
+}
+
+export function RoPage({
+  id: personId,
+  name,
+  role,
+}: {
+  id: string;
+  name: string;
+  role: string;
+}) {
   const { id = "" } = useParams();
+  const canClock = role === "technician" || role === "advisor";
   const [order, setOrder] = useState<RepairOrder | null>(null);
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  const [actingId, setActingId] = useState("");
   const [photoTag, setPhotoTag] = useState<(typeof PHOTO_TAGS)[number]>("diag");
   const [cameraOpen, setCameraOpen] = useState(false);
   const libraryRef = useRef<HTMLInputElement | null>(null);
@@ -58,6 +83,22 @@ export function RoPage() {
     }
   }
 
+  async function clockJob(itemId: string, active: boolean) {
+    if (!order) return;
+    setActingId(itemId);
+    setError("");
+    setMsg("");
+    try {
+      const saved = await api.setCurrentTask(order.id, active, itemId);
+      setOrder(saved);
+      setMsg(active ? "Clocked onto job" : "Clocked off job");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not update job clock");
+    } finally {
+      setActingId("");
+    }
+  }
+
   async function uploadFiles(files: File[]) {
     if (!order || !files.length) return;
     setBusy(true);
@@ -90,7 +131,19 @@ export function RoPage() {
         ← Orders
       </Link>
       <div>
-        <h1 className="font-display text-xl">{customerLabel(order)}</h1>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <h1 className="font-display text-xl">{customerLabel(order)}</h1>
+          {order.waiter ? (
+            <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent">
+              Waiter
+            </span>
+          ) : null}
+          {order.urgent ? (
+            <span className="rounded bg-danger/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-danger">
+              Urgent
+            </span>
+          ) : null}
+        </div>
         <p className="text-sm text-muted">{vehicleLabel(order)}</p>
         <p className="mt-1 text-xs text-muted">
           {order.id} · {formatStatus(order.status)}
@@ -111,13 +164,47 @@ export function RoPage() {
         {(order.work_items || []).length === 0 ? (
           <p className="text-sm text-muted">{order.complaint || "No work items yet."}</p>
         ) : (
-          <ul className="space-y-2">
-            {(order.work_items || []).map((w) => (
-              <li key={w.id} className="rounded-xl border border-border bg-surface px-4 py-3">
-                <p className="text-sm font-medium">{w.concern || "Work item"}</p>
-                <p className="text-xs text-muted">{formatStatus(w.status)}</p>
-              </li>
-            ))}
+          <ul className="ml-1 space-y-2 border-l-2 border-border pl-3">
+            {(order.work_items || []).map((w) => {
+              const mine = Boolean(w.timer_started_at) && matchesMe(w, personId, name);
+              const otherOn = Boolean(w.timer_started_at) && !mine;
+              const open = itemOpen(w);
+              return (
+                <li key={w.id} className="rounded-xl border border-border bg-surface px-4 py-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">{w.concern || "Work item"}</p>
+                      <p className="text-xs text-muted">
+                        {formatStatus(w.status)}
+                        {w.worked_minutes ? ` · ${formatWorkedMinutes(w.worked_minutes)}` : ""}
+                        {mine ? " · timer on" : ""}
+                        {otherOn && w.timer_tech_name ? ` · ${w.timer_tech_name}` : ""}
+                      </p>
+                    </div>
+                    {canClock && open ? (
+                      mine ? (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={actingId === w.id || busy}
+                          onClick={() => void clockJob(w.id, false)}
+                        >
+                          Clock out
+                        </Button>
+                      ) : otherOn ? null : (
+                        <Button
+                          size="sm"
+                          disabled={actingId === w.id || busy}
+                          onClick={() => void clockJob(w.id, true)}
+                        >
+                          Clock in
+                        </Button>
+                      )
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
@@ -212,3 +299,4 @@ export function RoPage() {
     </div>
   );
 }
+

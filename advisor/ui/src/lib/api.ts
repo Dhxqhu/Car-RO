@@ -1,5 +1,7 @@
 /** Talk to the local Car-RO engine (proxied as /api in Vite / Tauri). */
 
+import { latestOrdersPerCar } from "@/lib/utils";
+
 function engineBase(): string {
   if (import.meta.env.VITE_ENGINE_URL) return import.meta.env.VITE_ENGINE_URL;
   // Tauri loads the UI from a custom protocol — talk to the local engine directly.
@@ -40,6 +42,8 @@ export type WorkItemPart = {
   manufacturer?: string;
   brand?: string;
   supplier?: string;
+  superseded_by?: string;
+  supersedes?: string;
   status: string;
   requested_at?: string;
   ordered_at?: string;
@@ -136,6 +140,8 @@ export type PartsSheetRow = {
   manufacturer?: string;
   brand?: string;
   supplier?: string;
+  superseded_by?: string;
+  supersedes?: string;
   status: string;
   requested_at?: string;
   ordered_at?: string;
@@ -164,6 +170,16 @@ export type PartSuggestion = {
   brand?: string;
   description: string;
   use_count?: number;
+  superseded_by?: string;
+  supersedes?: string;
+};
+
+export type PartSupersession = {
+  id: string;
+  old_number: string;
+  new_number: string;
+  manufacturer?: string;
+  note?: string;
 };
 
 export type Appointment = {
@@ -316,6 +332,7 @@ export type RepairOrder = {
   plate: string;
   complaint: string;
   tech_notes: string;
+  intake_notes?: string;
   technician_name: string;
   technician_id: string;
   assigned_to_id?: string;
@@ -881,6 +898,24 @@ export const api = {
     req<{ ok: boolean; id: string }>(`/suppliers/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }),
+  listPartSupersessions: () =>
+    req<{ links: PartSupersession[]; updated?: string; count?: number }>(
+      "/part-supersessions",
+    ),
+  addPartSupersession: (body: {
+    old_number: string;
+    new_number: string;
+    manufacturer?: string;
+    note?: string;
+  }) =>
+    req<PartSupersession>("/part-supersessions", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deletePartSupersession: (id: string) =>
+    req<{ ok: boolean; id: string }>(`/part-supersessions/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
   submitBugReport: (body: {
     title: string;
     description: string;
@@ -1099,12 +1134,15 @@ export const api = {
       `/ros/${encodeURIComponent(id)}/photos/refresh`,
       { method: "POST" },
     ),
-  history: (vin: string, name: string, excludeId?: string) => {
+  history: (vin: string, name: string, excludeId?: string, uniqueCars = false) => {
     const params = new URLSearchParams();
     if (vin.trim()) params.set("vin", vin.trim());
     if (name.trim()) params.set("name", name.trim());
     if (excludeId) params.set("exclude_id", excludeId);
-    return req<HistoryResult>(`/history?${params.toString()}`);
+    if (uniqueCars) params.set("unique_cars", "true");
+    return req<HistoryResult>(`/history?${params.toString()}`).then((r) =>
+      uniqueCars ? { ...r, orders: latestOrdersPerCar(r.orders) } : r,
+    );
   },
   historyPack: (
     vin: string,
@@ -1306,6 +1344,8 @@ export const api = {
       manufacturer?: string | null;
       brand?: string;
       supplier?: string;
+      superseded_by?: string;
+      supersedes?: string;
     },
   ) =>
     req<RepairOrder>(
@@ -1323,6 +1363,8 @@ export const api = {
       manufacturer?: string;
       brand?: string;
       supplier?: string;
+      superseded_by?: string;
+      supersedes?: string;
       status?: string;
       wrong_note?: string;
     },

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import secrets
 import sqlite3
@@ -76,6 +77,12 @@ from carro_server.notify_targets import (
     push_url as push_event_url,
     recipients_for_event,
     roster_people,
+)
+from carro_server.roster_merge import merge_person_rows as _merge_person_rows
+from carro_server.job_clock import (
+    release_tech_current as clock_release_tech,
+    start_item_timer as clock_start_item,
+    tech_has_live_timer,
 )
 from carro_server.upload_tokens import SHORTCUT_PAGE, UPLOAD_PAGE, UploadTokenStore
 from carro_server.volumes import VolumeManager
@@ -238,6 +245,7 @@ def health():
         "meta_dir": str(VOLUMES.root),
         "volumes": vols,
         "pwa": bool(pwa),
+        "shop_name": _load_shop_branding().get("shop_name") or "",
         **version_payload(),
     }
 
@@ -436,11 +444,18 @@ def put_technicians(body: dict, _: Principal = Depends(require_shop)):
     techs = body.get("technicians")
     if techs is not None and not isinstance(techs, list):
         raise HTTPException(400, "technicians must be a list")
+    existing = _load_technicians()
+    replace = bool(body.get("replace"))
+    incoming_hash = str(body.get("admin_pin_hash") or "")
     payload = {
         "version": 1,
         "updated": str(body.get("updated") or ""),
-        "admin_pin_hash": str(body.get("admin_pin_hash") or ""),
-        "technicians": [t for t in (techs or []) if isinstance(t, dict)],
+        "admin_pin_hash": incoming_hash or str(existing.get("admin_pin_hash") or ""),
+        "technicians": _merge_person_rows(
+            list(existing.get("technicians") or []),
+            list(techs or []),
+            replace=replace,
+        ),
     }
     if not payload["updated"]:
         from datetime import datetime
@@ -488,10 +503,16 @@ def put_advisors(body: dict, _: Principal = Depends(require_shop)):
     advisors = body.get("advisors")
     if advisors is not None and not isinstance(advisors, list):
         raise HTTPException(400, "advisors must be a list")
+    existing = _load_advisors()
+    replace = bool(body.get("replace"))
     payload = {
         "version": 1,
         "updated": str(body.get("updated") or ""),
-        "advisors": [a for a in (advisors or []) if isinstance(a, dict)],
+        "advisors": _merge_person_rows(
+            list(existing.get("advisors") or []),
+            list(advisors or []),
+            replace=replace,
+        ),
     }
     if not payload["updated"]:
         from datetime import datetime
@@ -545,6 +566,136 @@ def _suppliers_path() -> Path:
     return VOLUMES.root / "suppliers.json"
 
 
+def _shop_branding_path() -> Path:
+    return VOLUMES.root / "shop_branding.json"
+
+
+def _shop_logo_path() -> Path | None:
+    for name in ("shop_logo.png", "shop_logo.jpg", "shop_logo.jpeg", "shop_logo.webp", "shop_logo.gif"):
+        p = VOLUMES.root / name
+        if p.is_file():
+            return p
+    return None
+
+
+def _load_shop_branding() -> dict:
+    path = _shop_branding_path()
+    logo = _shop_logo_path()
+    if not path.is_file():
+        return {
+            "shop_name": "",
+            "updated": "",
+            "has_logo": bool(logo),
+            "logo_ext": logo.suffix if logo else "",
+        }
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    logo = _shop_logo_path()
+    return {
+        "shop_name": str(raw.get("shop_name") or ""),
+        "updated": str(raw.get("updated") or ""),
+        "has_logo": bool(logo),
+        "logo_ext": logo.suffix if logo else str(raw.get("logo_ext") or ""),
+    }
+
+
+def _save_shop_branding(payload: dict) -> dict:
+    path = _shop_branding_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    logo = _shop_logo_path()
+    out = dict(payload)
+    out["has_logo"] = bool(logo)
+    out["logo_ext"] = logo.suffix if logo else ""
+    return out
+
+
+@app.get("/shop-branding")
+def get_shop_branding(_: None = Depends(require_auth)):
+    return _load_shop_branding()
+
+
+@app.put("/shop-branding")
+def put_shop_branding(body: dict, _: Principal = Depends(require_shop)):
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    existing = _load_shop_branding()
+    payload = {
+        "shop_name": str(body.get("shop_name") if body.get("shop_name") is not None else existing.get("shop_name") or ""),
+        "updated": str(body.get("updated") or ""),
+    }
+    if not payload["updated"]:
+        payload["updated"] = datetime.now().isoformat(timespec="seconds")
+    saved = _save_shop_branding(payload)
+    return {"ok": True, **saved}
+
+
+@app.get("/shop-branding/logo")
+def get_shop_branding_logo(_: None = Depends(require_auth)):
+    logo = _shop_logo_path()
+    if not logo or not logo.is_file():
+        raise HTTPException(404, "No shop logo on server")
+    media = mimetypes.guess_type(str(logo))[0] or "application/octet-stream"
+    return FileResponse(logo, media_type=media)
+
+
+@app.post("/shop-branding/logo")
+async def upload_shop_branding_logo(
+    file: UploadFile = File(...),
+    _: Principal = Depends(require_shop),
+):
+    name = Path(file.filename or "shop_logo.png").name
+    suffix = Path(name).suffix.lower() or ".png"
+    if suffix not in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+        raise HTTPException(400, "Use PNG or JPG")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty file")
+    for old in VOLUMES.root.glob("shop_logo.*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    dest = VOLUMES.root / f"shop_logo{suffix if suffix != '.jpeg' else '.jpg'}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+    meta = _load_shop_branding()
+    if not meta.get("updated"):
+        meta["updated"] = datetime.now().isoformat(timespec="seconds")
+    meta["logo_ext"] = dest.suffix
+    saved = _save_shop_branding(
+        {
+            "shop_name": str(meta.get("shop_name") or ""),
+            "updated": str(meta.get("updated") or ""),
+            "logo_ext": dest.suffix,
+        }
+    )
+    return {"ok": True, **saved}
+
+
+@app.delete("/shop-branding/logo")
+def delete_shop_branding_logo(_: Principal = Depends(require_shop)):
+    for old in VOLUMES.root.glob("shop_logo.*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    meta = _load_shop_branding()
+    saved = _save_shop_branding(
+        {
+            "shop_name": str(meta.get("shop_name") or ""),
+            "updated": datetime.now().isoformat(timespec="seconds"),
+            "logo_ext": "",
+        }
+    )
+    saved["has_logo"] = False
+    return {"ok": True, **saved}
+
+
 def _load_suppliers() -> dict:
     path = _suppliers_path()
     if not path.is_file():
@@ -587,6 +738,70 @@ def put_suppliers(body: dict, _: Principal = Depends(require_shop)):
 
         payload["updated"] = datetime.now().isoformat(timespec="seconds")
     path = _suppliers_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return {"ok": True, **payload}
+
+
+def _part_supersessions_path() -> Path:
+    return VOLUMES.root / "part_supersessions.json"
+
+
+def _load_part_supersessions() -> dict:
+    path = _part_supersessions_path()
+    if not path.is_file():
+        return {"version": 1, "updated": "", "links": []}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"version": 1, "updated": "", "links": []}
+    if not isinstance(raw, dict):
+        return {"version": 1, "updated": "", "links": []}
+    links = raw.get("links")
+    if not isinstance(links, list):
+        links = []
+    return {
+        "version": 1,
+        "updated": str(raw.get("updated") or ""),
+        "links": [s for s in links if isinstance(s, dict)],
+    }
+
+
+@app.get("/part-supersessions")
+def get_part_supersessions(_: None = Depends(require_auth)):
+    return _load_part_supersessions()
+
+
+@app.put("/part-supersessions")
+def put_part_supersessions(body: dict, _: Principal = Depends(require_shop)):
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON object required")
+    links = body.get("links")
+    if links is not None and not isinstance(links, list):
+        raise HTTPException(400, "links must be a list")
+    existing = _load_part_supersessions()
+    by_old: dict[str, dict] = {}
+    for row in existing.get("links") or []:
+        old = str(row.get("old_number") or "").replace(" ", "").upper()
+        if old:
+            by_old[old] = row
+    for row in links or []:
+        if not isinstance(row, dict):
+            continue
+        old = str(row.get("old_number") or "").replace(" ", "").upper()
+        if not old:
+            continue
+        by_old[old] = row
+    payload = {
+        "version": 1,
+        "updated": str(body.get("updated") or ""),
+        "links": list(by_old.values()),
+    }
+    if not payload["updated"]:
+        from datetime import datetime
+
+        payload["updated"] = datetime.now().isoformat(timespec="seconds")
+    path = _part_supersessions_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return {"ok": True, **payload}
@@ -750,6 +965,7 @@ def create_ro(body: dict | None = None, principal: Principal = Depends(require_a
         "plate": str(body.get("plate") or ""),
         "complaint": str(body.get("complaint") or ""),
         "tech_notes": str(body.get("tech_notes") or ""),
+        "intake_notes": str(body.get("intake_notes") or ""),
         "status": str(body.get("status") or "open"),
         "photos": [],
         "work_items": [],
@@ -904,6 +1120,52 @@ def get_ro(ro_id: str, _: None = Depends(require_auth)):
     return json.loads(row["data"])
 
 
+def _persist_ro(
+    conn: sqlite3.Connection,
+    *,
+    ro_id: str,
+    before: dict | None,
+    merged: dict,
+    actor: str,
+    actor_id: str,
+) -> list[dict]:
+    merged = dict(merged)
+    merged["id"] = ro_id
+    updated = str(merged.get("updated") or "")
+    payload = json.dumps(merged)
+    conn.execute(
+        """
+        INSERT INTO repair_orders (id, data, updated)
+        VALUES (?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated = excluded.updated
+        """,
+        (ro_id, payload, updated or merged.get("created") or ""),
+    )
+    sync_ro_projections(conn, merged)
+    stored_events: list[dict] = []
+    for ev in diff_ro_events(before, merged, actor=actor):
+        ev_payload = dict(ev.get("payload") or {})
+        if actor_id:
+            ev_payload.setdefault("actor_id", actor_id)
+        if ev["type"] == "ro_assigned":
+            ev_payload.setdefault("assigned_to_id", str(merged.get("assigned_to_id") or ""))
+            ev_payload.setdefault(
+                "assigned_to_name", str(merged.get("assigned_to_name") or "")
+            )
+        append_event(
+            conn,
+            type=ev["type"],
+            ro_id=ev["ro_id"],
+            item_id=ev.get("item_id") or "",
+            actor=ev.get("actor") or "",
+            summary=ev.get("summary") or "",
+            at=ev.get("at"),
+            payload=ev_payload or None,
+        )
+        stored_events.append({**ev, "payload": ev_payload})
+    return stored_events
+
+
 @app.put("/ros/{ro_id}")
 def put_ro(ro_id: str, body: dict, principal: Principal = Depends(require_auth)):
     body = dict(body)
@@ -931,41 +1193,95 @@ def put_ro(ro_id: str, body: dict, principal: Principal = Depends(require_auth))
             base_updated=base_updated,
             actor=actor,
         )
-        merged["id"] = ro_id
-        updated = str(merged.get("updated") or incoming.get("updated") or "")
-        payload = json.dumps(merged)
-        conn.execute(
-            """
-            INSERT INTO repair_orders (id, data, updated)
-            VALUES (?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated = excluded.updated
-            """,
-            (ro_id, payload, updated or merged.get("created") or ""),
+        stored_events = _persist_ro(
+            conn,
+            ro_id=ro_id,
+            before=before,
+            merged=merged,
+            actor=actor,
+            actor_id=actor_id,
         )
-        sync_ro_projections(conn, merged)
-        stored_events: list[dict] = []
-        for ev in diff_ro_events(before, merged, actor=actor):
-            ev_payload = dict(ev.get("payload") or {})
-            if actor_id:
-                ev_payload.setdefault("actor_id", actor_id)
-            if ev["type"] == "ro_assigned":
-                ev_payload.setdefault("assigned_to_id", str(merged.get("assigned_to_id") or ""))
-                ev_payload.setdefault(
-                    "assigned_to_name", str(merged.get("assigned_to_name") or "")
-                )
-            append_event(
-                conn,
-                type=ev["type"],
-                ro_id=ev["ro_id"],
-                item_id=ev.get("item_id") or "",
-                actor=ev.get("actor") or "",
-                summary=ev.get("summary") or "",
-                at=ev.get("at"),
-                payload=ev_payload or None,
-            )
-            stored_events.append({**ev, "payload": ev_payload})
     _fanout_event_push(stored_events, actor=actor, actor_id=actor_id)
     return merged
+
+
+@app.post("/ros/{ro_id}/current")
+def set_current_task(ro_id: str, body: dict, principal: Principal = Depends(require_auth)):
+    """Clock onto (or off) a work item from the PWA. Mirrors the local engine /current route."""
+    if principal.kind not in ("technician", "advisor"):
+        raise HTTPException(400, "Clock onto jobs with a technician or advisor login")
+    payload = dict(body or {})
+    active = bool(payload.get("active", True))
+    item_id = str(payload.get("item_id") or "").strip()
+    tech_id = str(principal.id or "").strip()
+    tech_name = str(principal.name or "").strip()
+    if not tech_id and not tech_name:
+        raise HTTPException(400, "Missing technician identity")
+
+    fanout: list[dict] = []
+    with _db() as conn:
+        target_row = conn.execute(
+            "SELECT data FROM repair_orders WHERE id = ?", (ro_id,)
+        ).fetchone()
+        if not target_row:
+            raise HTTPException(404, "RO not found")
+        try:
+            order = json.loads(target_row["data"])
+        except json.JSONDecodeError as e:
+            raise HTTPException(500, "RO data is not valid JSON") from e
+        if not isinstance(order, dict):
+            raise HTTPException(500, "RO data is not an object")
+
+        if active:
+            other_rows = conn.execute(
+                "SELECT id, data FROM repair_orders WHERE id != ?", (ro_id,)
+            ).fetchall()
+            for row in other_rows:
+                try:
+                    other = json.loads(row["data"])
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(other, dict):
+                    continue
+                if not tech_has_live_timer(other, tech_id=tech_id, tech_name=tech_name):
+                    continue
+                before_other = json.loads(json.dumps(other))
+                if clock_release_tech(other, tech_id=tech_id, tech_name=tech_name):
+                    fanout.extend(
+                        _persist_ro(
+                            conn,
+                            ro_id=str(row["id"]),
+                            before=before_other,
+                            merged=other,
+                            actor=tech_name,
+                            actor_id=tech_id,
+                        )
+                    )
+            before = json.loads(json.dumps(order))
+            try:
+                clock_start_item(
+                    order, tech_id=tech_id, tech_name=tech_name, item_id=item_id
+                )
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+        else:
+            before = json.loads(json.dumps(order))
+            clock_release_tech(
+                order, tech_id=tech_id, tech_name=tech_name, item_id=item_id
+            )
+
+        fanout.extend(
+            _persist_ro(
+                conn,
+                ro_id=ro_id,
+                before=before,
+                merged=order,
+                actor=tech_name,
+                actor_id=tech_id,
+            )
+        )
+    _fanout_event_push(fanout, actor=tech_name, actor_id=tech_id)
+    return order
 
 
 def _fanout_event_push(events: list[dict], *, actor: str, actor_id: str) -> None:

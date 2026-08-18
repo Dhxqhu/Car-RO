@@ -42,11 +42,20 @@ CLI tools (`carro`, `obdscan`) stay first-class. A future small Python-only Scan
 
 | Tool | Notes |
 | --- | --- |
-| Node 20+ | UI |
-| Rust stable | `rustup` — required to build Tauri |
-| Python 3.10+ | Engine (repo `.venv` from `./scripts/install.sh`) |
+| Node 20+ | **Required** for both GUIs (Vite). Install LTS from [nodejs.org](https://nodejs.org). On Windows, use a new terminal after install, or `Run-Tech-GUI.bat` / `Run-Advisor-GUI.bat` (they add Node to PATH if Explorer still has the old one). |
+| Rust stable | `rustup` — required to **build** Tauri, not to run the browser UI |
+| Python 3.10+ | Engine (repo `.venv` from `./scripts/install.sh` or `Install-Car-RO.bat`) |
 | obdscan checkout | Required for live Connect. Sibling `../obdscan` or `OBDSCAN_ROOT` |
 | Linux packages | WebKitGTK for Tauri (distro-specific; see below) |
+
+Library versions live in:
+
+- `requirements.txt` — Python engine / CLI
+- `gui/ui/package.json` — Tech UI
+- `advisor/ui/package.json` — Advisor desk UI
+- `gui/package.json` — Tauri wrapper
+
+Windows workstation list: [WINDOWS.md — Dependencies](WINDOWS.md#dependencies).
 
 ### Linux system packages (Debian/Ubuntu example)
 
@@ -137,14 +146,29 @@ and launch the Tauri binary — or use `scripts/run-gui-dev.sh` for day-to-day.
 
 ## Orders features (wired)
 
+### Tech (`gui/ui`)
+
 - Technician login (name + PIN)
 - RO list / search / create / edit / delete
-- PDF export (path returned; opens via OS later)
+- RO editor with **auto-save** (customer/vehicle, bay notes, open work-item draft)
+- Work items, timers, parts, found issues, merge, PDF export
+- **Intake notes** read-only when advisor left arrival reference
+- Part lookup with **supersession** badges
 - Sync to carro-server + tech roster sync
-- Settings (shop name, server URL, token)
+- Settings (shop name, logo, server URL, token)
 - Add technician (admin PIN)
 
-Photos: metadata count on RO; attach still via CLI photo tools in this pass.
+### Advisor desk (`advisor/ui`)
+
+- Advisor login + desk pool, assigned work, calendar / appointments
+- RO editor with **auto-save** and **intake notes** (editable until first work item)
+- Work items (SI/IM concern auto-fill), parts, found-issue approve/decline
+- **Parts** workspace + **supersessions** catalog
+- Messages, efficiency, weekly reports, time cards, people / admin
+- Waiter / urgent flags, daily / next-day / long-term queues
+- PDF export with synced shop branding
+
+Photos: attach via RO editor, found-issue compose, or CLI photo tools (`carro photo …`).
 
 ## Scanner features (CLI parity)
 

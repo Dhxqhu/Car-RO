@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from typing import Any
+
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import letter
@@ -23,6 +25,7 @@ from reportlab.platypus import (
 )
 
 from carro.config import DATA_DIR, load_config, photos_dir
+from carro.core.shop_branding import resolve_pdf_branding
 from carro.core.models import RepairOrder
 from carro.storage.photos import ensure_local_photos
 
@@ -139,6 +142,52 @@ def _kv_block(rows: list[tuple[str, str]], *, label_style, value_style, width: f
     return t
 
 
+DECLINED_SERVICE_DISCLAIMER = (
+    "The customer declined the recommended service(s) listed below. By declining this "
+    "work, the customer acknowledges that the shop is not liable for subsequent "
+    "failures, damage, or additional repairs related to parts or systems that were "
+    "inspected, found to need attention, and left unrepaired at the customer's request."
+)
+
+
+def _billable_work_items(items: list) -> list:
+    """Work items that belong in the authorized-service section of the customer PDF."""
+    return [w for w in items if (getattr(w, "status", "") or "").lower() != "declined"]
+
+
+def _declined_service_lines(
+    *,
+    items: list,
+    declined_found_issues: list[dict[str, Any]],
+) -> list[str]:
+    """Customer-facing declined-service bullets — not numbered work items."""
+    lines: list[str] = []
+    seen: set[str] = set()
+
+    def add_line(desc: str, extra: str = "") -> None:
+        key = f"{desc.strip().lower()}|{extra.strip().lower()}"
+        if not desc.strip() or key in seen:
+            return
+        seen.add(key)
+        block = f"• {desc.strip()}"
+        if extra.strip():
+            block += f"\n  {extra.strip()}"
+        lines.append(block)
+
+    for fi in declined_found_issues:
+        desc = (fi.get("description") or "—").strip() or "—"
+        add_line(desc)
+
+    for w in items:
+        if (getattr(w, "status", "") or "").lower() != "declined":
+            continue
+        desc = (getattr(w, "concern", "") or "—").strip() or "—"
+        notes = (getattr(w, "notes", "") or "").strip()
+        add_line(desc, f"Notes: {notes}" if notes else "")
+
+    return lines
+
+
 def _append_kept(
     story: list,
     *bits: Flowable,
@@ -162,7 +211,9 @@ def export_pdf(
     in the header is still included when configured — it is not job photos.
     """
     cfg = load_config()
-    shop = cfg.get("shop_name") or "(shop name here)"
+    branding = resolve_pdf_branding(refresh_remote=True)
+    shop = branding.get("shop_name") or cfg.get("shop_name") or "(shop name here)"
+    logo_path = branding.get("logo_path")
     out_dir = DATA_DIR / "pdf"
     out_dir.mkdir(parents=True, exist_ok=True)
     if dest is None:
@@ -274,7 +325,10 @@ def export_pdf(
     # --- Header: shop + logo ---
     left = [Paragraph(_xml_escape(shop), shop_style)]
     right: object = ""
-    logo = _resolve_logo(cfg)
+    if logo_path and Path(logo_path).is_file():
+        logo = Path(logo_path)
+    else:
+        logo = _resolve_logo(cfg)
     if logo:
         try:
             from reportlab.lib.utils import ImageReader
@@ -383,8 +437,9 @@ def export_pdf(
     from carro.core.work_items import ensure_work_items_on_order, item_type_label
 
     items = ensure_work_items_on_order(order)
-    if items:
-        for i, w in enumerate(items, 1):
+    billable = _billable_work_items(items)
+    if billable:
+        for i, w in enumerate(billable, 1):
             concern = (w.concern or "—").strip() or "—"
             notes = (w.notes or "").strip()
             # Customer PDF: concern, diagnosis, and parts used — no waiting/status
@@ -407,7 +462,7 @@ def export_pdf(
                 body_style=box_body,
             )
             _append_kept(story, Spacer(1, 0.12 * inch), box, min_remain_inch=1.2)
-    else:
+    elif not items:
         complaint_box = _section_box(
             "CUSTOMER CONCERN / REQUEST",
             order.complaint or "—",
@@ -424,27 +479,24 @@ def export_pdf(
         )
         _append_kept(story, Spacer(1, 0.12 * inch), notes_box, min_remain_inch=1.2)
 
-    from carro.core.found_issues import decline_reason_label, normalize_found_issues
+    from carro.core.found_issues import normalize_found_issues
 
     declined_fis = [
         fi
         for fi in normalize_found_issues(getattr(order, "found_issues", None))
         if str(fi.get("status") or "") == "declined"
     ]
-    if declined_fis:
-        lines: list[str] = []
-        for fi in declined_fis:
-            desc = (fi.get("description") or "—").strip() or "—"
-            label = decline_reason_label(str(fi.get("decline_reason") or ""))
-            notes = (fi.get("notes") or "").strip()
-            block = f"• {desc}\n  Status: Declined — {label}"
-            if notes:
-                block += f"\n  Notes: {notes}"
-            lines.append(block)
+    declined_lines = _declined_service_lines(items=items, declined_found_issues=declined_fis)
+    if declined_lines:
+        body_txt = (
+            "Recommended service the customer chose not to authorize:\n\n"
+            + "\n\n".join(declined_lines)
+            + "\n\n"
+            + DECLINED_SERVICE_DISCLAIMER
+        )
         box = _section_box(
-            "DECLINED FINDINGS (CUSTOMER RECORD)",
-            "These items were reviewed and not authorized. They remain on file for your records.\n\n"
-            + "\n\n".join(lines),
+            "DECLINED SERVICE",
+            body_txt,
             head_style=box_head,
             body_style=box_body,
         )
@@ -514,7 +566,7 @@ def export_pdf(
                 note = _xml_escape(str(meta.get("notes") or meta.get("note") or "").strip())
                 bits = [f"<b>{tag}</b>"]
                 if str(meta.get("_fi_status") or "") == "declined":
-                    bits.append("Declined finding")
+                    bits.append("Declined service")
                 if note:
                     bits.append(note.replace("\n", "<br/>"))
                 cell = [img, Paragraph("<br/>".join(bits), caption)]
